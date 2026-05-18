@@ -4,7 +4,7 @@ use super::window::WindowEventHandler;
 use crate::actor::app::{AppInfo, WindowId, WindowInfo, pid_t};
 use crate::actor::reactor::{Event, LayoutEvent, Reactor, WindowFilter, WindowState, utils};
 use crate::common::collections::{BTreeMap, HashSet};
-use crate::model::virtual_workspace::{AppRuleResult, WorkspaceError};
+use crate::model::virtual_workspace::{AppRuleAssignment, AppRuleResult, WorkspaceError};
 use crate::sys::screen::SpaceId;
 use crate::sys::window_server::{self, WindowServerId};
 
@@ -367,6 +367,26 @@ impl WindowDiscoveryHandler {
         space: SpaceId,
         app_info: &Option<AppInfo>,
     ) -> Result<AppRuleResult, WorkspaceError> {
+        if let Some(target) = reactor.recent_workspace_target_for(wid) {
+            let was_floating = reactor.layout_manager.layout_engine.is_window_floating(wid);
+            let (assigned, destroyed) = reactor
+                .layout_manager
+                .layout_engine
+                .virtual_workspace_manager_mut()
+                .assign_window_to_workspace(target.space, wid, target.workspace_id);
+            reactor
+                .layout_manager
+                .layout_engine
+                .drain_destroyed_workspace_layouts(destroyed);
+            if assigned {
+                return Ok(AppRuleResult::Managed(AppRuleAssignment {
+                    workspace_id: target.workspace_id,
+                    floating: was_floating,
+                    prev_rule_decision: false,
+                }));
+            }
+        }
+
         let Some(window) = reactor.window_manager.window(wid) else {
             return Err(WorkspaceError::AssignmentFailed);
         };
@@ -374,18 +394,15 @@ impl WindowDiscoveryHandler {
         let ax_role = window.info.ax_role.clone();
         let ax_subrole = window.info.ax_subrole.clone();
 
-        let result = reactor
-            .layout_manager
-            .layout_engine
-            .assign_window_with_app_info(
-                wid,
-                space,
-                app_info.as_ref().and_then(|a| a.bundle_id.as_deref()),
-                app_info.as_ref().and_then(|a| a.localized_name.as_deref()),
-                Some(title.as_str()),
-                ax_role.as_deref(),
-                ax_subrole.as_deref(),
-            );
+        let result = reactor.layout_manager.layout_engine.assign_window_with_app_info(
+            wid,
+            space,
+            app_info.as_ref().and_then(|a| a.bundle_id.as_deref()),
+            app_info.as_ref().and_then(|a| a.localized_name.as_deref()),
+            Some(title.as_str()),
+            ax_role.as_deref(),
+            ax_subrole.as_deref(),
+        );
 
         // Drop layout-engine mirrors for any workspaces VWM destroyed
         // during the assign.
@@ -450,11 +467,7 @@ impl WindowDiscoveryHandler {
             .filter(|wid| wid.pid == pid)
             .filter(|wid| reactor.window_is_standard(*wid))
         {
-            let Some(space) = reactor
-                .focus_next_window_target_for(wid)
-                .map(|target| target.space)
-                .or_else(|| reactor.best_space_for_window_id(wid))
-            else {
+            let Some(space) = reactor.intended_space_for_window_id(wid) else {
                 continue;
             };
             if !Self::should_emit_window_for_space(reactor, space, wid) {
@@ -473,11 +486,7 @@ impl WindowDiscoveryHandler {
             let Some(state) = reactor.window_manager.window(wid) else {
                 continue;
             };
-            let Some(space) = reactor
-                .focus_next_window_target_for(wid)
-                .map(|target| target.space)
-                .or_else(|| reactor.best_space_for_window(&state.frame_monotonic, state.info.sys_id))
-            else {
+            let Some(space) = reactor.intended_space_for_window_state(wid, state) else {
                 continue;
             };
             if !Self::should_emit_window_for_space(reactor, space, wid) {

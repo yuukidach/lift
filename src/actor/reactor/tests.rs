@@ -2987,6 +2987,91 @@ fn move_window_to_workspace_destroys_active_empty_source_when_fallback_exists() 
     );
 }
 
+#[test]
+fn move_focused_window_from_ws1_to_new_workspace_activates_target() {
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
+
+    // Initialize the default ws0 first, then create/switch to ws1. This
+    // mirrors the user's reported source workspace while leaving ws0 as the
+    // previous workspace fallback.
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space);
+    let display_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space)
+        .expect("space has a display uuid")
+        .to_owned();
+    let ws1 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        1,
+        &display_uuid,
+        space,
+        screen.size,
+    );
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space, ws1)
+    );
+
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(50, make_windows(1)));
+    let win = WindowId::new(50, 1);
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space, win));
+
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(ws1),
+        "precondition: focused window starts on ws1",
+    );
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace { workspace: 2, window_id: None },
+    )));
+
+    let target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(2)
+        .expect("ws2 must be created by the move");
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(target.workspace_id),
+        "window must move from ws1 into ws2",
+    );
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .active_workspace(space),
+        Some(target.workspace_id),
+        "moving the only focused window out of active ws1 should make ws2 active, not fall back to empty ws0",
+    );
+}
+
 // Task 3.3 + 3.2: When the source workspace is BOTH empty AND non-active
 // after the move, the Phase 3.2 ephemeral path destroys it through the
 // MoveWindowToWorkspace handler. Verifies the destruction and that the
@@ -3094,6 +3179,384 @@ fn move_window_to_workspace_destroys_empty_inactive_source() {
             .workspace_for_window(win),
         Some(target.workspace_id),
         "window should be in ws 4",
+    );
+}
+
+// Regression: a hotkey can target a newly focused window before discovery has
+// assigned it to a virtual workspace. The pending target must guide first
+// discovery and the immediate stale app refresh that follows a space switch.
+#[test]
+fn pending_current_window_move_survives_discovery_race() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-0".into(), 1);
+    settings.display_default_workspaces.insert("test-display-1".into(), 2);
+
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    let ws1 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .active_workspace(space1)
+        .expect("space1 should have ws1 active");
+    let ws2 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .active_workspace(space2)
+        .expect("space2 should have ws2 active");
+    let space2_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space2)
+        .expect("space2 has a display uuid")
+        .to_owned();
+    let ws3 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        3,
+        &space2_uuid,
+        space2,
+        screen2.size,
+    );
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space2, ws3),
+        "precondition: ws3 should be active on the target display",
+    );
+
+    let mut apps = Apps::new();
+    let first = WindowId::new(60, 1);
+    let moved = WindowId::new(60, 2);
+    reactor.handle_events(apps.make_app_with_opts(
+        60,
+        vec![make_window(1)],
+        Some(first),
+        true,
+        true,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(60));
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(first),
+        Some(ws1),
+    );
+
+    reactor.handle_event(Event::ApplicationMainWindowChanged(
+        60,
+        Some(moved),
+        Quiet::No,
+    ));
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace { workspace: 2, window_id: None },
+    )));
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(moved),
+        None,
+        "precondition: move command raced before the new window entered VWM",
+    );
+
+    let mut target_frame = make_window(2);
+    target_frame.frame.origin = CGPoint::new(screen2.origin.x + 200.0, screen2.origin.y + 200.0);
+    reactor.handle_event(Event::WindowsDiscovered {
+        pid: 60,
+        new: vec![(moved, target_frame)],
+        known_visible: vec![first, moved],
+    });
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(moved),
+        Some(ws2),
+        "first discovery should honor the pending ws2 move target",
+    );
+
+    let mut stale_source_frame = make_window(2);
+    stale_source_frame.frame.origin =
+        CGPoint::new(screen1.origin.x + 200.0, screen1.origin.y + 200.0);
+    reactor.handle_event(Event::WindowsDiscovered {
+        pid: 60,
+        new: vec![(moved, stale_source_frame)],
+        known_visible: vec![first, moved],
+    });
+
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(first),
+        Some(ws1),
+    );
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(moved),
+        Some(ws2),
+        "stale app refresh must not collect the pending-moved window back to ws1",
+    );
+}
+
+// Regression: same-app refresh must not reclaim a manually moved window.
+#[test]
+fn moved_window_stays_on_cross_display_workspace_after_app_refresh() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-0".into(), 1);
+    settings.display_default_workspaces.insert("test-display-1".into(), 2);
+
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    let ws1 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .active_workspace(space1)
+        .expect("space1 should have ws1 active");
+    let ws2 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .active_workspace(space2)
+        .expect("space2 should have ws2 active");
+
+    let mut apps = Apps::new();
+    let first = WindowId::new(50, 1);
+    let moved = WindowId::new(50, 2);
+    reactor.handle_events(apps.make_app_with_opts(
+        50,
+        make_windows(2),
+        Some(moved),
+        true,
+        true,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(50));
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(first),
+        Some(ws1),
+        "precondition: first app window starts on ws1",
+    );
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(moved),
+        Some(ws1),
+        "precondition: second app window starts on ws1",
+    );
+
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space1, first));
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace { workspace: 2, window_id: None },
+    )));
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(moved),
+        Some(ws2),
+        "precondition: move command places the second app window on ws2",
+    );
+
+    if let Some(window) = reactor.window_manager.windows.get_mut(&moved) {
+        window.frame_monotonic.origin =
+            CGPoint::new(screen1.origin.x + 200.0, screen1.origin.y + 200.0);
+    }
+
+    let app_info = reactor.app_manager.apps.get(&moved.pid).unwrap().info.clone();
+    reactor.process_windows_for_app_rules(moved.pid, vec![moved], app_info);
+
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(first),
+        Some(ws1),
+        "the original Chrome window should stay on ws1",
+    );
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(moved),
+        Some(ws2),
+        "app refresh must not collect the moved Chrome window back onto ws1",
+    );
+}
+
+#[test]
+fn dragged_cross_display_window_resists_stale_app_refresh() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-0".into(), 1);
+    settings.display_default_workspaces.insert("test-display-1".into(), 2);
+
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    let ws1 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .active_workspace(space1)
+        .expect("space1 should have ws1 active");
+    let ws2 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .active_workspace(space2)
+        .expect("space2 should have ws2 active");
+
+    let mut apps = Apps::new();
+    let win = WindowId::new(70, 1);
+    reactor.handle_events(apps.make_app_with_opts(
+        70,
+        vec![make_window(1)],
+        Some(win),
+        true,
+        true,
+    ));
+
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(ws1),
+        "precondition: window starts on ws1",
+    );
+
+    let source_frame = reactor.window_manager.windows.get(&win).unwrap().frame_monotonic;
+    let mut target_frame = source_frame;
+    target_frame.origin = CGPoint::new(screen2.origin.x + 200.0, screen2.origin.y + 200.0);
+
+    reactor.handle_event(Event::WindowFrameChanged(
+        win,
+        target_frame,
+        None,
+        Requested(false),
+        Some(MouseState::Down),
+    ));
+    reactor.handle_event(Event::MouseUp);
+
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(ws2),
+        "precondition: mouse-up drag assigns the window to space2's active workspace",
+    );
+
+    let mut stale_source_frame = make_window(1);
+    stale_source_frame.frame = source_frame;
+    reactor.handle_event(Event::WindowsDiscovered {
+        pid: 70,
+        new: vec![(win, stale_source_frame)],
+        known_visible: vec![win],
+    });
+
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(ws2),
+        "stale app refresh must not collect the dragged window back to ws1",
     );
 }
 

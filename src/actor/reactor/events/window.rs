@@ -391,6 +391,9 @@ impl WindowEventHandler {
                                         "Failed to assign window {:?} to workspace {:?}",
                                         wid, active_ws
                                     );
+                                } else {
+                                    let _ = reactor
+                                        .remember_recent_workspace_target_for(wid, space, active_ws);
                                 }
                             }
                             reactor.send_layout_event(LayoutEvent::WindowAdded(space, wid));

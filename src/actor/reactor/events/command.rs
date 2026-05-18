@@ -28,6 +28,22 @@ impl CommandEventHandler {
             .and_then(|ws_id| vwm.workspace_space(ws_id))
     }
 
+    fn resolve_current_window_for_command(
+        reactor: &Reactor,
+        command_space: Option<crate::sys::screen::SpaceId>,
+    ) -> Option<WindowId> {
+        let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+        reactor
+            .main_window()
+            .or_else(|| reactor.window_id_under_cursor())
+            .or_else(|| command_space.and_then(|space| vwm.find_window_by_idx(space, 0)))
+            .or_else(|| {
+                reactor
+                    .iter_active_spaces()
+                    .find_map(|space| vwm.find_window_by_idx(space, 0))
+            })
+    }
+
     pub fn handle_command(reactor: &mut Reactor, cmd: Command) {
         match cmd {
             Command::Layout(cmd) => Self::handle_command_layout(reactor, cmd),
@@ -36,7 +52,7 @@ impl CommandEventHandler {
         }
     }
 
-    pub fn handle_command_layout(reactor: &mut Reactor, cmd: LayoutCommand) {
+    pub fn handle_command_layout(reactor: &mut Reactor, mut cmd: LayoutCommand) {
         info!(?cmd);
         if let LayoutCommand::SwitchToGlobalSlot(slot) = cmd {
             Self::handle_command_switch_to_global_slot(reactor, slot);
@@ -59,6 +75,22 @@ impl CommandEventHandler {
                 | LayoutCommand::SwitchToLastWorkspace
         );
         let command_space = reactor.workspace_command_space();
+        let mut pending_workspace_target = None;
+        if let LayoutCommand::MoveWindowToWorkspace { workspace, window_id: None } = &cmd {
+            if let Some(window_id) =
+                Self::resolve_current_window_for_command(reactor, command_space)
+            {
+                pending_workspace_target = Some((window_id, *workspace));
+                cmd = LayoutCommand::MoveWindowToWorkspace {
+                    workspace: *workspace,
+                    window_id: Some(window_id.idx.get()),
+                };
+            }
+        }
+        if let Some((window_id, workspace)) = pending_workspace_target {
+            reactor.remember_recent_workspace_target_for_slot(window_id, workspace);
+        }
+
         let workspace_space = if requires_workspace_space {
             if let Some(space) = command_space {
                 reactor.store_current_floating_positions(space);
@@ -74,6 +106,10 @@ impl CommandEventHandler {
         } else {
             reactor.workspace_switch_manager.mark_workspace_switch_inactive();
         }
+
+        let track_workspace_targets = matches!(cmd, LayoutCommand::MoveWindowToWorkspace { .. });
+        let workspace_targets_before =
+            track_workspace_targets.then(|| reactor.snapshot_window_workspaces());
 
         let response = match &cmd {
             LayoutCommand::NextWorkspace(_)
@@ -116,6 +152,10 @@ impl CommandEventHandler {
                 )
             }
         };
+
+        if let Some(before) = workspace_targets_before.as_ref() {
+            reactor.remember_recent_workspace_targets_changed_since(before);
+        }
 
         reactor.handle_layout_response(response, workspace_space);
         if requires_workspace_space {
@@ -622,6 +662,7 @@ impl CommandEventHandler {
             window_id,
         );
 
+        reactor.remember_recent_workspace_target(window_id);
         reactor.handle_layout_response(response, None);
 
         let _ = reactor.update_layout_or_warn(false, false);

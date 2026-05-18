@@ -24,6 +24,13 @@ use crate::sys::screen::SpaceId;
 /// Manages window state and lifecycle
 pub type WindowManager = Box<WindowRegistry>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecentWorkspaceTarget {
+    pub space: SpaceId,
+    pub workspace_id: VirtualWorkspaceId,
+    pub expires_at: Instant,
+}
+
 /// Manages application state and rules
 pub struct AppManager {
     pub apps: HashMap<pid_t, AppState>,
@@ -144,6 +151,7 @@ pub struct RefocusManager {
     pub refocus_state: super::RefocusState,
     pub focus_next_window_deadline: Option<Instant>,
     pub focus_next_window_target: Option<FocusNextWindowTarget>,
+    pub recent_workspace_targets: HashMap<WindowId, RecentWorkspaceTarget>,
 }
 
 /// Manages communication channels to other actors

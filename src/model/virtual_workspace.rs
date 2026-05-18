@@ -1278,20 +1278,18 @@ impl VirtualWorkspaceManager {
                 .find(|id| self.workspaces.get(*id).map(|ws| ws.number) == Some(number))
         };
 
-        if let Some(number) = self.last_workspace_per_display.get(display_uuid).copied() {
-            if let Some(id) = by_number(number) {
-                return Some(id);
-            }
-        }
-        if let Some(number) = self.active_workspace_per_display.get(display_uuid).copied() {
-            if let Some(id) = by_number(number) {
-                return Some(id);
-            }
-        }
         candidates
             .iter()
             .copied()
             .find(|id| self.workspaces.get(*id).is_some_and(|ws| !ws.windows.is_empty()))
+            .or_else(|| {
+                let number = self.last_workspace_per_display.get(display_uuid).copied()?;
+                by_number(number)
+            })
+            .or_else(|| {
+                let number = self.active_workspace_per_display.get(display_uuid).copied()?;
+                by_number(number)
+            })
             .or_else(|| candidates.into_iter().next())
     }
 
