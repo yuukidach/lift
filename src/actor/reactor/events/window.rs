@@ -357,7 +357,7 @@ impl WindowEventHandler {
                                 .layout_manager
                                 .layout_engine
                                 .virtual_workspace_manager()
-                                .workspace_for_window(space, wid)
+                                .workspace_for_window(wid)
                                 .is_some()
                     });
                     if keep_assigned_for_scrolling {
@@ -376,11 +376,15 @@ impl WindowEventHandler {
                             if let Some(active_ws) =
                                 reactor.layout_manager.layout_engine.active_workspace(space)
                             {
-                                let assigned = reactor
+                                let (assigned, destroyed) = reactor
                                     .layout_manager
                                     .layout_engine
                                     .virtual_workspace_manager_mut()
                                     .assign_window_to_workspace(space, wid, active_ws);
+                                reactor
+                                    .layout_manager
+                                    .layout_engine
+                                    .drain_destroyed_workspace_layouts(destroyed);
                                 if !assigned {
                                     warn!(
                                         "Failed to assign window {:?} to workspace {:?}",

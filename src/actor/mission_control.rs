@@ -188,7 +188,7 @@ impl MissionControlActor {
             overlay.update(MissionControlMode::AllWorkspaces(Vec::new()));
         }
 
-        let resp = self.reactor.query_workspaces(None);
+        let resp = self.reactor.query_workspaces(None, None);
         let overlay = self.ensure_overlay();
         overlay.update(MissionControlMode::AllWorkspaces(resp));
     }

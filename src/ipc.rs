@@ -258,9 +258,11 @@ impl MachHandler {
                 RiftResponse::Success { data }
             }
 
-            RiftRequest::GetWorkspaces { space_id } => {
-                let workspaces =
-                    self.reactor.query_workspaces(space_id.map(crate::sys::screen::SpaceId::new));
+            RiftRequest::GetWorkspaces { space_id, display_uuid } => {
+                let workspaces = self.reactor.query_workspaces(
+                    space_id.map(crate::sys::screen::SpaceId::new),
+                    display_uuid,
+                );
                 RiftResponse::Success {
                     data: serde_json::to_value(workspaces).unwrap(),
                 }

@@ -7,6 +7,7 @@ use rift_wm::actor::reactor::{self, DisplaySelector};
 use rift_wm::common::config::LayoutMode;
 use rift_wm::ipc::{RiftCommand, RiftMachClient, RiftRequest, RiftResponse};
 use rift_wm::layout_engine as layout;
+use rift_wm::model::virtual_workspace::GLOBAL_WORKSPACE_SLOTS;
 use rift_wm::sys::window_server::WindowServerId;
 use serde_json::Value;
 
@@ -58,10 +59,12 @@ enum ServiceCommands {
 
 #[derive(Subcommand)]
 enum QueryCommands {
-    /// List virtual workspaces (optionally for a specific MacOS space)
+    /// List virtual workspaces (optionally filtered by SpaceId or display UUID)
     Workspaces {
-        #[arg(long)]
+        #[arg(long, conflicts_with = "display_uuid")]
         space_id: Option<u64>,
+        #[arg(long, conflicts_with = "space_id")]
+        display_uuid: Option<String>,
     },
     /// List windows (optionally filtered by space)
     Windows {
@@ -470,7 +473,9 @@ fn build_request(command: Commands) -> Result<RiftRequest, String> {
 
 fn build_query_request(query: QueryCommands) -> Result<RiftRequest, String> {
     match query {
-        QueryCommands::Workspaces { space_id } => Ok(RiftRequest::GetWorkspaces { space_id }),
+        QueryCommands::Workspaces { space_id, display_uuid } => {
+            Ok(RiftRequest::GetWorkspaces { space_id, display_uuid })
+        }
         QueryCommands::Windows { space_id } => Ok(RiftRequest::GetWindows { space_id }),
         QueryCommands::Displays => Ok(RiftRequest::GetDisplays),
         QueryCommands::Window { window_id } => Ok(RiftRequest::GetWindowInfo { window_id }),
@@ -632,9 +637,14 @@ fn map_workspace_command(cmd: WorkspaceCommands) -> Result<RiftCommand, String> 
         WorkspaceCommands::Prev { skip_empty } => Ok(RiftCommand::Reactor(
             reactor::Command::Layout(LC::PrevWorkspace(skip_empty)),
         )),
-        WorkspaceCommands::Switch { workspace_id } => Ok(RiftCommand::Reactor(
-            reactor::Command::Layout(LC::SwitchToWorkspace(workspace_id)),
-        )),
+        WorkspaceCommands::Switch { workspace_id } => {
+            let cmd = if workspace_id < GLOBAL_WORKSPACE_SLOTS {
+                LC::SwitchToGlobalSlot(workspace_id)
+            } else {
+                LC::SwitchToWorkspace(workspace_id)
+            };
+            Ok(RiftCommand::Reactor(reactor::Command::Layout(cmd)))
+        }
         WorkspaceCommands::MoveWindow { workspace_id, window_id } => Ok(RiftCommand::Reactor(
             reactor::Command::Layout(LC::MoveWindowToWorkspace {
                 workspace: workspace_id,

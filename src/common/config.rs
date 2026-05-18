@@ -67,24 +67,24 @@ pub fn config_file() -> PathBuf {
 pub struct VirtualWorkspaceSettings {
     #[serde(default = "yes")]
     pub enabled: bool,
-    #[serde(default = "default_workspace_count")]
-    pub default_workspace_count: usize,
     #[serde(default = "yes")]
     pub auto_assign_windows: bool,
     #[serde(default = "yes")]
     pub preserve_focus_per_workspace: bool,
     #[serde(default = "no")]
     pub workspace_auto_back_and_forth: bool,
-    #[serde(default = "default_workspace_names")]
-    pub workspace_names: Vec<String>,
-    #[serde(default)]
-    pub default_workspace: usize,
     #[serde(default)]
     pub reapply_app_rules_on_title_change: bool,
     #[serde(default)]
     pub app_rules: Vec<AppWorkspaceRule>,
     #[serde(default)]
     pub workspace_rules: Vec<WorkspaceLayoutRule>,
+    /// Per-display default workspace number assigned at lazy init. Example:
+    ///   display_default_workspaces = { "30999A24-..." = 1 }
+    /// Means "when this display's space gets its first workspace, give it
+    /// number 1". Mid-session ws creation is not constrained by this map.
+    #[serde(default)]
+    pub display_default_workspaces: HashMap<String, usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -148,15 +148,13 @@ impl Default for VirtualWorkspaceSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            default_workspace_count: default_workspace_count(),
             auto_assign_windows: true,
             preserve_focus_per_workspace: true,
             workspace_auto_back_and_forth: false,
-            workspace_names: default_workspace_names(),
-            default_workspace: 0,
             reapply_app_rules_on_title_change: false,
             app_rules: Vec::new(),
             workspace_rules: Vec::new(),
+            display_default_workspaces: HashMap::default(),
         }
     }
 }
@@ -165,25 +163,32 @@ impl VirtualWorkspaceSettings {
     pub fn validate(&self) -> Vec<String> {
         let mut issues = Vec::new();
 
-        if self.default_workspace_count == 0 {
-            issues.push("default_workspace_count must be at least 1".to_string());
-        }
-        if self.default_workspace_count > MAX_WORKSPACES {
-            issues.push(format!(
-                "default_workspace_count should not exceed {} for performance reasons",
-                MAX_WORKSPACES
-            ));
-        }
-
-        if self.workspace_names.len() > self.default_workspace_count {
-            issues.push("More workspace names provided than default_workspace_count".to_string());
-        }
-
-        if self.default_workspace >= self.default_workspace_count {
-            issues.push(format!(
-                "default_workspace ({}) must be less than default_workspace_count ({})",
-                self.default_workspace, self.default_workspace_count
-            ));
+        // Reject duplicate display UUIDs and out-of-range workspace numbers.
+        let mut seen_uuids = crate::common::collections::HashSet::default();
+        for (uuid, number) in &self.display_default_workspaces {
+            if uuid.trim().is_empty() {
+                issues.push(format!(
+                    "display_default_workspaces has entry with empty display UUID (-> {})",
+                    number
+                ));
+            } else if !seen_uuids.insert(uuid.clone()) {
+                issues.push(format!(
+                    "display_default_workspaces UUID '{}' has multiple defaults",
+                    uuid
+                ));
+            }
+            if *number == 0 {
+                issues.push(format!(
+                    "display_default_workspaces[{}] = 0 is invalid (workspace numbers start at 1)",
+                    uuid
+                ));
+            }
+            if *number > MAX_WORKSPACES {
+                issues.push(format!(
+                    "display_default_workspaces[{}] = {} exceeds MAX_WORKSPACES ({})",
+                    uuid, number, MAX_WORKSPACES
+                ));
+            }
         }
 
         // Validate rules and check duplicates in a single pass
@@ -211,10 +216,15 @@ impl VirtualWorkspaceSettings {
 
             if let Some(ref workspace) = rule.workspace {
                 if let WorkspaceSelector::Index(idx) = workspace {
-                    if *idx >= self.default_workspace_count {
+                    if *idx == 0 {
                         issues.push(format!(
-                            "App rule {} references workspace {} but only {} workspaces will be created",
-                            index, idx, self.default_workspace_count
+                            "App rule {} references workspace 0 (workspace numbers start at 1)",
+                            index
+                        ));
+                    } else if *idx > MAX_WORKSPACES {
+                        issues.push(format!(
+                            "App rule {} references workspace {} which exceeds MAX_WORKSPACES ({})",
+                            index, idx, MAX_WORKSPACES
                         ));
                     }
                 }
@@ -1133,17 +1143,6 @@ fn default_animation_fps() -> f64 { 100.0 }
 
 #[allow(dead_code)]
 fn no() -> bool { false }
-
-fn default_workspace_count() -> usize { 4 }
-
-fn default_workspace_names() -> Vec<String> {
-    vec![
-        "Main".to_string(),
-        "Development".to_string(),
-        "Communication".to_string(),
-        "Utilities".to_string(),
-    ]
-}
 
 // Interpreted as normalized fraction when <= 1.0. If > 1.0 and <= 100.0,
 // it is treated as a percentage (e.g. 40.0 -> 0.40).

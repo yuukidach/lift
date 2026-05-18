@@ -13,6 +13,7 @@ use crate::common::collections::HashMap;
 use crate::common::config::{self as config, Config};
 use crate::common::log::{MetricsCommand, handle_command};
 use crate::layout_engine::{EventResponse, LayoutCommand, LayoutEvent};
+use crate::sys::app::pid_t;
 use crate::sys::window_server::{self as window_server, WindowServerId};
 
 pub struct CommandEventHandler;
@@ -23,10 +24,8 @@ impl CommandEventHandler {
         window_id: WindowId,
     ) -> Option<crate::sys::screen::SpaceId> {
         let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
-        reactor
-            .space_manager
-            .iter_known_spaces()
-            .find(|space| vwm.workspace_for_window(*space, window_id).is_some())
+        vwm.workspace_for_window(window_id)
+            .and_then(|ws_id| vwm.workspace_space(ws_id))
     }
 
     pub fn handle_command(reactor: &mut Reactor, cmd: Command) {
@@ -39,6 +38,10 @@ impl CommandEventHandler {
 
     pub fn handle_command_layout(reactor: &mut Reactor, cmd: LayoutCommand) {
         info!(?cmd);
+        if let LayoutCommand::SwitchToGlobalSlot(slot) = cmd {
+            Self::handle_command_switch_to_global_slot(reactor, slot);
+            return;
+        }
         let is_workspace_switch = matches!(
             cmd,
             LayoutCommand::NextWorkspace(_)
@@ -118,6 +121,105 @@ impl CommandEventHandler {
         if requires_workspace_space {
             reactor.update_event_tap_layout_mode();
         }
+    }
+
+    /// Switch to whichever workspace owns global slot `slot`. The target may
+    /// live on a different display from the source; switch its owning space
+    /// first, then let the resulting target workspace drive focus.
+    ///
+    /// If no workspace owns slot `slot` yet, one is created on the focused
+    /// display (cursor display / first online as fallbacks) and the layout
+    /// tree is wired up before the switch proceeds.
+    ///
+    /// Fast path: if the target workspace is already active on its space,
+    /// just move focus to that display — skipping the SwitchToWorkspace flow
+    /// avoids the hide/show cycle that briefly empties the visible workspace.
+    fn handle_command_switch_to_global_slot(reactor: &mut Reactor, slot: usize) {
+        let source_uuid =
+            reactor.workspace_command_space().and_then(|space| reactor.display_uuid_for_space(space));
+
+        let target = match reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .resolve_workspace(slot)
+        {
+            Some(t) => t,
+            None => {
+                // Determine the display to create on: focused → cursor → first online.
+                let create_uuid = source_uuid
+                    .clone()
+                    .or_else(|| {
+                        reactor
+                            .space_for_cursor_screen()
+                            .and_then(|sp| reactor.display_uuid_for_space(sp))
+                    })
+                    .or_else(|| {
+                        reactor.space_manager.screens.first().map(|s| s.display_uuid.clone())
+                    });
+                let Some(uuid) = create_uuid else {
+                    warn!(slot, "SwitchToGlobalSlot: no display available to create on");
+                    return;
+                };
+                let space = reactor
+                    .layout_manager
+                    .layout_engine
+                    .virtual_workspace_manager()
+                    .space_for_display(&uuid);
+                let Some(space) = space else {
+                    warn!(slot, %uuid, "SwitchToGlobalSlot: no space mapped to display");
+                    return;
+                };
+                // Layout wiring needs the screen size — pull it from SpaceManager.
+                let size = match reactor.space_manager.screen_by_space(space) {
+                    Some(s) => s.frame.size,
+                    None => {
+                        warn!(
+                            slot,
+                            ?space,
+                            "SwitchToGlobalSlot: no screen for space; cannot wire layout"
+                        );
+                        return;
+                    }
+                };
+                reactor
+                    .layout_manager
+                    .layout_engine
+                    .create_workspace_on_display(slot, &uuid, space, size);
+                // Re-resolve — must succeed now.
+                reactor
+                    .layout_manager
+                    .layout_engine
+                    .virtual_workspace_manager()
+                    .resolve_workspace(slot)
+                    .expect("just created workspace must resolve")
+            }
+        };
+
+        if !reactor.is_space_active(target.space) {
+            warn!(slot, ?target.space, "SwitchToGlobalSlot: target space inactive");
+            return;
+        }
+
+        let already_active = reactor.layout_manager.layout_engine.active_workspace(target.space)
+            == Some(target.workspace_id);
+        if already_active {
+            if let Some(screen) = reactor.space_manager.screen_by_space(target.space).cloned() {
+                if !Self::focus_first_window_on_screen(reactor, &screen) {
+                    reactor.warp_mouse_to_space_center(target.space);
+                }
+            }
+            return;
+        }
+
+        reactor.store_current_floating_positions(target.space);
+        reactor.workspace_switch_manager.start_workspace_switch(WorkspaceSwitchOrigin::Manual);
+        let response = reactor.layout_manager.layout_engine.handle_virtual_workspace_command(
+            target.space,
+            &LayoutCommand::SwitchToWorkspace(target.per_space_index),
+        );
+        reactor.handle_layout_response(response, Some(target.space));
+        reactor.update_event_tap_layout_mode();
     }
 
     pub fn handle_command_metrics(_reactor: &mut Reactor, cmd: MetricsCommand) {
@@ -306,6 +408,28 @@ impl CommandEventHandler {
             });
             if let Some(window_id) = focus_target {
                 reactor.send_layout_event(LayoutEvent::WindowFocused(space, window_id));
+
+                // Update layout state, then issue an OS-level raise — without
+                // it, system focus stays on the previously-focused display
+                // (so mouse_follows_focus and keyboard input target the wrong
+                // screen). Mirrors handle_command_reactor_focus_window.
+                let mut app_handles: HashMap<pid_t, AppThreadHandle> = HashMap::default();
+                reactor.insert_app_handle_for_window(&mut app_handles, window_id);
+                let warp = reactor
+                    .config
+                    .settings
+                    .mouse_follows_focus
+                    .then(|| reactor.window_center_on_known_screen(window_id))
+                    .flatten();
+                let request = raise_manager::Event::RaiseRequest(raise_manager::RaiseRequest {
+                    raise_windows: Vec::new(),
+                    focus_window: Some((window_id, warp)),
+                    app_handles,
+                    focus_quiet: Quiet::No,
+                });
+                if let Err(e) = reactor.communication_manager.raise_manager_tx.try_send(request) {
+                    warn!("Failed to send raise request from focus_first_window_on_screen: {}", e);
+                }
                 return true;
             }
         }

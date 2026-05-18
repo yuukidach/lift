@@ -18,7 +18,9 @@ pub struct ReactorQueryHandle {
 }
 
 impl ReactorQueryHandle {
-    pub(super) fn new(tx: Sender) -> Self { Self { tx } }
+    pub(super) fn new(tx: Sender) -> Self {
+        Self { tx }
+    }
 
     fn send_query<T>(
         &self,
@@ -31,8 +33,12 @@ impl ReactorQueryHandle {
         rx.recv().map_err(|_| RecvError)
     }
 
-    pub fn query_workspaces(&self, space_id: Option<SpaceId>) -> Vec<WorkspaceData> {
-        self.send_query(|resp| QueryRequest::Workspaces { space_id, resp })
+    pub fn query_workspaces(
+        &self,
+        space_id: Option<SpaceId>,
+        display_uuid: Option<String>,
+    ) -> Vec<WorkspaceData> {
+        self.send_query(|resp| QueryRequest::Workspaces { space_id, display_uuid, resp })
             .unwrap_or_default()
     }
 
@@ -85,6 +91,7 @@ impl ReactorQueryHandle {
 pub enum QueryRequest {
     Workspaces {
         space_id: Option<SpaceId>,
+        display_uuid: Option<String>,
         resp: SyncSender<Vec<WorkspaceData>>,
     },
     Windows {
@@ -116,8 +123,8 @@ pub enum QueryRequest {
 impl Reactor {
     pub(super) fn handle_query_request(&mut self, req: QueryRequest) {
         match req {
-            QueryRequest::Workspaces { space_id, resp } => {
-                let _ = resp.send(self.query_workspaces(space_id));
+            QueryRequest::Workspaces { space_id, display_uuid, resp } => {
+                let _ = resp.send(self.query_workspaces(space_id, display_uuid));
             }
             QueryRequest::Windows { space_id, resp } => {
                 let _ = resp.send(self.query_windows(space_id));
@@ -152,8 +159,12 @@ impl Reactor {
             .or_else(|| self.space_manager.screens.first().and_then(|s| s.space))
     }
 
-    pub fn query_workspaces(&mut self, space_id: Option<SpaceId>) -> Vec<WorkspaceData> {
-        self.handle_workspace_query(space_id)
+    pub fn query_workspaces(
+        &mut self,
+        space_id: Option<SpaceId>,
+        display_uuid: Option<String>,
+    ) -> Vec<WorkspaceData> {
+        self.handle_workspace_query(space_id, display_uuid)
     }
 
     pub fn query_windows(&self, space_id: Option<SpaceId>) -> Vec<WindowData> {
@@ -164,7 +175,9 @@ impl Reactor {
         self.handle_active_workspace_query(space_id)
     }
 
-    pub fn query_displays(&self) -> Vec<DisplayData> { self.handle_displays_query() }
+    pub fn query_displays(&self) -> Vec<DisplayData> {
+        self.handle_displays_query()
+    }
 
     pub fn query_workspace_layouts(
         &mut self,
@@ -178,13 +191,17 @@ impl Reactor {
         self.handle_window_info_query(window_id)
     }
 
-    pub fn query_applications(&self) -> Vec<ApplicationData> { self.handle_applications_query() }
+    pub fn query_applications(&self) -> Vec<ApplicationData> {
+        self.handle_applications_query()
+    }
 
     pub fn query_layout_state(&self, space_id: u64) -> Option<LayoutStateData> {
         self.handle_layout_state_query(space_id)
     }
 
-    pub fn query_metrics(&self) -> serde_json::Value { self.handle_metrics_query() }
+    pub fn query_metrics(&self) -> serde_json::Value {
+        self.handle_metrics_query()
+    }
 
     pub(super) fn maybe_send_menu_update(&mut self) {
         let menu_tx = match self.menu_manager.menu_tx.as_ref() {
@@ -197,7 +214,7 @@ impl Reactor {
             None => return,
         };
 
-        let workspaces = self.handle_workspace_query(Some(active_space));
+        let workspaces = self.handle_workspace_query(Some(active_space), None);
         let active_space_is_activated = self.is_space_active(active_space);
         let active_workspace = self.layout_manager.layout_engine.active_workspace(active_space);
         let active_workspace_idx =
@@ -214,10 +231,22 @@ impl Reactor {
         }));
     }
 
-    fn handle_workspace_query(&mut self, space_id_param: Option<SpaceId>) -> Vec<WorkspaceData> {
+    fn handle_workspace_query(
+        &mut self,
+        space_id_param: Option<SpaceId>,
+        display_uuid: Option<String>,
+    ) -> Vec<WorkspaceData> {
         let mut workspaces = Vec::new();
 
-        let space_id = space_id_param.or_else(|| self.default_query_space());
+        let space_id = match (space_id_param, display_uuid) {
+            (Some(id), _) => Some(id),
+            (None, Some(uuid)) => self
+                .layout_manager
+                .layout_engine
+                .virtual_workspace_manager()
+                .space_for_display(&uuid),
+            (None, None) => self.default_query_space(),
+        };
         let workspace_list: Vec<(crate::model::VirtualWorkspaceId, String)> =
             if let Some(space) = space_id {
                 self.layout_manager
@@ -299,24 +328,25 @@ impl Reactor {
                 }
             }
 
-            let layout_mode = space_id
+            let (number, layout_mode) = space_id
                 .and_then(|space| {
                     self.layout_manager
                         .layout_engine
                         .virtual_workspace_manager()
                         .workspace_info(space, *workspace_id)
-                        .map(|ws| ws.layout_mode().to_string())
+                        .map(|ws| (ws.number, ws.layout_mode().to_string()))
                 })
-                .unwrap_or_else(|| "unknown".to_string());
+                .unwrap_or_else(|| (index, "unknown".to_string()));
 
             workspaces.push(WorkspaceData {
                 id: format!("{:?}", workspace_id),
+                index,
+                number,
                 name: workspace_name.to_string(),
                 layout_mode,
                 is_active,
                 window_count: windows.len(),
                 windows,
-                index,
             });
         }
 

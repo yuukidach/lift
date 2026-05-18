@@ -7,6 +7,7 @@ use serde_json::Value;
 pub enum RiftRequest {
     GetWorkspaces {
         space_id: Option<u64>,
+        display_uuid: Option<String>,
     },
     GetDisplays,
     GetWindows {

@@ -172,13 +172,13 @@ impl ConfigActor {
                 }
             }
             ConfigCommand::SetWorkspaceNames(names) => {
-                if names.len() <= 32 {
-                    new_config.virtual_workspaces.workspace_names = names.clone();
-                    config_changed = true;
-                    info!("Updated workspace names to: {:?}", names);
-                } else {
-                    errors.push("Too many workspace names provided. Maximum is 32".to_string());
-                }
+                // Workspace names are now per-workspace (via the workspace
+                // itself) rather than a config-level list. Renaming via this
+                // command is no longer supported under the new model.
+                let _ = names;
+                errors.push(
+                    "SetWorkspaceNames is deprecated; rename workspaces individually".to_string(),
+                );
             }
 
             ConfigCommand::Set { key, value } => match serde_json::to_value(&new_config) {

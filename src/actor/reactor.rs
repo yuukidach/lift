@@ -82,11 +82,17 @@ pub struct ReactorHandle {
 }
 
 impl ReactorHandle {
-    pub fn new(sender: Sender, queries: ReactorQueryHandle) -> Self { Self { sender, queries } }
+    pub fn new(sender: Sender, queries: ReactorQueryHandle) -> Self {
+        Self { sender, queries }
+    }
 
-    pub fn sender(&self) -> Sender { self.sender.clone() }
+    pub fn sender(&self) -> Sender {
+        self.sender.clone()
+    }
 
-    pub fn send(&self, event: Event) { self.sender.send(event) }
+    pub fn send(&self, event: Event) {
+        self.sender.send(event)
+    }
 
     pub fn try_send(
         &self,
@@ -99,7 +105,9 @@ impl ReactorHandle {
 impl std::ops::Deref for ReactorHandle {
     type Target = ReactorQueryHandle;
 
-    fn deref(&self) -> &Self::Target { &self.queries }
+    fn deref(&self) -> &Self::Target {
+        &self.queries
+    }
 }
 
 use display_topology::{DisplaySnapshot, DisplayTopologyManager, WindowSnapshot};
@@ -390,7 +398,9 @@ impl Reactor {
         }
     }
 
-    fn is_space_active(&self, space: SpaceId) -> bool { self.active_spaces.contains(&space) }
+    fn is_space_active(&self, space: SpaceId) -> bool {
+        self.active_spaces.contains(&space)
+    }
 
     fn iter_active_spaces(&self) -> impl Iterator<Item = SpaceId> + '_ {
         self.active_spaces.iter().copied()
@@ -412,7 +422,9 @@ impl Reactor {
         }
     }
 
-    fn screens_for_current_spaces(&self) -> Vec<ScreenInfo> { self.space_manager.screens.clone() }
+    fn screens_for_current_spaces(&self) -> Vec<ScreenInfo> {
+        self.space_manager.screens.clone()
+    }
 
     fn screens_for_spaces(&self, spaces: &[Option<SpaceId>]) -> Vec<ScreenInfo> {
         self.space_manager
@@ -1743,11 +1755,12 @@ impl Reactor {
             }
             if let Some(space) = final_space {
                 if let Some(active_ws) = self.layout_manager.layout_engine.active_workspace(space) {
-                    let assigned = self
+                    let (assigned, destroyed) = self
                         .layout_manager
                         .layout_engine
                         .virtual_workspace_manager_mut()
                         .assign_window_to_workspace(space, wid, active_ws);
+                    self.layout_manager.layout_engine.drain_destroyed_workspace_layouts(destroyed);
                     if !assigned {
                         warn!("Failed to assign window {:?} to workspace {:?}", wid, active_ws);
                     }
@@ -1769,7 +1782,7 @@ impl Reactor {
                     .layout_manager
                     .layout_engine
                     .virtual_workspace_manager()
-                    .workspace_for_window(space, wid)
+                    .workspace_for_window(wid)
                     .or_else(|| self.layout_manager.layout_engine.active_workspace(space))
                 {
                     // Drop any floating position stored under the source workspace before
@@ -2015,13 +2028,10 @@ impl Reactor {
             let mut windows_needing_layout_refresh: Vec<WindowId> = Vec::new();
 
             for wid in &wids {
-                let (was_assigned, was_floating, was_ignored) = {
+                let (previous_workspace, was_floating, was_ignored) = {
                     let engine = &self.layout_manager.layout_engine;
                     (
-                        engine
-                            .virtual_workspace_manager()
-                            .workspace_for_window(space, *wid)
-                            .is_some(),
+                        engine.virtual_workspace_manager().workspace_for_window(*wid),
                         engine.is_window_floating(*wid),
                         self.window_manager
                             .window(*wid)
@@ -2029,47 +2039,50 @@ impl Reactor {
                             .unwrap_or(false),
                     )
                 };
+                let was_assigned = previous_workspace.is_some();
                 let assign_result = {
                     let window = self.window_manager.window(*wid);
-                    self.layout_manager
-                        .layout_engine
-                        .virtual_workspace_manager_mut()
-                        .assign_window_with_app_info(
-                            *wid,
-                            space,
-                            app_info.bundle_id.as_deref(),
-                            app_info.localized_name.as_deref(),
-                            window.map(|w| w.info.title.as_str()),
-                            window.and_then(|w| w.info.ax_role.as_deref()),
-                            window.and_then(|w| w.info.ax_subrole.as_deref()),
-                        )
+                    self.layout_manager.layout_engine.assign_window_with_app_info(
+                        *wid,
+                        space,
+                        app_info.bundle_id.as_deref(),
+                        app_info.localized_name.as_deref(),
+                        window.map(|w| w.info.title.as_str()),
+                        window.and_then(|w| w.info.ax_role.as_deref()),
+                        window.and_then(|w| w.info.ax_subrole.as_deref()),
+                    )
                 };
 
                 match assign_result {
-                    Ok(AppRuleResult::Managed(assignment)) => {
+                    Ok((AppRuleResult::Managed(assignment), destroyed)) => {
+                        // Drop layout-engine mirrors for any workspaces VWM
+                        // destroyed during the assign.
+                        self.layout_manager
+                            .layout_engine
+                            .drain_destroyed_workspace_layouts(destroyed);
                         if let Some(window) = self.window_manager.window_mut(*wid) {
                             window.ignore_app_rule = false;
                         }
 
                         let effective_floating =
                             assignment.floating || (!assignment.prev_rule_decision && was_floating);
-                        let needs_layout_refresh =
-                            !was_assigned || was_floating != effective_floating || was_ignored;
+                        let moved_workspace = previous_workspace != Some(assignment.workspace_id);
+                        let needs_layout_refresh = !was_assigned
+                            || moved_workspace
+                            || was_floating != effective_floating
+                            || was_ignored;
                         if needs_layout_refresh {
                             windows_needing_layout_refresh.push(*wid);
                         }
                     }
-                    Ok(AppRuleResult::Unmanaged) => {
+                    Ok((AppRuleResult::Unmanaged, _)) => {
                         if let Some(window) = self.window_manager.window_mut(*wid) {
                             window.ignore_app_rule = true;
                         }
 
                         let needs_removal = {
                             let engine = &self.layout_manager.layout_engine;
-                            engine
-                                .virtual_workspace_manager()
-                                .workspace_for_window(space, *wid)
-                                .is_some()
+                            engine.virtual_workspace_manager().workspace_for_window(*wid).is_some()
                                 || engine.is_window_floating(*wid)
                         };
                         if needs_removal {
@@ -2196,7 +2209,7 @@ impl Reactor {
                 self.layout_manager
                     .layout_engine
                     .virtual_workspace_manager()
-                    .workspace_for_window(space, wid)
+                    .workspace_for_window(*wid)
                     .is_some_and(|window_workspace| window_workspace == active_workspace)
             });
 
@@ -2256,9 +2269,7 @@ impl Reactor {
         window_space: SpaceId,
     ) {
         let workspace_manager = self.layout_manager.layout_engine.virtual_workspace_manager();
-        let Some(window_workspace) =
-            workspace_manager.workspace_for_window(window_space, app_window_id)
-        else {
+        let Some(window_workspace) = workspace_manager.workspace_for_window(app_window_id) else {
             return;
         };
 
@@ -2373,7 +2384,19 @@ impl Reactor {
                 WorkspaceSwitchState::Active
             ) && !self.is_in_drag()
             {
-                if let Some(wid) = self.window_id_under_cursor() {
+                // During an explicit workspace switch, do not let a cursor
+                // window from another display steal the switch's focus target.
+                let cursor_window = self.window_id_under_cursor().filter(|wid| {
+                    workspace_switch_space.is_none_or(|space| {
+                        self.best_space_for_window_id(*wid) == Some(space)
+                            && self
+                                .layout_manager
+                                .layout_engine
+                                .is_window_in_active_workspace(space, *wid)
+                    })
+                });
+
+                if let Some(wid) = cursor_window {
                     // Avoid duplicate focus events for the already focused window.
                     if self.main_window() != Some(wid) {
                         focus_window = Some(wid);
@@ -2393,7 +2416,19 @@ impl Reactor {
                     } else {
                         workspace_switch_space.or_else(|| self.workspace_command_space())
                     };
-                    self.try_focus_or_warp_without_raise(warp_space, &mut focus_window)
+                    if let Some(space) = workspace_switch_space {
+                        if self.space_for_cursor_screen() == Some(space)
+                            && self.focus_untracked_window_under_cursor()
+                        {
+                            true
+                        } else {
+                            self.config.settings.mouse_follows_focus
+                                && warp_space
+                                    .is_some_and(|space| self.warp_mouse_to_space_center(space))
+                        }
+                    } else {
+                        self.try_focus_or_warp_without_raise(warp_space, &mut focus_window)
+                    }
                 }
             } else if let Some(space) = pending_refocus_space.take() {
                 if let Some(wid) = self.last_focused_window_in_space(space) {
@@ -2718,7 +2753,7 @@ impl Reactor {
         self.layout_manager
             .layout_engine
             .virtual_workspace_manager()
-            .workspace_for_window(space, window_id)
+            .workspace_for_window(window_id)
             .is_some_and(|window_workspace| window_workspace != active_workspace)
     }
 
@@ -2856,7 +2891,9 @@ impl Reactor {
         self.maybe_send_menu_update();
     }
 
-    fn force_refresh_all_windows(&mut self) { self.request_visible_windows_for_apps(true); }
+    fn force_refresh_all_windows(&mut self) {
+        self.request_visible_windows_for_apps(true);
+    }
 
     fn request_close_window(&mut self, wid: WindowId) {
         if let Some(app) = self.app_manager.apps.get(&wid.pid) {
@@ -2866,7 +2903,9 @@ impl Reactor {
         }
     }
 
-    fn main_window(&self) -> Option<WindowId> { self.main_window_tracker.main_window() }
+    fn main_window(&self) -> Option<WindowId> {
+        self.main_window_tracker.main_window()
+    }
 
     fn main_window_space(&self) -> Option<SpaceId> {
         // TODO: Optimize this with a cache or something.

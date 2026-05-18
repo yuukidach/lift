@@ -75,13 +75,23 @@ impl WindowDiscoveryHandler {
 
     fn should_emit_window_for_space(reactor: &Reactor, space: SpaceId, wid: WindowId) -> bool {
         let engine = &reactor.layout_manager.layout_engine;
-        let assigned_workspace =
-            engine.virtual_workspace_manager().workspace_for_window(space, wid);
-        let active_workspace = engine.active_workspace(space);
-
-        match (assigned_workspace, active_workspace) {
-            (Some(assigned), Some(active)) => assigned == active,
-            _ => true,
+        let vwm = engine.virtual_workspace_manager();
+        let Some(assigned_workspace) = vwm.workspace_for_window(wid) else {
+            // No workspace assigned yet — emit on any space (lazy assignment).
+            return true;
+        };
+        // If the window's workspace lives on a different space, this is a
+        // cross-space move and we should re-emit it on the new space so the
+        // assignment pre-pass can migrate it. (Pre-Task-4.3 this matched the
+        // implicit (None, _) arm of the old per-space-keyed lookup.)
+        if vwm.workspace_space(assigned_workspace) != Some(space) {
+            return true;
+        }
+        // The window's workspace is on this space — only emit if it's the
+        // active workspace.
+        match engine.active_workspace(space) {
+            Some(active) => assigned_workspace == active,
+            None => true,
         }
     }
 
@@ -361,10 +371,9 @@ impl WindowDiscoveryHandler {
         let ax_role = window.info.ax_role.clone();
         let ax_subrole = window.info.ax_subrole.clone();
 
-        reactor
+        let result = reactor
             .layout_manager
             .layout_engine
-            .virtual_workspace_manager_mut()
             .assign_window_with_app_info(
                 wid,
                 space,
@@ -373,13 +382,25 @@ impl WindowDiscoveryHandler {
                 Some(title.as_str()),
                 ax_role.as_deref(),
                 ax_subrole.as_deref(),
-            )
+            );
+
+        // Drop layout-engine mirrors for any workspaces VWM destroyed
+        // during the assign.
+        match result {
+            Ok((rule_result, destroyed)) => {
+                reactor
+                    .layout_manager
+                    .layout_engine
+                    .drain_destroyed_workspace_layouts(destroyed);
+                Ok(rule_result)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn apply_assignment_result(
         reactor: &mut Reactor,
         wid: WindowId,
-        space: SpaceId,
         assign_result: Result<AppRuleResult, WorkspaceError>,
     ) {
         match assign_result {
@@ -394,7 +415,7 @@ impl WindowDiscoveryHandler {
                 }
                 let needs_removal = {
                     let engine = &reactor.layout_manager.layout_engine;
-                    engine.virtual_workspace_manager().workspace_for_window(space, wid).is_some()
+                    engine.virtual_workspace_manager().workspace_for_window(wid).is_some()
                         || engine.is_window_floating(wid)
                 };
                 if needs_removal {
@@ -492,7 +513,7 @@ impl WindowDiscoveryHandler {
                         assignment_results.remove(&(space, wid)).unwrap_or_else(|| {
                             Self::assign_discovered_window_to_space(reactor, wid, space, app_info)
                         });
-                    Self::apply_assignment_result(reactor, wid, space, assign_result);
+                    Self::apply_assignment_result(reactor, wid, assign_result);
                 }
             }
 

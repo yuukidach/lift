@@ -220,6 +220,43 @@ impl SpaceEventHandler {
             && (reactor.space_manager.has_seen_display_set || !previous_displays.is_empty());
 
         if displays_changed {
+            // Phase 3.4: BEFORE pruning the dead display's space mappings,
+            // migrate its workspaces' windows to a remaining display and
+            // destroy the now-orphaned workspaces. Pruning clears
+            // `display_uuid_for_space` for the dead spaces; once that
+            // happens, `migrate_workspaces_off_display` can no longer
+            // find which workspaces belong to the dead display, so the
+            // ordering matters.
+            //
+            // Receiver = the first display in the new screen vector that
+            // still has a SpaceId. The plan calls for "focused remaining
+            // display"; in practice the first-with-space choice is good
+            // enough for the common laptop+external case (one external
+            // dies → laptop is the only candidate). Refine when the
+            // multi-remaining case starts to matter.
+            let dead_uuids: Vec<String> =
+                previous_displays.difference(&new_displays).cloned().collect();
+            let receiver_uuid: Option<String> = screens
+                .iter()
+                .find(|s| s.space.is_some())
+                .map(|s| s.display_uuid.clone());
+            if let Some(receiver_uuid) = receiver_uuid {
+                for dead_uuid in &dead_uuids {
+                    if dead_uuid == &receiver_uuid {
+                        continue;
+                    }
+                    let destroyed = reactor
+                        .layout_manager
+                        .layout_engine
+                        .virtual_workspace_manager_mut()
+                        .migrate_workspaces_off_display(dead_uuid, &receiver_uuid);
+                    reactor
+                        .layout_manager
+                        .layout_engine
+                        .drain_destroyed_workspace_layouts(destroyed);
+                }
+            }
+
             let active_list: Vec<String> = new_displays.iter().cloned().collect();
             reactor.layout_manager.layout_engine.prune_display_state(&active_list);
         }
@@ -277,8 +314,6 @@ impl SpaceEventHandler {
             let screens = reactor.screens_for_current_spaces();
             reactor.space_activation_policy.on_spaces_updated(cfg, &screens);
 
-            reactor.recompute_and_set_active_spaces(&spaces);
-
             // Only remap layout state during detected topology transitions once we have
             // a complete, non-duplicated snapshot to avoid oscillation during churn.
             let has_duplicate_spaces = {
@@ -289,6 +324,12 @@ impl SpaceEventHandler {
                 && !has_duplicate_spaces
                 && spaces.iter().all(|space| space.is_some());
             reactor.reconcile_spaces_with_display_history(&spaces, allow_space_remap);
+
+            // Display UUIDs must be registered before recompute exposes newly
+            // activated spaces. Otherwise VWM lazy-init uses a synthetic
+            // per-space UUID and misses display_default_workspaces pins after
+            // a display reconnect that reports a fresh SpaceId.
+            reactor.recompute_and_set_active_spaces(&spaces);
             if !resized_screens.is_empty() {
                 let resized_info: Vec<(SpaceId, CGSize)> = reactor
                     .space_manager

@@ -17,6 +17,7 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::actor::gesture_tap;
 use crate::common::config::WorkspaceSelector;
+use crate::model::virtual_workspace::GLOBAL_WORKSPACE_SLOTS;
 use crate::sys::app::{NSRunningApplicationExt, pid_t};
 
 pub type Sender = actor::Sender<WmEvent>;
@@ -326,19 +327,27 @@ impl WmController {
             Command(Wm(SwitchToWorkspace(ws_sel))) => {
                 let maybe_index: Option<usize> = match &ws_sel {
                     WorkspaceSelector::Index(i) => Some(*i),
-                    WorkspaceSelector::Name(name) => self
-                        .config
-                        .config
-                        .virtual_workspaces
-                        .workspace_names
-                        .iter()
-                        .position(|n| n == name),
+                    WorkspaceSelector::Name(_) => {
+                        // Phase 4: workspace names live on individual workspaces
+                        // now, not on a config-level list. Name-based lookup
+                        // requires asking the layout engine; deferred to Phase 5.
+                        None
+                    }
                 };
 
                 if let Some(workspace_index) = maybe_index {
-                    self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(
-                        layout::LayoutCommand::SwitchToWorkspace(workspace_index),
-                    )));
+                    // Hotkeys carry a global slot index — the digit row is
+                    // shared across all displays. Route through
+                    // SwitchToGlobalSlot so the focus jumps to whichever
+                    // display owns the slot, falling back to per-space switch
+                    // semantics if the slot has not been allocated yet.
+                    let cmd = if workspace_index < GLOBAL_WORKSPACE_SLOTS {
+                        layout::LayoutCommand::SwitchToGlobalSlot(workspace_index)
+                    } else {
+                        layout::LayoutCommand::SwitchToWorkspace(workspace_index)
+                    };
+                    self.events_tx
+                        .send(reactor::Event::Command(reactor::Command::Layout(cmd)));
                 } else {
                     tracing::warn!(
                         "Hotkey requested switch to workspace {:?} but it could not be resolved; ignoring",
@@ -349,13 +358,10 @@ impl WmController {
             Command(Wm(MoveWindowToWorkspace(ws_sel))) => {
                 let maybe_index: Option<usize> = match &ws_sel {
                     WorkspaceSelector::Index(i) => Some(*i),
-                    WorkspaceSelector::Name(name) => self
-                        .config
-                        .config
-                        .virtual_workspaces
-                        .workspace_names
-                        .iter()
-                        .position(|n| n == name),
+                    WorkspaceSelector::Name(_) => {
+                        // Phase 4: see SwitchToWorkspace above.
+                        None
+                    }
                 };
 
                 if let Some(workspace_index) = maybe_index {

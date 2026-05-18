@@ -367,6 +367,33 @@ fn workspace_switch_batches_all_windows_with_eui_enabled() {
     apps.simulate_until_quiet(&mut reactor);
     let _ = apps.requests();
 
+    // Phase 3 lazy init only seeds slot 0 per display. The
+    // `MoveWindowToWorkspace { workspace: 1 }` / `SwitchToWorkspace(1)`
+    // commands resolve `workspace` as a per-space *index* into
+    // `list_workspaces`, so we have to materialise a second workspace on this
+    // space before the index reaches it. Phase 4 will replace these
+    // index-based commands with global slot numbers; until then the test
+    // pre-allocates the slot it intends to exercise. We also re-fire
+    // SpaceExposed so the engine wires up `workspace_layouts` for the new
+    // workspace; otherwise MoveWindowToWorkspace would silently skip the
+    // tree-insert because no layout exists for the target.
+    let space_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space)
+        .expect("space has a display uuid after screen-params handling")
+        .to_owned();
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .create_workspace_with_number(1, &space_uuid, space);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .handle_event(LayoutEvent::SpaceExposed(space, screen.size));
+
     reactor.handle_event(Event::Command(Command::Layout(
         LayoutCommand::MoveWindowToWorkspace {
             workspace: 1,
@@ -462,6 +489,28 @@ fn windows_discovered_does_not_reintroduce_inactive_workspace_window() {
     reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
     reactor.handle_events(apps.make_app(1, make_windows(2)));
     apps.simulate_until_quiet(&mut reactor);
+
+    // See `workspace_switch_batches_all_windows_with_eui_enabled` for why we
+    // pre-create slot 1 and re-fire SpaceExposed: in Phase 3 lazy init only
+    // seeds slot 0 per display, the index-based MoveWindowToWorkspace command
+    // would otherwise resolve to nothing, and the engine needs SpaceExposed
+    // to wire up the new workspace's layout tree.
+    let space_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space)
+        .expect("space has a display uuid after screen-params handling")
+        .to_owned();
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .create_workspace_with_number(1, &space_uuid, space);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .handle_event(LayoutEvent::SpaceExposed(space, screen.size));
 
     reactor.handle_event(Event::Command(Command::Layout(
         LayoutCommand::MoveWindowToWorkspace {
@@ -1464,11 +1513,17 @@ fn empty_update_removes_window_when_vwm_was_preupdated() {
         .virtual_workspace_manager()
         .active_workspace(space2)
         .expect("space2 must have an active workspace");
-    reactor
+    let (_assigned, destroyed) = reactor
         .layout_manager
         .layout_engine
         .virtual_workspace_manager_mut()
         .assign_window_to_workspace(space2, wid, space2_workspace);
+    // wid is the lone window on space1's active workspace, which the
+    // ephemeral guard refuses to destroy (active_anywhere check).
+    debug_assert!(
+        destroyed.is_empty(),
+        "active source workspace should never be destroyed"
+    );
 
     // Source space1's empty event fires first.  Because the VWM was pre-updated the
     // loop no longer re-adds wid to `desired`, so removal proceeds.
@@ -1529,11 +1584,18 @@ fn empty_update_only_removes_same_app_windows_moved_to_another_space() {
         .virtual_workspace_manager()
         .active_workspace(space2)
         .expect("space2 must have an active workspace");
-    reactor
+    let (_assigned, destroyed) = reactor
         .layout_manager
         .layout_engine
         .virtual_workspace_manager_mut()
         .assign_window_to_workspace(space2, moved, space2_workspace);
+    // `retained` keeps space1's active workspace populated, so even
+    // setting `active_anywhere` aside there is no empty workspace for
+    // the ephemeral guard to destroy.
+    debug_assert!(
+        destroyed.is_empty(),
+        "source workspace still holds `retained`; no destruction expected"
+    );
 
     let _ = reactor
         .layout_manager
@@ -1631,10 +1693,13 @@ fn discovery_after_display_change_places_window_on_correct_display() {
     // expected behaviour.
     reactor.handle_event(Event::WindowsDiscovered {
         pid: 1,
-        new: vec![(WindowId::new(1, 1), WindowInfo {
-            frame: CGRect::new(CGPoint::new(1100., 100.), CGSize::new(50., 50.)),
-            ..make_window(1)
-        })],
+        new: vec![(
+            WindowId::new(1, 1),
+            WindowInfo {
+                frame: CGRect::new(CGPoint::new(1100., 100.), CGSize::new(50., 50.)),
+                ..make_window(1)
+            },
+        )],
         known_visible: vec![WindowId::new(1, 1)],
     });
     apps.simulate_until_quiet(&mut reactor);
@@ -1675,10 +1740,13 @@ fn discovery_minimize_transition_removes_window_from_layout() {
 
     reactor.handle_event(Event::WindowsDiscovered {
         pid: 1,
-        new: vec![(wid, WindowInfo {
-            is_minimized: true,
-            ..make_window(1)
-        })],
+        new: vec![(
+            wid,
+            WindowInfo {
+                is_minimized: true,
+                ..make_window(1)
+            },
+        )],
         known_visible: vec![],
     });
 
@@ -1692,6 +1760,92 @@ fn discovery_minimize_transition_removes_window_from_layout() {
             .window(wid)
             .is_some_and(|window| window.info.is_minimized),
         "reactor state must keep the window marked minimized"
+    );
+}
+
+#[test]
+fn switch_to_global_slot_routes_to_owning_display() {
+    // Slots are populated lazily on first switch (creation-location semantics).
+    // SwitchToGlobalSlot(N) must change the active workspace on whatever
+    // display owns slot N, regardless of where the cursor is. The other space
+    // stays put.
+    let TwoSpaceFixture {
+        mut reactor,
+        screen1: _,
+        screen2: _,
+        space1,
+        space2,
+    } = two_space_fixture();
+
+    // Lazy init runs during screen-params handling. Order is determined by
+    // the screen iteration in `expose_all_spaces`, which runs before the
+    // display-UUID mirror is fully populated; the practical outcome is that
+    // space2 gets workspace number 0 and space1 gets number 1. The exact
+    // numbers don't matter for what we're testing — we just need to know
+    // which space owns slot N before pressing Cmd+N.
+    let (owning_space, owning_slot) = {
+        let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+        let target = vwm.resolve_workspace(0).expect("slot 0 should resolve after lazy init");
+        (target.space, 0usize)
+    };
+    let other_space = if owning_space == space1 {
+        space2
+    } else {
+        space1
+    };
+    let owning_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(owning_space)
+        .expect("owning space has a display uuid")
+        .to_owned();
+
+    // Move the owning space off the slot so SwitchToGlobalSlot has somewhere
+    // observable to switch back to. Pre-Phase-3 this happened automatically
+    // because lazy init produced four workspaces per space.
+    let parking_ws = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .create_workspace_with_number(7, &owning_uuid, owning_space);
+    reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .set_active_workspace(owning_space, parking_ws);
+
+    let slot_target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(owning_slot)
+        .expect("slot should still resolve to its owning space");
+    let slot_ws = slot_target.workspace_id;
+    assert_eq!(slot_target.space, owning_space);
+
+    let initial_owning = reactor.layout_manager.layout_engine.active_workspace(owning_space);
+    let initial_other = reactor.layout_manager.layout_engine.active_workspace(other_space);
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::SwitchToGlobalSlot(owning_slot),
+    )));
+
+    let after_owning = reactor.layout_manager.layout_engine.active_workspace(owning_space);
+    let after_other = reactor.layout_manager.layout_engine.active_workspace(other_space);
+
+    assert_eq!(
+        after_owning,
+        Some(slot_ws),
+        "the slot's workspace should now be active on its owning space"
+    );
+    assert_ne!(
+        initial_owning, after_owning,
+        "owning space's active workspace must have changed"
+    );
+    assert_eq!(
+        after_other, initial_other,
+        "non-owning space's active workspace must be unaffected by the global-slot switch"
     );
 }
 
@@ -1804,5 +1958,1317 @@ fn unfullscreen_restores_window_tracking() {
     assert!(
         !reactor.space_manager.fullscreen_by_space.contains_key(&fullscreen_space.get()),
         "Fullscreen track should be removed from space manager"
+    );
+}
+
+#[test]
+fn switch_to_global_slot_cross_display_skips_old_target_workspace_focus() {
+    let TwoSpaceFixture {
+        mut reactor,
+        screen1,
+        screen2,
+        space1,
+        space2,
+    } = two_space_fixture();
+    let (raise_manager_tx, mut raise_manager_rx) = actor::channel();
+    reactor.communication_manager.raise_manager_tx = raise_manager_tx;
+
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    let mut apps = Apps::new();
+    let mut windows = make_windows(2);
+    windows[0].frame.origin = CGPoint::new(screen1.origin.x + 100.0, screen1.origin.y + 100.0);
+    windows[1].frame.origin = CGPoint::new(screen2.origin.x + 100.0, screen2.origin.y + 100.0);
+    reactor.handle_events(apps.make_app(70, windows));
+    apps.simulate_until_quiet(&mut reactor);
+    while raise_manager_rx.try_recv().is_ok() {}
+
+    let uuid1 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space1)
+        .expect("space1 has a display uuid")
+        .to_owned();
+    let uuid2 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space2)
+        .expect("space2 has a display uuid")
+        .to_owned();
+    let ws8 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        8,
+        &uuid1,
+        space1,
+        screen1.size,
+    );
+    let ws9 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        9,
+        &uuid2,
+        space2,
+        screen2.size,
+    );
+
+    let source_space = reactor.workspace_command_space().unwrap_or(space1);
+    let (target_space, target_slot, old_target_window) = if source_space == space1 {
+        (space2, 9, WindowId::new(70, 2))
+    } else {
+        (space1, 8, WindowId::new(70, 1))
+    };
+    let expected_ws = if target_space == space1 { ws8 } else { ws9 };
+    assert_ne!(
+        reactor.layout_manager.layout_engine.active_workspace(target_space),
+        Some(expected_ws),
+        "precondition: target display must start on a different workspace"
+    );
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::SwitchToGlobalSlot(target_slot),
+    )));
+
+    assert_eq!(
+        reactor.layout_manager.layout_engine.active_workspace(target_space),
+        Some(expected_ws),
+        "cross-display global slot switch must activate the target workspace immediately"
+    );
+
+    let mut focused_windows = Vec::new();
+    while let Ok((_, msg)) = raise_manager_rx.try_recv() {
+        if let raise_manager::Event::RaiseRequest(RaiseRequest {
+            focus_window: Some((wid, _)),
+            ..
+        }) = msg
+        {
+            focused_windows.push(wid);
+        }
+    }
+
+    assert!(
+        !focused_windows.contains(&old_target_window),
+        "cross-display switch must not focus the target display's old active workspace first"
+    );
+}
+
+#[test]
+fn switch_to_global_slot_survives_display_replug() {
+    // Reproduces the user-reported bug: after a display unplug + replug
+    // (which gives the display a fresh SpaceId), Cmd+1 must still land on
+    // the secondary display when slot 1 is pinned to its UUID.
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 1);
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let original_space2 = SpaceId::new(2);
+
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(original_space2)],
+        vec![],
+    ));
+
+    let initial_slot = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(1)
+        .expect("pinned slot 1 should resolve on startup");
+    assert_eq!(initial_slot.space, original_space2);
+
+    // Unplug the secondary display. Its workspaces are migrated/destroyed,
+    // freeing workspace number 1 for a fresh default on replug.
+    reactor.handle_event(screen_params_event(vec![screen1], vec![Some(space1)], vec![]));
+
+    // Replug the same display UUID with a fresh SpaceId.
+    let new_space2 = SpaceId::new(999);
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(new_space2)],
+        vec![],
+    ));
+
+    // Press Cmd+1 from screen1 (the non-pinned display).
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::SwitchToGlobalSlot(1),
+    )));
+
+    // Slot 1 should be active on screen2's NEW SpaceId, not screen1. The
+    // workspace_id is preserved across the replug because remap_space rewires
+    // the SpaceId on the existing entry.
+    let slot_target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(1)
+        .expect("slot 1 should resolve after replug");
+    assert_eq!(
+        slot_target.space, new_space2,
+        "slot 1 must live on the pinned display's new SpaceId after replug"
+    );
+
+    let new_space2_active = reactor.layout_manager.layout_engine.active_workspace(new_space2);
+    assert_eq!(
+        new_space2_active,
+        Some(slot_target.workspace_id),
+        "slot 1 must land on the pinned display after replug"
+    );
+}
+
+#[test]
+fn switch_to_global_slot_creates_workspace_when_absent() {
+    // Cmd+N for a workspace number that doesn't exist creates it on the
+    // focused display, then activates it.
+    let TwoSpaceFixture {
+        mut reactor,
+        screen1: _,
+        screen2: _,
+        space1,
+        space2,
+    } = two_space_fixture();
+
+    // Force lazy init so each space gets its default workspace.
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    // Slot 7 is well outside what lazy init would pick (smallest-unused gives
+    // 0 and 1 to the two spaces).
+    const SLOT: usize = 7;
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .resolve_workspace(SLOT)
+            .is_none(),
+        "precondition: slot {} must not exist before Cmd+{}",
+        SLOT,
+        SLOT,
+    );
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::SwitchToGlobalSlot(SLOT),
+    )));
+
+    let target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(SLOT)
+        .expect("slot must be created on demand");
+    let active = reactor.layout_manager.layout_engine.active_workspace(target.space);
+    assert_eq!(
+        active,
+        Some(target.workspace_id),
+        "newly created slot must be active"
+    );
+}
+
+#[test]
+fn empty_workspace_destroyed_unless_active() {
+    // Setup: two-space fixture, window in ws 7 (on space1), space1 active on a
+    // different workspace. Closing the window must destroy ws 7 because it is
+    // empty AND not active anywhere.
+    //
+    // We drive the workspace creation and window assignment directly through
+    // the VWM API rather than going through SwitchToGlobalSlot + make_app:
+    // SwitchToGlobalSlot's "create on focused display" fallback consults the
+    // real cursor position via SLSGetCurrentCursorLocation (no test
+    // override), so the destination display is environment-dependent. Direct
+    // VWM mutation pins ws 7 to space1 deterministically. The destruction
+    // path under test (Event::WindowDestroyed → LayoutEvent::WindowRemoved →
+    // VWM::remove_window → destroy_workspace_if_ephemeral) is exercised in
+    // full once we send the WindowDestroyed event.
+    let TwoSpaceFixture {
+        mut reactor, space1, space2, ..
+    } = two_space_fixture();
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    // Create ws 7 on space1 explicitly, then activate it so the upcoming
+    // window discovery puts the window there.
+    let space1_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space1)
+        .expect("space1 has a display uuid")
+        .to_owned();
+    let ws7 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .create_workspace_with_number(7, &space1_uuid, space1);
+    let other_ws_on_space1 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1)
+        .into_iter()
+        .map(|(id, _)| id)
+        .find(|id| *id != ws7)
+        .expect("space1 has a non-ws-7 workspace from lazy init");
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, ws7)
+    );
+
+    // Register window 99 with the reactor, then explicitly pin it to ws 7
+    // (the discovery flow's choice of space depends on best_space_for_window,
+    // which is brittle in tests; this keeps the assignment deterministic).
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(99, make_windows(1)));
+    let win = WindowId::new(99, 1);
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .assign_window_to_workspace(space1, win, ws7)
+            .0,
+        "precondition: window must be assignable to ws 7"
+    );
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(ws7),
+        "precondition: window must be in ws 7 before destruction"
+    );
+
+    // Move space1's active workspace away from ws 7 so ws 7 is no longer
+    // active on any display.
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, other_ws_on_space1)
+    );
+    // Precondition: ws 7 must not be the active workspace on any display.
+    // In the new model `active_workspace` is per-display, so we check that
+    // walking every initialized space's active workspace yields no `ws7`.
+    {
+        let mgr = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+        let initialized: Vec<_> = mgr.initialized_spaces();
+        for sp in initialized {
+            assert_ne!(
+                mgr.active_workspace(sp),
+                Some(ws7),
+                "precondition: ws 7 must not be active on space {:?} before destruction",
+                sp
+            );
+        }
+    }
+
+    reactor.handle_event(Event::WindowDestroyed(win));
+
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .resolve_workspace(7)
+            .is_none(),
+        "ws 7 should be destroyed after last window removed and not active"
+    );
+}
+
+// Regression for Critical #1: rebalance_all_layouts panics on dead workspace
+// id when the workspace is destroyed via Event::WindowDestroyed and a
+// `workspace_layouts` entry was created for it. Reproduces the realistic
+// flow that crashes pre-fix: `LayoutEngine::create_workspace_on_display`
+// creates BOTH the workspace AND the workspace_layouts entry, so the
+// destroy_workspace_if_ephemeral path leaves a dangling
+// (SpaceId, dead_ws_id) entry in workspace_layouts. The next
+// `rebalance_all_layouts` iterates that entry and feeds the dead id into
+// `workspace_tree_mut` (a direct SlotMap index → panic).
+#[test]
+fn empty_workspace_destroyed_via_window_destroyed_through_engine() {
+    let TwoSpaceFixture {
+        mut reactor,
+        screen1,
+        space1,
+        space2,
+        ..
+    } = two_space_fixture();
+
+    // Lazy-init both spaces so each has a default workspace.
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    let space1_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space1)
+        .expect("space1 has a display uuid")
+        .to_owned();
+
+    // Create ws 7 via the LayoutEngine API used by SwitchToGlobalSlot — this
+    // is the path that ALSO creates a `workspace_layouts` entry for ws 7
+    // (via ensure_active_for_workspace). Without this entry, the panic
+    // doesn't fire (and the existing test masks the bug).
+    let ws7 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        7,
+        &space1_uuid,
+        space1,
+        screen1.size,
+    );
+
+    // Pick a non-ws-7 workspace on space1 to switch active to later.
+    let other_ws_on_space1 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1)
+        .into_iter()
+        .map(|(id, _)| id)
+        .find(|id| *id != ws7)
+        .expect("space1 has a non-ws-7 workspace from lazy init");
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, ws7)
+    );
+
+    // Register a window — discovery will auto-assign it to the active
+    // workspace (ws 7), and add_window_to_layout will tile it because
+    // workspace_layouts.active(space1, ws7) is now Some.
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(99, make_windows(1)));
+    let win = WindowId::new(99, 1);
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(ws7),
+        "precondition: window must be in ws 7 (active workspace) after discovery"
+    );
+
+    // Switch active away so ws 7 becomes destruction-eligible.
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, other_ws_on_space1)
+    );
+
+    // The destruction path: WindowDestroyed → WindowRemoved → remove_window_internal
+    // → vwm.remove_window (destroys ws 7) → rebalance_all_layouts (panics
+    // pre-fix because workspace_layouts still has the dead entry).
+    reactor.handle_event(Event::WindowDestroyed(win));
+
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .resolve_workspace(7)
+            .is_none(),
+        "ws 7 should be destroyed after last window removed and not active"
+    );
+}
+
+// Regression for Critical #1 via the move-window path:
+// `MoveWindowToWorkspace` calls VWM::assign_window_to_workspace which can
+// destroy the source workspace (when it becomes empty + not active). This
+// test exercises the destruction directly via the VWM API. The engine-side
+// `workspace_layouts` cleanup is exercised indirectly: any production
+// caller of `assign_window_to_workspace` (engine.rs MoveWindowToWorkspace,
+// move_window_to_space, the app-rule re-assign in reactor.rs) takes the
+// returned destroyed list and calls `drop_workspace_layout` — so a
+// destroyed source can never be re-touched by `rebalance_all_layouts`.
+// (Test 1 above is the live-engine regression for that mirror cleanup.)
+#[test]
+fn empty_workspace_destroyed_when_window_moved_away() {
+    let TwoSpaceFixture {
+        mut reactor,
+        screen1,
+        space1,
+        space2,
+        ..
+    } = two_space_fixture();
+
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    let space1_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space1)
+        .expect("space1 has a display uuid")
+        .to_owned();
+
+    // Create ws 7 with a workspace_layouts entry, set active so the new
+    // window lands there.
+    let ws7 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        7,
+        &space1_uuid,
+        space1,
+        screen1.size,
+    );
+    let other_ws_on_space1 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1)
+        .into_iter()
+        .map(|(id, _)| id)
+        .find(|id| *id != ws7)
+        .expect("space1 has a non-ws-7 workspace from lazy init");
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, ws7)
+    );
+
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(99, make_windows(1)));
+    let win = WindowId::new(99, 1);
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(ws7),
+        "precondition: window must be in ws 7"
+    );
+
+    // Switch active away so ws 7 becomes empty AND non-active when we move
+    // the window.
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, other_ws_on_space1)
+    );
+
+    // Move the window to other_ws_on_space1. The assign returns
+    // `(success, destroyed)` — destroyed must contain (space1, ws7).
+    let (assigned, destroyed) = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .assign_window_to_workspace(space1, win, other_ws_on_space1);
+    assert!(assigned, "moving window to another workspace must succeed");
+    assert!(
+        destroyed.iter().any(|(sp, ws_id)| *sp == space1 && *ws_id == ws7),
+        "destroyed list must include (space1, ws7)"
+    );
+
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .resolve_workspace(7)
+            .is_none(),
+        "ws 7 should be destroyed after window moved away"
+    );
+}
+
+// Regression for Critical #2: destroy_workspace must scrub the last_active
+// slot in active_workspace_per_space, otherwise `last_workspace(space)`
+// returns a dangling id and SwitchToLastWorkspace silently no-ops.
+#[test]
+fn last_active_cleared_when_destroyed() {
+    let TwoSpaceFixture {
+        mut reactor,
+        screen1,
+        space1,
+        space2,
+        ..
+    } = two_space_fixture();
+
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    let space1_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space1)
+        .expect("space1 has a display uuid")
+        .to_owned();
+
+    // Create ws 7 with a layouts entry; we'll make it active, place a window,
+    // switch active away (so ws 7 becomes the `last_active`), then drop the
+    // window.
+    let ws7 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        7,
+        &space1_uuid,
+        space1,
+        screen1.size,
+    );
+    let other_ws_on_space1 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1)
+        .into_iter()
+        .map(|(id, _)| id)
+        .find(|id| *id != ws7)
+        .expect("space1 has a non-ws-7 workspace from lazy init");
+
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, ws7)
+    );
+
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(99, make_windows(1)));
+    let win = WindowId::new(99, 1);
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(ws7),
+        "precondition: window must be in ws 7"
+    );
+
+    // Switch away — ws 7 becomes `last_active` for space1.
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, other_ws_on_space1)
+    );
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .last_workspace(space1),
+        Some(ws7),
+        "precondition: ws 7 must be the last_active for space1"
+    );
+
+    // Destroy the window — ws 7 destruction follows.
+    reactor.handle_event(Event::WindowDestroyed(win));
+
+    // last_workspace must NOT return the dead id.
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .last_workspace(space1)
+            != Some(ws7),
+        "last_workspace must not return the destroyed ws 7"
+    );
+    // And the workspace itself is gone.
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .resolve_workspace(7)
+            .is_none(),
+        "ws 7 should be destroyed"
+    );
+}
+
+// Task 3.3: When the user dispatches `MoveWindowToWorkspace { workspace: N }`
+// and slot N has no workspace anywhere, the engine creates a workspace
+// numbered N on the SOURCE display (the display owning the moved window) and
+// moves the window into it. Symmetric to SwitchToGlobalSlot create-on-demand
+// (Task 3.1b), so Cmd+N and Cmd+Shift+N agree on which display owns slot N.
+#[test]
+fn move_window_to_workspace_creates_target_on_source_display() {
+    let TwoSpaceFixture { mut reactor, space1, .. } = two_space_fixture();
+    // Lazy-init space1's default workspace (also fired by the fixture's
+    // ScreenParametersChanged handling, but explicit here mirrors the plan).
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(50, make_windows(1)));
+    let win = WindowId::new(50, 1);
+
+    // ws 4 doesn't exist anywhere yet.
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .resolve_workspace(4)
+            .is_none(),
+        "precondition: ws 4 must not exist"
+    );
+
+    // Move the window to ws 4.
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace {
+            workspace: 4,
+            window_id: Some(win.idx.get()),
+        },
+    )));
+
+    let target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(4)
+        .expect("ws 4 should be created on the source display");
+    assert_eq!(
+        target.space, space1,
+        "ws 4 should be on the source display (space1)"
+    );
+
+    // The window must actually be in ws 4 now (not just that ws 4 exists).
+    let ws_for_win = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .workspace_for_window(win)
+        .expect("window should still be tracked on space1");
+    assert_eq!(
+        ws_for_win, target.workspace_id,
+        "window should be moved into ws 4"
+    );
+}
+
+#[test]
+fn empty_workspace_destroyed_when_switching_away_and_fallback_exists() {
+    let TwoSpaceFixture {
+        mut reactor, screen1, space1, ..
+    } = two_space_fixture();
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+
+    let space1_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space1)
+        .expect("space1 has a display uuid")
+        .to_owned();
+    let ws7 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        7,
+        &space1_uuid,
+        space1,
+        screen1.size,
+    );
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, ws7)
+    );
+
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .handle_virtual_workspace_command(space1, &LayoutCommand::SwitchToWorkspace(0));
+
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .resolve_workspace(7)
+            .is_none(),
+        "empty ws 7 should be destroyed after switching away"
+    );
+}
+
+// Task 3.3 + 3.2: when the source workspace becomes empty, it is
+// destroyed even if it was active, as long as the display has another
+// workspace to fall back to. Each display keeps at least one workspace, but
+// empty extras should not linger.
+#[test]
+fn move_window_to_workspace_destroys_active_empty_source_when_fallback_exists() {
+    let TwoSpaceFixture { mut reactor, space1, .. } = two_space_fixture();
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(50, make_windows(1)));
+    let win = WindowId::new(50, 1);
+
+    let source_ws = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .workspace_for_window(win)
+        .expect("window must be in some source workspace");
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .active_workspace(space1),
+        Some(source_ws),
+        "precondition: source ws is active on space1",
+    );
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace {
+            workspace: 4,
+            window_id: Some(win.idx.get()),
+        },
+    )));
+
+    let target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(4)
+        .expect("ws 4 must be created by the move");
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(target.workspace_id),
+        "window must actually be moved into ws 4",
+    );
+
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_space(source_ws)
+            .is_none(),
+        "empty source workspace should be destroyed once ws 4 can keep the display alive",
+    );
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .active_workspace(space1),
+        Some(target.workspace_id),
+        "display active workspace should fall back to the remaining ws 4",
+    );
+}
+
+// Task 3.3 + 3.2: When the source workspace is BOTH empty AND non-active
+// after the move, the Phase 3.2 ephemeral path destroys it through the
+// MoveWindowToWorkspace handler. Verifies the destruction and that the
+// engine-side `workspace_layouts` mirror is also cleaned up (no panic on
+// next rebalance).
+#[test]
+fn move_window_to_workspace_destroys_empty_inactive_source() {
+    let TwoSpaceFixture {
+        mut reactor, screen1, space1, ..
+    } = two_space_fixture();
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+
+    let space1_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space1)
+        .expect("space1 has a display uuid")
+        .to_owned();
+
+    // Create ws 5 explicitly (so it has a workspace_layouts entry); make it
+    // active so the discovered window lands there.
+    let ws5 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        5,
+        &space1_uuid,
+        space1,
+        screen1.size,
+    );
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, ws5)
+    );
+
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(50, make_windows(1)));
+    let win = WindowId::new(50, 1);
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(ws5),
+        "precondition: window in ws 5 (active)",
+    );
+
+    // Switch active away — ws 5 is non-active, still holds the window.
+    let other_ws = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1)
+        .into_iter()
+        .map(|(id, _)| id)
+        .find(|id| *id != ws5)
+        .expect("space1 has another workspace from lazy init");
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, other_ws)
+    );
+
+    // Move the window to (newly created) ws 4. Source ws 5 → empty AND
+    // non-active → destroyed.
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace {
+            workspace: 4,
+            window_id: Some(win.idx.get()),
+        },
+    )));
+
+    // ws 5 must be destroyed (number 5 no longer resolves anywhere).
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .resolve_workspace(5)
+            .is_none(),
+        "ws 5 must be destroyed after window leaves AND it's non-active",
+    );
+
+    // Window must have moved into ws 4 (the newly created target).
+    let target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(4)
+        .expect("ws 4 should have been created on the source display");
+    assert_eq!(target.space, space1, "ws 4 should be on space1");
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(target.workspace_id),
+        "window should be in ws 4",
+    );
+}
+
+// Hyprland semantics: when ws#N already exists on another display,
+// MoveWindowToWorkspace { N } moves the window to that workspace's bound
+// display. It must not create a duplicate ws#N on the source display, and
+// focus must stay on the source display.
+#[test]
+fn move_window_to_workspace_moves_to_existing_workspace_on_other_display() {
+    let TwoSpaceFixture {
+        mut reactor,
+        screen2,
+        space1,
+        space2,
+        ..
+    } = two_space_fixture();
+    // Lazy-init both spaces' default workspaces so their display uuids land
+    // in the VWM mirror (the move handler needs space1's uuid to create on).
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    let space2_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space2)
+        .expect("space2 has a display uuid")
+        .to_owned();
+
+    // Pre-create ws 4 on space2 (the "other" display).
+    let ws4_on_space2 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        4,
+        &space2_uuid,
+        space2,
+        screen2.size,
+    );
+    let pre = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(4)
+        .expect("precondition: slot 4 must resolve after pre-creation");
+    assert_eq!(
+        pre.space, space2,
+        "precondition: slot 4 currently lives on space2"
+    );
+    assert_eq!(
+        pre.workspace_id, ws4_on_space2,
+        "precondition: slot 4 resolves to the just-created ws on space2"
+    );
+
+    // Create a window on space1 (source display).
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(50, make_windows(1)));
+    let win = WindowId::new(50, 1);
+    let source_ws = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .workspace_for_window(win)
+        .expect("precondition: window must land on a workspace on space1");
+
+    // Issue the move. ws 4 lives on space2 != source_space (space1), so the
+    // window should cross displays onto the existing global workspace.
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace {
+            workspace: 4,
+            window_id: Some(win.idx.get()),
+        },
+    )));
+
+    let ws_for_win = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .workspace_for_window(win)
+        .expect("window must still be tracked after the move");
+    assert_ne!(
+        ws_for_win, source_ws,
+        "window must have left its source workspace"
+    );
+    assert_eq!(
+        ws_for_win, ws4_on_space2,
+        "window must move onto space2's pre-existing ws 4"
+    );
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_space(ws_for_win),
+        Some(space2),
+        "the target workspace stays bound to space2"
+    );
+
+    // The pre-existing ws 4 on space2 must still exist as a workspace
+    // (nothing destroyed it on the cross-space create-on-source-space path).
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_space(ws4_on_space2),
+        Some(space2),
+        "pre-existing ws 4 on space2 must still exist and still be on space2",
+    );
+
+    let post = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(4)
+        .expect("slot 4 must still resolve");
+    assert_eq!(
+        post.space, space2,
+        "slot 4 still resolves to its original display",
+    );
+    assert_eq!(
+        post.workspace_id, ws4_on_space2,
+        "slot 4 resolves to the pre-existing space2 ws",
+    );
+
+    assert_eq!(
+        reactor.layout_manager.layout_engine.active_workspace(space1),
+        Some(source_ws),
+        "focus/active workspace must stay on the source display after cross-display move"
+    );
+}
+
+// Task 3.4: When a display is unplugged, the windows on that display's
+// workspaces must migrate to the active workspace of a remaining display,
+// and the dead workspaces must be destroyed (freeing their numbers for
+// re-use). The window must remain alive — just on a different space —
+// and `resolve_workspace(N)` must no longer return the dead space for any
+// surviving workspace number.
+#[test]
+fn display_unplug_migrates_windows_to_remaining_display() {
+    let TwoSpaceFixture {
+        mut reactor,
+        screen1,
+        screen2: _,
+        space1,
+        space2,
+    } = two_space_fixture();
+
+    // Lazy-init both spaces so each has a default workspace and the
+    // display-uuid mirror is populated.
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    // Spawn a window. `make_app` doesn't pick the space — that depends on
+    // wherever the discovery handler routes the window — so we'll relocate
+    // it to space2 explicitly via the VWM API below.
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(60, make_windows(1)));
+    let win = WindowId::new(60, 1);
+
+    // Move the window onto space2's active workspace. We don't care which
+    // space `make_app` picked; `assign_window_to_workspace` rewires
+    // `window_to_workspace` and removes the window from any prior workspace.
+    let active_ws_space2 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .active_workspace(space2)
+        .expect("space2 has an active workspace after lazy init");
+    let (assigned, destroyed) = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .assign_window_to_workspace(space2, win, active_ws_space2);
+    assert!(
+        assigned,
+        "precondition: window must be assignable to space2's active ws"
+    );
+    for (sp, ws_id) in destroyed {
+        reactor.layout_manager.layout_engine.drop_workspace_layout(sp, ws_id);
+    }
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(active_ws_space2),
+        "precondition: window now lives on space2's active workspace"
+    );
+
+    // Unplug screen2: send a screen_params_event with only screen1.
+    reactor.handle_event(screen_params_event(vec![screen1], vec![Some(space1)], vec![]));
+
+    // The window must still be alive, now living on space1's active ws.
+    let active_on_space1 = reactor
+        .layout_manager
+        .layout_engine
+        .active_workspace(space1)
+        .expect("space1 still has an active workspace after the unplug");
+    let ws_for_win = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .workspace_for_window(win)
+        .expect("window must have migrated to space1");
+    assert_eq!(
+        ws_for_win, active_on_space1,
+        "window must land on space1's active workspace after the migration"
+    );
+
+    // No surviving workspace number should still resolve to space2 — the
+    // dead workspaces have been destroyed and their numbers freed.
+    let nums: Vec<_> = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .all_workspace_numbers()
+        .collect();
+    assert!(!nums.is_empty(), "space1's workspaces must still resolve");
+    for n in &nums {
+        let target = reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .resolve_workspace(*n)
+            .expect("every reported number must resolve");
+        assert_ne!(
+            target.space, space2,
+            "no surviving workspace may live on the unplugged display's space"
+        );
+    }
+}
+
+#[test]
+fn query_workspaces_by_display_uuid_matches_by_space_id() {
+    // Task 5.1: rift-cli `query workspaces --display-uuid <uuid>` should
+    // resolve the uuid to a SpaceId via the VWM and return the same
+    // workspaces as `--space-id <space>` for the space bound to that uuid.
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+
+    reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app(1, make_windows(2)));
+    apps.simulate_until_quiet(&mut reactor);
+
+    let display_uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space)
+        .expect("space has a display uuid after screen-params handling")
+        .to_owned();
+
+    reactor.layout_manager.layout_engine.create_workspace_on_display(
+        7,
+        &display_uuid,
+        space,
+        screen.size,
+    );
+
+    let by_space = reactor.query_workspaces(Some(space), None);
+    let by_uuid = reactor.query_workspaces(None, Some(display_uuid.clone()));
+
+    assert!(!by_space.is_empty(), "expected at least one workspace for space");
+    assert_eq!(
+        by_space.len(),
+        by_uuid.len(),
+        "display-uuid query and space-id query must return same workspace count"
+    );
+    for (a, b) in by_space.iter().zip(by_uuid.iter()) {
+        assert_eq!(a.id, b.id);
+        assert_eq!(a.index, b.index);
+        assert_eq!(a.number, b.number);
+        assert_eq!(a.name, b.name);
+        assert_eq!(a.is_active, b.is_active);
+        assert_eq!(a.window_count, b.window_count);
+    }
+    assert!(
+        by_uuid.iter().any(|w| w.number == 7 && w.index != w.number && w.name == "7"),
+        "query output must expose the global workspace number separately from per-display index"
+    );
+}
+
+#[test]
+fn query_workspaces_by_display_uuid_stale_returns_empty() {
+    // Task 5.1 spec compliance: an unresolvable display uuid must return an
+    // empty result rather than silently falling back to the default query
+    // space. This locks in the (None, Some(stale_uuid)) -> Vec::new() path
+    // so future refactors can't reintroduce the silent fallback.
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+
+    reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app(1, make_windows(2)));
+    apps.simulate_until_quiet(&mut reactor);
+
+    // Sanity: the default-space path still returns workspaces, so the empty
+    // result below is genuinely due to the stale uuid and not an empty model.
+    let by_default = reactor.query_workspaces(None, None);
+    assert!(
+        !by_default.is_empty(),
+        "default-space query should return workspaces for the active reactor"
+    );
+
+    let stale = reactor.query_workspaces(None, Some("__nonexistent_uuid__".into()));
+    assert!(
+        stale.is_empty(),
+        "unresolvable display uuid must return empty, not fall back to default space"
     );
 }

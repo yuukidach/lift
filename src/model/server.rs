@@ -13,6 +13,7 @@ use crate::sys::window_server::WindowServerId;
 pub struct WorkspaceData {
     pub id: String,
     pub index: usize,
+    pub number: usize,
     pub name: String,
     pub layout_mode: String,
     pub is_active: bool,

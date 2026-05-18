@@ -205,4 +205,28 @@ impl WorkspaceLayouts {
     pub(crate) fn spaces(&self) -> crate::common::collections::BTreeSet<SpaceId> {
         self.map.keys().map(|(sp, _)| *sp).collect()
     }
+
+    /// Last-known screen size for `space`, recovered from any workspace's
+    /// `active_size`. Returns `None` when `space` has no workspaces yet
+    /// (typically: `SpaceExposed` hasn't fired).
+    pub(crate) fn active_size_for_space(&self, space: SpaceId) -> Option<CGSize> {
+        self.map
+            .iter()
+            .find_map(|(&(sp, _), info)| if sp == space { Some(info.active_size) } else { None })
+            .map(|s| CGSize::new(s.width as f64, s.height as f64))
+    }
+
+    /// Drops the per-(space, workspace) layout entry. Used by the engine
+    /// after `VirtualWorkspaceManager::destroy_workspace_if_ephemeral`
+    /// destroys a workspace — leaving the entry behind would let
+    /// `rebalance_all_layouts` (and any other consumer iterating
+    /// `active_layouts_with_workspace`) feed a dead `VirtualWorkspaceId`
+    /// into the SlotMap and panic.
+    pub(crate) fn drop_workspace(
+        &mut self,
+        space: SpaceId,
+        workspace_id: crate::model::VirtualWorkspaceId,
+    ) {
+        self.map.remove(&(space, workspace_id));
+    }
 }

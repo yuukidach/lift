@@ -370,6 +370,7 @@ mod tests {
         WorkspaceData {
             id: "VirtualWorkspaceId(1v1)".to_string(),
             index: 0,
+            number: 0,
             name: "main".to_string(),
             layout_mode: layout_mode.to_string(),
             is_active: true,
