@@ -113,9 +113,12 @@ impl WindowDiscoveryHandler {
             Self::identify_stale_windows(reactor, pid, &known_visible);
         Self::cleanup_stale_windows(reactor, pid, stale_windows, pending_refresh);
         let new_windows = Self::process_window_list(reactor, new, &app_info);
+        let discovered_new_windows: Vec<WindowId> =
+            new_windows.iter().map(|(wid, _)| *wid).collect();
         Self::update_window_states(reactor, new_windows, &app_info);
 
         Self::emit_layout_events(reactor, pid, &known_visible, &app_info);
+        reactor.consume_focus_next_window_from(discovered_new_windows);
     }
 
     fn sync_window_server_id_mapping(
@@ -447,7 +450,11 @@ impl WindowDiscoveryHandler {
             .filter(|wid| wid.pid == pid)
             .filter(|wid| reactor.window_is_standard(*wid))
         {
-            let Some(space) = reactor.best_space_for_window_id(wid) else {
+            let Some(space) = reactor
+                .focus_next_window_target_for(wid)
+                .map(|target| target.space)
+                .or_else(|| reactor.best_space_for_window_id(wid))
+            else {
                 continue;
             };
             if !Self::should_emit_window_for_space(reactor, space, wid) {
@@ -466,8 +473,10 @@ impl WindowDiscoveryHandler {
             let Some(state) = reactor.window_manager.window(wid) else {
                 continue;
             };
-            let Some(space) =
-                reactor.best_space_for_window(&state.frame_monotonic, state.info.sys_id)
+            let Some(space) = reactor
+                .focus_next_window_target_for(wid)
+                .map(|target| target.space)
+                .or_else(|| reactor.best_space_for_window(&state.frame_monotonic, state.info.sys_id))
             else {
                 continue;
             };

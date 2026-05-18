@@ -18,7 +18,7 @@ use crate::actor::{
 use crate::common::collections::{HashMap, HashSet};
 use crate::common::config::{LayoutMode, WindowSnappingSettings};
 use crate::layout_engine::LayoutEngine;
-use crate::model::WindowRegistry;
+use crate::model::{VirtualWorkspaceId, WindowRegistry};
 use crate::sys::screen::SpaceId;
 
 /// Manages window state and lifecycle
@@ -30,7 +30,9 @@ pub struct AppManager {
 }
 
 impl AppManager {
-    pub fn new() -> Self { AppManager { apps: HashMap::default() } }
+    pub fn new() -> Self {
+        AppManager { apps: HashMap::default() }
+    }
 }
 
 /// Manages space and screen state
@@ -49,7 +51,9 @@ impl SpaceManager {
         self.screens.iter().filter_map(|screen| screen.space)
     }
 
-    pub fn first_known_space(&self) -> Option<SpaceId> { self.iter_known_spaces().next() }
+    pub fn first_known_space(&self) -> Option<SpaceId> {
+        self.iter_known_spaces().next()
+    }
 }
 
 /// Manages drag operations and window swapping
@@ -60,13 +64,21 @@ pub struct DragManager {
 }
 
 impl DragManager {
-    pub fn reset(&mut self) { self.drag_swap_manager.reset(); }
+    pub fn reset(&mut self) {
+        self.drag_swap_manager.reset();
+    }
 
-    pub fn last_target(&self) -> Option<WindowId> { self.drag_swap_manager.last_target() }
+    pub fn last_target(&self) -> Option<WindowId> {
+        self.drag_swap_manager.last_target()
+    }
 
-    pub fn dragged(&self) -> Option<WindowId> { self.drag_swap_manager.dragged() }
+    pub fn dragged(&self) -> Option<WindowId> {
+        self.drag_swap_manager.dragged()
+    }
 
-    pub fn origin_frame(&self) -> Option<CGRect> { self.drag_swap_manager.origin_frame() }
+    pub fn origin_frame(&self) -> Option<CGRect> {
+        self.drag_swap_manager.origin_frame()
+    }
 
     pub fn update_config(&mut self, config: WindowSnappingSettings) {
         self.drag_swap_manager.update_config(config);
@@ -121,9 +133,17 @@ impl WorkspaceSwitchManager {
 }
 
 /// Manages refocus and cleanup state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FocusNextWindowTarget {
+    pub space: SpaceId,
+    pub workspace_id: VirtualWorkspaceId,
+}
+
 pub struct RefocusManager {
     pub stale_cleanup_state: super::StaleCleanupState,
     pub refocus_state: super::RefocusState,
+    pub focus_next_window_deadline: Option<Instant>,
+    pub focus_next_window_target: Option<FocusNextWindowTarget>,
 }
 
 /// Manages communication channels to other actors

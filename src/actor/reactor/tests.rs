@@ -352,6 +352,164 @@ fn handle_layout_response_includes_handles_for_raise_and_focus_windows() {
 }
 
 #[test]
+fn focus_next_window_focuses_discovered_new_window() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let (raise_manager_tx, mut raise_manager_rx) = actor::channel();
+    reactor.communication_manager.raise_manager_tx = raise_manager_tx;
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::FocusNextWindow)));
+    reactor.handle_events(apps.make_app(1, make_windows(1)));
+
+    let mut focus_requests = Vec::new();
+    while let Ok((_, msg)) = raise_manager_rx.try_recv() {
+        if let raise_manager::Event::RaiseRequest(RaiseRequest {
+            focus_window: Some((wid, _)),
+            ..
+        }) = msg
+        {
+            focus_requests.push(wid);
+        }
+    }
+
+    assert!(
+        focus_requests.contains(&WindowId::new(1, 1)),
+        "FocusNextWindow should focus the first manageable window discovered after an exec"
+    );
+    assert_eq!(
+        reactor.layout_manager.layout_engine.selected_window(space),
+        Some(WindowId::new(1, 1))
+    );
+}
+
+#[test]
+fn focus_next_window_assigns_exec_window_to_command_workspace() {
+    let mut vw_settings = crate::common::config::VirtualWorkspaceSettings::default();
+    vw_settings.display_default_workspaces.insert("test-display-0".into(), 1);
+    vw_settings.display_default_workspaces.insert("test-display-1".into(), 2);
+
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &vw_settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    let ws1 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .active_workspace(space1)
+        .expect("space1 should initialize directly to ws1");
+
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app_with_opts(
+        10,
+        make_windows(1),
+        Some(WindowId::new(10, 1)),
+        true,
+        true,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(10));
+    assert_eq!(reactor.main_window_space(), Some(space1));
+
+    reactor.request_focus_next_window();
+    assert_eq!(
+        reactor.refocus_manager.focus_next_window_target.map(|target| target.space),
+        Some(space1),
+        "precondition: exec target should be captured from the command workspace",
+    );
+    assert_eq!(
+        reactor.refocus_manager.focus_next_window_target.map(|target| target.workspace_id),
+        Some(ws1),
+        "precondition: exec target should capture ws1",
+    );
+
+    let mut launched = make_window(1);
+    launched.sys_id = Some(WindowServerId::new(501));
+    launched.frame.origin = CGPoint::new(screen2.origin.x + 100.0, screen2.origin.y + 100.0);
+    reactor.handle_events(apps.make_app_with_opts(
+        50,
+        vec![launched],
+        Some(WindowId::new(50, 1)),
+        true,
+        true,
+    ));
+
+    let launched_window = WindowId::new(50, 1);
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(
+        vwm.workspace_for_window(launched_window),
+        Some(ws1),
+        "exec-launched window should be assigned to the command workspace, not the display where macOS first placed it",
+    );
+    assert_eq!(vwm.workspace_space(ws1), Some(space1));
+    assert_eq!(
+        reactor.layout_manager.layout_engine.selected_window(space1),
+        Some(launched_window),
+        "exec-launched window should be focused on the command workspace",
+    );
+}
+
+#[test]
+fn canceled_focus_next_window_does_not_focus_discovered_window() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let (raise_manager_tx, mut raise_manager_rx) = actor::channel();
+    reactor.communication_manager.raise_manager_tx = raise_manager_tx;
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    reactor.handle_event(screen_params_event(
+        vec![screen],
+        vec![Some(SpaceId::new(1))],
+        vec![],
+    ));
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::FocusNextWindow)));
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::CancelFocusNextWindow)));
+    reactor.handle_events(apps.make_app(1, make_windows(1)));
+
+    while let Ok((_, msg)) = raise_manager_rx.try_recv() {
+        if let raise_manager::Event::RaiseRequest(RaiseRequest {
+            focus_window: Some((WindowId { pid: 1, .. }, _)),
+            ..
+        }) = msg
+        {
+            panic!("CancelFocusNextWindow should cancel the pending exec focus request");
+        }
+    }
+}
+
+#[test]
 fn workspace_switch_batches_all_windows_with_eui_enabled() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test(LayoutEngine::new(
