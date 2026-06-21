@@ -2345,6 +2345,68 @@ fn switch_to_global_slot_creates_workspace_when_absent() {
 }
 
 #[test]
+fn switch_to_global_slot_repeats_active_slot_when_back_and_forth_enabled() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.workspace_auto_back_and_forth = true;
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+
+    reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
+
+    let default_ws = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space)
+        .first()
+        .map(|(id, _)| *id)
+        .expect("space should lazily initialize a default workspace");
+    let uuid = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .space_display(space)
+        .expect("space has a display uuid")
+        .to_owned();
+    let ws7 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        7,
+        &uuid,
+        space,
+        screen.size,
+    );
+
+    assert!(reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .set_active_workspace(space, ws7));
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .last_workspace(space),
+        Some(default_ws),
+        "precondition: default workspace must be recorded as last workspace"
+    );
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::SwitchToGlobalSlot(7),
+    )));
+
+    assert_eq!(
+        reactor.layout_manager.layout_engine.active_workspace(space),
+        Some(default_ws),
+        "repeating the active global slot should switch back to the last workspace"
+    );
+}
+
+#[test]
 fn empty_workspace_destroyed_unless_active() {
     // Setup: two-space fixture, window in ws 7 (on space1), space1 active on a
     // different workspace. Closing the window must destroy ws 7 because it is
@@ -3425,7 +3487,7 @@ fn moved_window_stays_on_cross_display_workspace_after_app_refresh() {
         "precondition: move command places the second app window on ws2",
     );
 
-    if let Some(window) = reactor.window_manager.windows.get_mut(&moved) {
+    if let Some(window) = reactor.window_manager.window_mut(moved) {
         window.frame_monotonic.origin =
             CGPoint::new(screen1.origin.x + 200.0, screen1.origin.y + 200.0);
     }
@@ -3518,7 +3580,7 @@ fn dragged_cross_display_window_resists_stale_app_refresh() {
         "precondition: window starts on ws1",
     );
 
-    let source_frame = reactor.window_manager.windows.get(&win).unwrap().frame_monotonic;
+    let source_frame = reactor.window_manager.window(win).unwrap().frame_monotonic;
     let mut target_frame = source_frame;
     target_frame.origin = CGPoint::new(screen2.origin.x + 200.0, screen2.origin.y + 200.0);
 

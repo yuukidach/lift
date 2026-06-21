@@ -1,4 +1,5 @@
 use objc2_core_foundation::{CGPoint, CGRect};
+use std::time::Instant;
 use tracing::trace;
 
 use super::replay::Record;

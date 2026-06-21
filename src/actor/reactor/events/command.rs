@@ -11,7 +11,7 @@ use crate::actor::wm_controller::WmEvent;
 use crate::actor::{menu_bar, raise_manager};
 use crate::common::collections::HashMap;
 use crate::common::config::{self as config, Config};
-use crate::common::log::{MetricsCommand, handle_command};
+use crate::common::log::{handle_command, MetricsCommand};
 use crate::layout_engine::{EventResponse, LayoutCommand, LayoutEvent};
 use crate::sys::app::pid_t;
 use crate::sys::window_server::{self as window_server, WindowServerId};
@@ -24,8 +24,7 @@ impl CommandEventHandler {
         window_id: WindowId,
     ) -> Option<crate::sys::screen::SpaceId> {
         let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
-        vwm.workspace_for_window(window_id)
-            .and_then(|ws_id| vwm.workspace_space(ws_id))
+        vwm.workspace_for_window(window_id).and_then(|ws_id| vwm.workspace_space(ws_id))
     }
 
     fn resolve_current_window_for_command(
@@ -38,9 +37,7 @@ impl CommandEventHandler {
             .or_else(|| reactor.window_id_under_cursor())
             .or_else(|| command_space.and_then(|space| vwm.find_window_by_idx(space, 0)))
             .or_else(|| {
-                reactor
-                    .iter_active_spaces()
-                    .find_map(|space| vwm.find_window_by_idx(space, 0))
+                reactor.iter_active_spaces().find_map(|space| vwm.find_window_by_idx(space, 0))
             })
     }
 
@@ -175,8 +172,9 @@ impl CommandEventHandler {
     /// just move focus to that display — skipping the SwitchToWorkspace flow
     /// avoids the hide/show cycle that briefly empties the visible workspace.
     fn handle_command_switch_to_global_slot(reactor: &mut Reactor, slot: usize) {
-        let source_uuid =
-            reactor.workspace_command_space().and_then(|space| reactor.display_uuid_for_space(space));
+        let source_uuid = reactor
+            .workspace_command_space()
+            .and_then(|space| reactor.display_uuid_for_space(space));
 
         let target = match reactor
             .layout_manager
@@ -244,6 +242,28 @@ impl CommandEventHandler {
         let already_active = reactor.layout_manager.layout_engine.active_workspace(target.space)
             == Some(target.workspace_id);
         if already_active {
+            let back_and_forth_enabled = reactor
+                .layout_manager
+                .layout_engine
+                .virtual_workspace_manager()
+                .workspace_auto_back_and_forth();
+            if source_uuid.as_deref() == Some(target.display_uuid.as_str())
+                && back_and_forth_enabled
+            {
+                reactor.store_current_floating_positions(target.space);
+                reactor
+                    .workspace_switch_manager
+                    .start_workspace_switch(WorkspaceSwitchOrigin::Manual);
+                let response =
+                    reactor.layout_manager.layout_engine.handle_virtual_workspace_command(
+                        target.space,
+                        &LayoutCommand::SwitchToLastWorkspace,
+                    );
+                reactor.handle_layout_response(response, Some(target.space));
+                reactor.update_event_tap_layout_mode();
+                return;
+            }
+
             if let Some(screen) = reactor.space_manager.screen_by_space(target.space).cloned() {
                 if !Self::focus_first_window_on_screen(reactor, &screen) {
                     reactor.warp_mouse_to_space_center(target.space);
@@ -253,7 +273,9 @@ impl CommandEventHandler {
         }
 
         reactor.store_current_floating_positions(target.space);
-        reactor.workspace_switch_manager.start_workspace_switch(WorkspaceSwitchOrigin::Manual);
+        reactor
+            .workspace_switch_manager
+            .start_workspace_switch(WorkspaceSwitchOrigin::Manual);
         let response = reactor.layout_manager.layout_engine.handle_virtual_workspace_command(
             target.space,
             &LayoutCommand::SwitchToWorkspace(target.per_space_index),
@@ -470,7 +492,10 @@ impl CommandEventHandler {
                     focus_quiet: Quiet::No,
                 });
                 if let Err(e) = reactor.communication_manager.raise_manager_tx.try_send(request) {
-                    warn!("Failed to send raise request from focus_first_window_on_screen: {}", e);
+                    warn!(
+                        "Failed to send raise request from focus_first_window_on_screen: {}",
+                        e
+                    );
                 }
                 return true;
             }

@@ -1860,9 +1860,8 @@ impl Reactor {
         let vwm = self.layout_manager.layout_engine.virtual_workspace_manager();
         let changed: Vec<WindowId> = self
             .window_manager
-            .windows
-            .keys()
-            .copied()
+            .iter_windows()
+            .map(|(wid, _)| wid)
             .filter(|wid| before.get(wid).copied().flatten() != vwm.workspace_for_window(*wid))
             .collect();
         for wid in changed {
@@ -2352,7 +2351,7 @@ impl Reactor {
                 if wid.pid != pid {
                     return false;
                 }
-                let Some(space) = self.intended_space_for_window_state(*wid, window_state) else {
+                let Some(space) = self.intended_space_for_window_state(wid, window_state) else {
                     return false;
                 };
                 if !visible_spaces.contains(&space) {
@@ -2366,7 +2365,7 @@ impl Reactor {
                 self.layout_manager
                     .layout_engine
                     .virtual_workspace_manager()
-                    .workspace_for_window(*wid)
+                    .workspace_for_window(wid)
                     .is_some_and(|window_workspace| window_workspace == active_workspace)
             });
 
