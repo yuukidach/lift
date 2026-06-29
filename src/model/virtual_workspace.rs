@@ -1156,6 +1156,51 @@ impl VirtualWorkspaceManager {
         self.destroy_ephemeral_workspaces(touched)
     }
 
+    /// Remove any stale workspace-set membership for windows that no longer
+    /// exist in the reactor's WindowManager. This is a repair path for
+    /// restored or otherwise inconsistent state; normal window destruction
+    /// should go through `remove_window` while the registry assignment is
+    /// still present.
+    #[must_use = "destroyed workspaces must be propagated to LayoutEngine::drop_workspace_layout"]
+    pub fn prune_windows_not_in(
+        &mut self,
+        live_windows: &HashSet<WindowId>,
+    ) -> (Vec<WindowId>, Vec<(SpaceId, VirtualWorkspaceId)>) {
+        let mut windows_to_remove: Vec<WindowId> = self
+            .workspaces
+            .values()
+            .flat_map(|workspace| workspace.windows())
+            .filter(|wid| !live_windows.contains(wid))
+            .collect();
+        windows_to_remove.sort_unstable();
+        windows_to_remove.dedup();
+
+        if windows_to_remove.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        let mut touched: Vec<VirtualWorkspaceId> = Vec::new();
+        for window_id in &windows_to_remove {
+            let assigned_workspace =
+                self.window_registry.get_mut().remove_window_assignment(*window_id);
+            for (workspace_id, workspace) in self.workspaces.iter_mut() {
+                if workspace.remove_window(*window_id) {
+                    touched.push(workspace_id);
+                }
+            }
+            if let Some(info) = assigned_workspace
+                && !touched.contains(&info.workspace_id)
+            {
+                touched.push(info.workspace_id);
+            }
+            self.window_registry.get_mut().clear_rule_metadata(*window_id);
+            self.remove_floating_position(*window_id);
+        }
+
+        let destroyed = self.destroy_ephemeral_workspaces(touched);
+        (windows_to_remove, destroyed)
+    }
+
     /// Ephemeral lifecycle: destroy `ws_id` if it has no windows, while
     /// preserving the invariant that every display keeps at least one
     /// workspace. If the empty workspace is currently active and another

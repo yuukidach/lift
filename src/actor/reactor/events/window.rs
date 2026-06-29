@@ -103,8 +103,8 @@ impl WindowEventHandler {
         } else {
             debug!(?wid, "Received WindowDestroyed for unknown window - ignoring");
         }
-        reactor.window_manager.remove_window(wid);
         reactor.send_layout_event(LayoutEvent::WindowRemoved(wid));
+        reactor.window_manager.remove_window(wid);
 
         if let DragState::PendingSwap { session, target } = &reactor.drag_manager.drag_state {
             if session.window == wid || *target == wid {

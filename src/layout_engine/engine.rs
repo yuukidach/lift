@@ -998,6 +998,59 @@ impl LayoutEngine {
         }
     }
 
+    pub fn prune_layout_windows_not_in(&mut self, live_windows: &HashSet<WindowId>) -> bool {
+        let mut removed: Vec<WindowId> = self
+            .workspace_layouts
+            .active_layouts_with_workspace()
+            .into_iter()
+            .flat_map(|(ws_id, layout)| {
+                self.workspace_tree(ws_id)
+                    .visible_windows_in_layout(layout)
+                    .into_iter()
+            })
+            .filter(|wid| !live_windows.contains(wid))
+            .collect();
+        removed.sort_unstable();
+        removed.dedup();
+
+        if removed.is_empty() {
+            return false;
+        }
+
+        for wid in &removed {
+            self.remove_window_from_all_tiling_trees(*wid);
+            self.floating.remove_floating(*wid);
+            self.window_layout_constraints.remove(wid);
+            if self.focused_window == Some(*wid) {
+                self.focused_window = None;
+            }
+        }
+        self.rebalance_all_layouts();
+        true
+    }
+
+    pub fn prune_windows_not_in(&mut self, live_windows: &HashSet<WindowId>) -> bool {
+        let layout_changed = self.prune_layout_windows_not_in(live_windows);
+        let (vwm_removed, destroyed) =
+            self.virtual_workspace_manager.prune_windows_not_in(live_windows);
+
+        for wid in &vwm_removed {
+            self.remove_window_from_all_tiling_trees(*wid);
+            self.floating.remove_floating(*wid);
+            self.virtual_workspace_manager.remove_floating_position(*wid);
+            self.window_layout_constraints.remove(wid);
+            if self.focused_window == Some(*wid) {
+                self.focused_window = None;
+            }
+        }
+        self.drain_destroyed_workspace_layouts(destroyed);
+        let vwm_changed = !vwm_removed.is_empty();
+        if vwm_changed {
+            self.rebalance_all_layouts();
+        }
+        layout_changed || vwm_changed
+    }
+
     fn space_with_window(&self, wid: WindowId) -> Option<SpaceId> {
         for space in self.workspace_layouts.spaces() {
             if let Some(ws_id) = self.virtual_workspace_manager.active_workspace(space) {
@@ -2835,6 +2888,10 @@ impl LayoutEngine {
         self.floating.is_floating(window_id)
     }
 
+    pub fn focused_window_for_command(&self) -> Option<WindowId> {
+        self.focused_window
+    }
+
     fn update_active_floating_windows(&mut self, space: SpaceId) {
         let windows_in_workspace =
             self.virtual_workspace_manager.windows_in_active_workspace(space);
@@ -2947,7 +3004,7 @@ impl LayoutEngine {
 mod tests {
     use std::panic::AssertUnwindSafe;
 
-    use objc2_core_foundation::{CGPoint, CGSize};
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 
     use super::*;
     use crate::common::collections::HashMap;
@@ -3022,6 +3079,61 @@ mod tests {
             result.is_ok(),
             "handle_command should not panic before SpaceExposed"
         );
+    }
+
+    #[test]
+    fn prune_windows_not_in_removes_ghost_windows_from_workspace_and_layout_tree() {
+        let mut settings = LayoutSettings::default();
+        settings.mode = LayoutMode::Bsp;
+        let mut engine = LayoutEngine::new(&VirtualWorkspaceSettings::default(), &settings, None);
+        let space = SpaceId::new(43);
+        let screen = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1000.0, 800.0));
+        let pid: pid_t = 10;
+        let live_a = WindowId::new(pid, 1);
+        let live_b = WindowId::new(pid, 2);
+        let ghost_a = WindowId::new(pid, 3);
+        let ghost_b = WindowId::new(pid, 4);
+        let ghost_c = WindowId::new(pid, 5);
+        let window_info = |wid| (wid, None, None, None, true, CGSize::new(0.0, 0.0), None, None);
+
+        let _ = engine.handle_event(LayoutEvent::SpaceExposed(space, screen.size));
+        let _ = engine.handle_event(LayoutEvent::WindowsOnScreenUpdated(
+            space,
+            pid,
+            vec![
+                window_info(live_a),
+                window_info(live_b),
+                window_info(ghost_a),
+                window_info(ghost_b),
+                window_info(ghost_c),
+            ],
+            None,
+        ));
+        assert_eq!(engine.windows_in_active_workspace(space).len(), 5);
+
+        let live_windows = [live_a, live_b].into_iter().collect();
+        assert!(engine.prune_windows_not_in(&live_windows));
+
+        let mut active_windows = engine.windows_in_active_workspace(space);
+        active_windows.sort_unstable();
+        assert_eq!(active_windows, vec![live_a, live_b]);
+
+        let frames = engine.calculate_layout(
+            space,
+            screen,
+            &settings.gaps,
+            0.0,
+            Default::default(),
+            Default::default(),
+        );
+        let frame_ids: crate::common::collections::HashSet<WindowId> =
+            frames.iter().map(|(wid, _)| *wid).collect();
+        assert_eq!(frame_ids.len(), 2);
+        assert!(frame_ids.contains(&live_a));
+        assert!(frame_ids.contains(&live_b));
+        assert!(!frame_ids.contains(&ghost_a));
+        assert!(!frame_ids.contains(&ghost_b));
+        assert!(!frame_ids.contains(&ghost_c));
     }
 
     #[test]

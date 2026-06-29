@@ -227,9 +227,16 @@ impl LayoutManager {
     }
 
     fn calculate_layout(reactor: &mut Reactor) -> LayoutResult {
-        if reactor.window_manager.tracked_window_count() == 0 {
+        let live_windows: HashSet<WindowId> =
+            reactor.window_manager.iter_windows().map(|(wid, _)| wid).collect();
+        reactor
+            .layout_manager
+            .layout_engine
+            .prune_layout_windows_not_in(&live_windows);
+        if live_windows.is_empty() {
             return LayoutResult::new();
         }
+
         let screens = reactor.space_manager.screens.clone();
         let all_screen_frames: Vec<CGRect> = screens.iter().map(|s| s.frame).collect();
         let active_space_count = screens

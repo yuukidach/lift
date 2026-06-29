@@ -510,6 +510,55 @@ fn canceled_focus_next_window_does_not_focus_discovered_window() {
 }
 
 #[test]
+fn close_window_falls_back_to_workspace_window_when_main_window_missing() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
+
+    let target = WindowId::new(1, 1);
+    reactor.handle_events(apps.make_app_with_opts(
+        1,
+        make_windows(1),
+        Some(target),
+        true,
+        true,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_event(Event::ApplicationGloballyActivated(1));
+    assert_eq!(reactor.main_window(), Some(target));
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .windows_in_active_workspace(space)
+            .into_iter()
+            .next(),
+        Some(target),
+        "precondition: workspace has a fallback window"
+    );
+
+    reactor.handle_event(Event::ApplicationMainWindowChanged(1, None, Quiet::No));
+    assert_eq!(reactor.main_window(), None);
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::CloseWindow {
+        window_server_id: None,
+    })));
+
+    assert!(
+        apps.requests()
+            .iter()
+            .any(|request| matches!(request, Request::CloseWindow(wid) if *wid == target)),
+        "close command should target the current workspace window when the main window is missing"
+    );
+}
+
+#[test]
 fn workspace_switch_batches_all_windows_with_eui_enabled() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test(LayoutEngine::new(
@@ -596,7 +645,7 @@ fn auto_workspace_switch_focuses_activated_window_not_stale_workspace_focus() {
     let activated = WindowId::new(2, 1);
 
     reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
-    reactor.handle_events(apps.make_app(1, make_windows(1)));
+    reactor.handle_events(apps.make_app(1, make_windows(2)));
     reactor.handle_events(apps.make_app(2, make_windows(1)));
     apps.simulate_until_quiet(&mut reactor);
 
