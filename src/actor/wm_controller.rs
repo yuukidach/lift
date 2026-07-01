@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use dispatchr::queue;
 use dispatchr::time::Time;
 use objc2_app_kit::{NSApplicationActivationPolicy, NSRunningApplication};
-use objc2_core_foundation::CGRect;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -106,11 +105,15 @@ static BUILTIN_WM_CMD_VARIANTS: Lazy<Vec<String>> = Lazy::new(|| {
 });
 
 impl WmCmd {
-    pub fn snake_case_variants() -> &'static [String] { &BUILTIN_WM_CMD_VARIANTS }
+    pub fn snake_case_variants() -> &'static [String] {
+        &BUILTIN_WM_CMD_VARIANTS
+    }
 }
 
 impl WmCommand {
-    pub fn builtin_candidates() -> &'static [String] { WmCmd::snake_case_variants() }
+    pub fn builtin_candidates() -> &'static [String] {
+        WmCmd::snake_case_variants()
+    }
 }
 
 pub struct Config {
@@ -275,7 +278,7 @@ impl WmController {
                 }
             }
             ScreenParametersChanged(screens, converter) => {
-                let frames_with_spaces: Vec<(CGRect, Option<SpaceId>)> =
+                let frames_with_spaces: Vec<_> =
                     screens.iter().map(|s| (s.frame, s.space)).collect();
 
                 self.events_tx.send(Event::ScreenParametersChanged(screens));
@@ -284,11 +287,6 @@ impl WmController {
                     frames_with_spaces.clone(),
                     converter,
                 ));
-                if let Some(tx) = &self.gesture_tap_tx {
-                    tx.send(gesture_tap::GestureRequest::ScreenParametersChanged(
-                        frames_with_spaces,
-                    ));
-                }
                 if let Some(tx) = &self.stack_line_tx {
                     _ = tx.try_send(crate::actor::stack_line::Event::ScreenParametersChanged(
                         converter,
@@ -298,9 +296,6 @@ impl WmController {
             SpaceChanged(spaces) => {
                 self.events_tx.send(reactor::Event::SpaceChanged(spaces.clone()));
                 _ = self.event_tap_tx.send(event_tap::Request::SpaceChanged(spaces.clone()));
-                if let Some(tx) = &self.gesture_tap_tx {
-                    tx.send(gesture_tap::GestureRequest::SpaceChanged(spaces));
-                }
             }
             PowerStateChanged(is_low_power_mode) => {
                 info!("Power state changed: low power mode = {}", is_low_power_mode);
@@ -346,8 +341,7 @@ impl WmController {
                     } else {
                         layout::LayoutCommand::SwitchToWorkspace(workspace_index)
                     };
-                    self.events_tx
-                        .send(reactor::Event::Command(reactor::Command::Layout(cmd)));
+                    self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(cmd)));
                 } else {
                     tracing::warn!(
                         "Hotkey requested switch to workspace {:?} but it could not be resolved; ignoring",

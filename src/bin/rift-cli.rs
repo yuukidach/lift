@@ -191,7 +191,7 @@ enum WorkspaceCommands {
         /// Workspace index (0-based). Defaults to active workspace if omitted.
         #[arg(long)]
         workspace_id: Option<usize>,
-        /// Layout mode: traditional, bsp, stack, master_stack, scrolling
+        /// Layout mode: bsp. Legacy names are accepted and normalized to bsp.
         mode: String,
     },
 }
@@ -206,7 +206,7 @@ enum LayoutCommands {
     MoveNode { direction: String },
     /// Join the selected window with neighbor in a direction
     JoinWindow { direction: String },
-    /// Toggle stacked state for the selected container
+    /// Legacy no-op retained for compatibility
     ToggleStack,
     /// Global orientation toggle that works consistently across layout modes (and between splits/stacks)
     ToggleOrientation,
@@ -214,22 +214,21 @@ enum LayoutCommands {
     Unjoin,
     /// Toggle floating on the focused selection (tree focus)
     ToggleFocusFloat,
-    /// Adjust master ratio by a delta (master/stack layout only)
+    /// Legacy no-op retained for compatibility
     AdjustMasterRatio { delta: f64 },
-    /// Adjust master count by a delta (master/stack layout only)
+    /// Legacy no-op retained for compatibility
     AdjustMasterCount { delta: i32 },
-    /// Promote the selected window into the master area (master/stack layout only)
+    /// Legacy no-op retained for compatibility
     PromoteToMaster,
-    /// Swap the first master with the first stack window (master/stack layout only)
+    /// Legacy no-op retained for compatibility
     SwapMasterStack,
     /// Swap two windows by window id (`WindowId { pid: ..., idx: ... }`)
     SwapWindows { a: String, b: String },
-    /// Scroll the strip by a normalized delta (scrolling layout only)
+    /// Legacy no-op retained for compatibility
     ScrollStrip { delta: f64 },
-    /// Snap the strip to the nearest column boundary (scrolling layout only)
+    /// Legacy no-op retained for compatibility
     SnapStrip,
-    /// Toggle centering of the selected column in scrolling layout.
-    /// If invoked again on the same selection, centering is removed.
+    /// Legacy no-op retained for compatibility
     CenterSelection,
 }
 
@@ -260,12 +259,11 @@ enum ConfigCommands {
         value: bool,
     },
 
-    /// Update layout settings
+    /// Legacy stack setting retained for compatibility
     SetStackOffset {
         value: f64,
     },
-    /// Set the default stack orientation behavior. Value should be one of:
-    /// "perpendicular", "same", "horizontal", or "vertical"
+    /// Legacy stack setting retained for compatibility
     SetStackDefaultOrientation {
         value: String,
     },
@@ -616,15 +614,10 @@ fn parse_window_id(input: &str) -> Result<WindowId, String> {
 
 fn parse_layout_mode(value: &str) -> Result<LayoutMode, String> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "traditional" => Ok(LayoutMode::Traditional),
-        "bsp" => Ok(LayoutMode::Bsp),
-        "stack" => Ok(LayoutMode::Stack),
-        "master_stack" => Ok(LayoutMode::MasterStack),
-        "scrolling" => Ok(LayoutMode::Scrolling),
-        other => Err(format!(
-            "Invalid layout mode '{}'; must be traditional, bsp, stack, master_stack, or scrolling",
-            other
-        )),
+        "bsp" | "traditional" | "stack" | "master_stack" | "scrolling" => {
+            Ok(LayoutMode::Bsp.runtime())
+        }
+        other => Err(format!("Invalid layout mode '{}'; must be bsp", other)),
     }
 }
 

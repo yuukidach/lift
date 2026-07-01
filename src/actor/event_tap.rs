@@ -35,7 +35,7 @@ use super::stack_line;
 use crate::actor;
 use crate::actor::wm_controller::{self, WmCommand, WmEvent};
 use crate::common::collections::{HashMap, HashSet};
-use crate::common::config::{Config, LayoutMode};
+use crate::common::config::Config;
 use crate::sys::event::{self, Hotkey, KeyCode, MouseState, set_mouse_state};
 use crate::sys::hotkey::{
     Modifiers, is_modifier_key, key_code_from_event, modifier_flag_for_key,
@@ -61,7 +61,6 @@ pub enum Request {
     SetHotkeys(Vec<(String, WmCommand)>),
     KeyboardLayoutChanged,
     ConfigUpdated(Config),
-    LayoutModesChanged(Vec<(SpaceId, crate::common::config::LayoutMode)>),
     SetLowPowerMode(bool),
 }
 
@@ -89,7 +88,6 @@ struct State {
     hide_count: u32,
     mouse_hides_on_focus: bool,
     focus_follows_mouse_config_enabled: bool,
-    default_layout_mode: LayoutMode,
     converter: CoordinateConverter,
     screens: Vec<CGRect>,
     event_processing_enabled: bool,
@@ -100,7 +98,6 @@ struct State {
     pressed_keys: HashSet<KeyCode>,
     current_flags: CGEventFlags,
     screen_spaces: Vec<(CGRect, SpaceId)>,
-    layout_mode_by_space: HashMap<SpaceId, crate::common::config::LayoutMode>,
     last_mouse_move_loc: Option<CGPoint>,
     last_mouse_move_timestamp: u64,
 }
@@ -111,7 +108,6 @@ impl Default for State {
             hide_count: 0,
             mouse_hides_on_focus: false,
             focus_follows_mouse_config_enabled: false,
-            default_layout_mode: LayoutMode::Traditional,
             converter: CoordinateConverter::default(),
             screens: Vec::new(),
             event_processing_enabled: false,
@@ -122,7 +118,6 @@ impl Default for State {
             pressed_keys: HashSet::default(),
             current_flags: CGEventFlags::empty(),
             screen_spaces: Vec::new(),
-            layout_mode_by_space: HashMap::default(),
             last_mouse_move_loc: None,
             last_mouse_move_timestamp: 0,
         }
@@ -144,7 +139,9 @@ unsafe fn drop_mouse_ctx(ptr: *mut std::ffi::c_void) {
 
 impl EventTap {
     #[inline]
-    fn stack_line_hover_enabled(&self, state: &State) -> bool { state.stack_line_enabled }
+    fn stack_line_hover_enabled(&self, state: &State) -> bool {
+        state.stack_line_enabled
+    }
 
     #[inline]
     fn focus_follows_mouse_handler_enabled(state: &State) -> bool {
@@ -226,7 +223,6 @@ impl EventTap {
         state.mouse_hides_on_focus = config.settings.mouse_hides_on_focus;
         state.focus_follows_mouse_config_enabled = config.settings.focus_follows_mouse;
         state.stack_line_enabled = config.settings.ui.stack_line.enabled;
-        state.default_layout_mode = config.settings.layout.mode;
         state.disable_hotkey_active = disable_hotkey
             .as_ref()
             .map(|target| state.compute_disable_hotkey_active(target))
@@ -378,7 +374,6 @@ impl EventTap {
                 let mouse_hides_on_focus = new_config.settings.mouse_hides_on_focus;
                 let focus_follows_mouse_config_enabled = new_config.settings.focus_follows_mouse;
                 let stack_line_enabled = new_config.settings.ui.stack_line.enabled;
-                let default_layout_mode = new_config.settings.layout.mode;
                 let disable_hotkey = new_config
                     .settings
                     .focus_follows_mouse_disable_hotkey
@@ -390,7 +385,6 @@ impl EventTap {
                     state.mouse_hides_on_focus = mouse_hides_on_focus;
                     state.focus_follows_mouse_config_enabled = focus_follows_mouse_config_enabled;
                     state.stack_line_enabled = stack_line_enabled;
-                    state.default_layout_mode = default_layout_mode;
                     let prev_active = state.disable_hotkey_active;
                     state.disable_hotkey_active = self
                         .disable_hotkey
@@ -410,16 +404,6 @@ impl EventTap {
                     }
                 }
                 should_rebuild_mask = true;
-            }
-            Request::LayoutModesChanged(modes) => {
-                state.layout_mode_by_space.clear();
-                for (space, mode) in modes {
-                    state.layout_mode_by_space.insert(space, mode);
-                }
-                debug!(
-                    "Updated layout modes for {} spaces",
-                    state.layout_mode_by_space.len()
-                );
             }
             Request::SetLowPowerMode(enabled) => {
                 if state.low_power_mode != enabled {
@@ -712,18 +696,13 @@ impl State {
         true
     }
 
-    #[cfg(test)]
-    fn layout_mode_at_point(&self, loc: CGPoint) -> Option<crate::common::config::LayoutMode> {
-        use crate::sys::geometry::CGRectExt;
-        self.screen_spaces
-            .iter()
-            .find(|(frame, _)| frame.contains(loc))
-            .and_then(|(_, space)| self.layout_mode_by_space.get(space).copied())
+    fn note_key_down(&mut self, key_code: KeyCode) {
+        self.pressed_keys.insert(key_code);
     }
 
-    fn note_key_down(&mut self, key_code: KeyCode) { self.pressed_keys.insert(key_code); }
-
-    fn note_key_up(&mut self, key_code: KeyCode) { self.pressed_keys.remove(&key_code); }
+    fn note_key_up(&mut self, key_code: KeyCode) {
+        self.pressed_keys.remove(&key_code);
+    }
 
     fn note_flags_changed(&mut self, key_code: KeyCode) {
         if !is_modifier_key(key_code) {
@@ -842,41 +821,4 @@ fn build_event_mask(keyboard_enabled: bool, mouse_move_enabled: bool) -> CGEvent
         }
     }
     m
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn layout_mode_at_point_uses_space_mapping() {
-        let mut state = State::default();
-        let left = CGRect::new(
-            CGPoint::new(0.0, 0.0),
-            objc2_core_foundation::CGSize::new(100.0, 100.0),
-        );
-        let right = CGRect::new(
-            CGPoint::new(100.0, 0.0),
-            objc2_core_foundation::CGSize::new(100.0, 100.0),
-        );
-
-        let left_space = SpaceId::new(1);
-        let right_space = SpaceId::new(2);
-        state.screen_spaces = vec![(left, left_space), (right, right_space)];
-        state
-            .layout_mode_by_space
-            .insert(left_space, crate::common::config::LayoutMode::Traditional);
-        state
-            .layout_mode_by_space
-            .insert(right_space, crate::common::config::LayoutMode::Scrolling);
-
-        assert_eq!(
-            state.layout_mode_at_point(CGPoint::new(50.0, 50.0)),
-            Some(crate::common::config::LayoutMode::Traditional)
-        );
-        assert_eq!(
-            state.layout_mode_at_point(CGPoint::new(150.0, 50.0)),
-            Some(crate::common::config::LayoutMode::Scrolling)
-        );
-    }
 }

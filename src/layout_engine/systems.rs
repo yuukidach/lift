@@ -1,6 +1,6 @@
 use enum_dispatch::enum_dispatch;
 use objc2_core_foundation::CGRect;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, ser::SerializeStruct};
 
 use crate::actor::app::{WindowId, pid_t};
 use crate::common::collections::HashMap;
@@ -168,19 +168,14 @@ pub trait LayoutSystem: Serialize + for<'de> Deserialize<'de> {
     fn toggle_tile_orientation(&mut self, layout: LayoutId);
 }
 
-mod traditional;
-pub use traditional::TraditionalLayoutSystem;
 mod bsp;
 pub(crate) mod constraints;
 pub use bsp::BspLayoutSystem;
-mod master_stack;
-pub use master_stack::MasterStackLayoutSystem;
-mod scrolling;
-pub use scrolling::ScrollingLayoutSystem;
 
 #[cfg(test)]
 mod tests {
     use super::WindowLayoutConstraints;
+    use super::{BspLayoutSystem, LayoutSystemKind};
 
     #[test]
     fn axis_specific_fixed_detection_supports_one_axis_locked_other_resizable() {
@@ -261,18 +256,50 @@ mod tests {
         assert!(c.resizable_for_axis(true));
         assert!(c.resizable_for_axis(false));
     }
-}
-mod stack;
-pub use stack::StackLayoutSystem;
 
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+    #[test]
+    fn legacy_layout_system_kind_deserializes_as_bsp() {
+        let layout: LayoutSystemKind = serde_json::from_value(serde_json::json!({
+            "kind": "scrolling"
+        }))
+        .unwrap();
+        assert!(matches!(layout, LayoutSystemKind::Bsp(_)));
+
+        let value =
+            serde_json::to_value(LayoutSystemKind::Bsp(BspLayoutSystem::default())).unwrap();
+        let layout: LayoutSystemKind = serde_json::from_value(value).unwrap();
+        assert!(matches!(layout, LayoutSystemKind::Bsp(_)));
+    }
+}
 #[derive(Debug)]
 #[enum_dispatch(LayoutSystem)]
 pub enum LayoutSystemKind {
-    Traditional(TraditionalLayoutSystem),
     Bsp(BspLayoutSystem),
-    MasterStack(MasterStackLayoutSystem),
-    Scrolling(ScrollingLayoutSystem),
-    Stack(StackLayoutSystem),
+}
+
+impl Serialize for LayoutSystemKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("LayoutSystemKind", 1)?;
+        state.serialize_field("kind", "bsp")?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for LayoutSystemKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Repr {
+            #[allow(dead_code)]
+            kind: Option<String>,
+        }
+
+        let _ = Repr::deserialize(deserializer)?;
+        Ok(Self::Bsp(BspLayoutSystem::default()))
+    }
 }

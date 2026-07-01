@@ -6,7 +6,6 @@ use crate::actor::reactor::events::drag::DragEventHandler;
 use crate::actor::reactor::{
     DragState, Quiet, Reactor, Requested, TransactionId, WindowFilter, WindowState, utils,
 };
-use crate::common::config::LayoutMode;
 use crate::layout_engine::LayoutEvent;
 use crate::sys::app::WindowInfo as Window;
 use crate::sys::event::{MouseState, get_mouse_state};
@@ -350,27 +349,6 @@ impl WindowEventHandler {
                 }
             } else {
                 if old_space != new_space {
-                    let keep_assigned_for_scrolling = old_space.is_some_and(|space| {
-                        reactor.layout_manager.layout_engine.active_layout_mode_at(space)
-                            == LayoutMode::Scrolling
-                            && !reactor.layout_manager.layout_engine.is_window_floating(wid)
-                            && reactor
-                                .layout_manager
-                                .layout_engine
-                                .virtual_workspace_manager()
-                                .workspace_for_window(wid)
-                                .is_some()
-                    });
-                    if keep_assigned_for_scrolling {
-                        debug!(
-                            ?wid,
-                            ?old_space,
-                            ?new_space,
-                            "Ignoring geometry-only space change for scrolling tiled window"
-                        );
-                        return false;
-                    }
-
                     reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(wid));
                     if let Some(space) = new_space {
                         if reactor.is_space_active(space) {
@@ -392,8 +370,9 @@ impl WindowEventHandler {
                                         wid, active_ws
                                     );
                                 } else {
-                                    let _ = reactor
-                                        .remember_recent_workspace_target_for(wid, space, active_ws);
+                                    let _ = reactor.remember_recent_workspace_target_for(
+                                        wid, space, active_ws,
+                                    );
                                 }
                             }
                             reactor.send_layout_event(LayoutEvent::WindowAdded(space, wid));

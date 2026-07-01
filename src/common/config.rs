@@ -56,8 +56,12 @@ pub enum ConfigCommand {
     ReloadConfig,
 }
 
-pub fn data_dir() -> PathBuf { dirs::home_dir().unwrap().join(".rift") }
-pub fn restore_file() -> PathBuf { data_dir().join("layout.ron") }
+pub fn data_dir() -> PathBuf {
+    dirs::home_dir().unwrap().join(".rift")
+}
+pub fn restore_file() -> PathBuf {
+    data_dir().join("layout.ron")
+}
 pub fn config_file() -> PathBuf {
     dirs::home_dir().unwrap().join(".config").join("rift").join("config.toml")
 }
@@ -318,7 +322,9 @@ pub struct Config {
 
 impl<'de> Deserialize<'de> for Config {
     fn deserialize<D>(deserializer: D) -> Result<Config, D::Error>
-    where D: serde::Deserializer<'de> {
+    where
+        D: serde::Deserializer<'de>,
+    {
         #[derive(Deserialize)]
         struct ConfigSerde {
             settings: Settings,
@@ -562,19 +568,33 @@ pub struct MissionControlSettings {
     pub fade_duration_ms: f64,
 }
 
-fn default_mission_control_fade_duration_ms() -> f64 { 180.0 }
+fn default_mission_control_fade_duration_ms() -> f64 {
+    180.0
+}
 
-fn default_drag_swap_fraction() -> f64 { 0.3 }
+fn default_drag_swap_fraction() -> f64 {
+    0.3
+}
 
-fn default_master_stack_ratio() -> f64 { 0.6 }
+fn default_master_stack_ratio() -> f64 {
+    0.6
+}
 
-fn default_master_stack_count() -> usize { 1 }
+fn default_master_stack_count() -> usize {
+    1
+}
 
-fn default_scrolling_column_width_ratio() -> f64 { 0.7 }
+fn default_scrolling_column_width_ratio() -> f64 {
+    0.7
+}
 
-fn default_scrolling_min_column_width_ratio() -> f64 { 0.3 }
+fn default_scrolling_min_column_width_ratio() -> f64 {
+    0.3
+}
 
-fn default_scrolling_max_column_width_ratio() -> f64 { 0.9 }
+fn default_scrolling_max_column_width_ratio() -> f64 {
+    0.9
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
@@ -593,37 +613,43 @@ pub enum VerticalPlacement {
 }
 
 impl StackLineSettings {
-    pub fn thickness(&self) -> f64 { if self.enabled { self.thickness } else { 0.0 } }
+    pub fn thickness(&self) -> f64 {
+        if self.enabled { self.thickness } else { 0.0 }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct LayoutSettings {
-    /// Layout mode: "traditional", "bsp", "stack", "master_stack", or "scrolling"
+    /// Layout mode. Rift runs BSP only; legacy names deserialize for compatibility.
     #[serde(default)]
     pub mode: LayoutMode,
-    /// Stack system configuration
+    /// Legacy stack configuration retained for older config files.
     #[serde(default)]
     pub stack: StackSettings,
-    /// Master/stack layout configuration
+    /// Legacy master/stack configuration retained for older config files.
     #[serde(default)]
     pub master_stack: MasterStackSettings,
     /// Gap configuration for window spacing
     #[serde(default)]
     pub gaps: GapSettings,
-    /// Scrolling layout configuration (niri-style columns)
+    /// Legacy scrolling layout configuration retained for older config files.
     #[serde(default)]
     pub scrolling: ScrollingLayoutSettings,
 }
 
-/// Layout mode enum
+/// Layout mode enum.
+///
+/// Rift currently runs BSP only. Non-BSP variants remain deserializable for
+/// compatibility with older config files, CLI input, and IPC payloads; runtime
+/// layout creation normalizes them to BSP.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LayoutMode {
     /// Traditional container-based tiling (i3/sway style)
-    #[default]
     Traditional,
     /// Binary space partitioning tiling
+    #[default]
     Bsp,
     /// Dedicated stacked layout (single stack container)
     Stack,
@@ -642,6 +668,12 @@ impl ToString for LayoutMode {
             LayoutMode::MasterStack => "master_stack".to_string(),
             LayoutMode::Scrolling => "scrolling".to_string(),
         }
+    }
+}
+
+impl LayoutMode {
+    pub fn runtime(self) -> Self {
+        LayoutMode::Bsp
     }
 }
 
@@ -668,7 +700,7 @@ pub struct ScrollingLayoutSettings {
     /// - anchored: always align focused column to `alignment`.
     #[serde(default)]
     pub focus_navigation_style: ScrollingFocusNavigationStyle,
-    /// Trackpad gestures for scrolling layout
+    /// Legacy scrolling gesture settings retained for older config files.
     #[serde(default)]
     pub gestures: ScrollingGestureSettings,
 }
@@ -1125,9 +1157,13 @@ impl InnerGaps {
     }
 }
 
-fn yes() -> bool { true }
+fn yes() -> bool {
+    true
+}
 
-fn default_stack_offset() -> f64 { 40.0 }
+fn default_stack_offset() -> f64 {
+    40.0
+}
 
 pub fn default_stack_orientation() -> StackDefaultOrientation {
     StackDefaultOrientation::Perpendicular
@@ -1137,22 +1173,40 @@ fn default_master_stack_new_window_placement() -> MasterStackNewWindowPlacement 
     MasterStackNewWindowPlacement::Master
 }
 
-fn default_animation_duration() -> f64 { 0.3 }
+fn default_animation_duration() -> f64 {
+    0.3
+}
 
-fn default_animation_fps() -> f64 { 100.0 }
+fn default_animation_fps() -> f64 {
+    100.0
+}
 
 #[allow(dead_code)]
-fn no() -> bool { false }
+fn no() -> bool {
+    false
+}
 
 // Interpreted as normalized fraction when <= 1.0. If > 1.0 and <= 100.0,
 // it is treated as a percentage (e.g. 40.0 -> 0.40).
-fn default_swipe_vertical_tolerance() -> f64 { 0.4 }
-fn default_swipe_fingers() -> usize { 3 }
-fn default_distance_pct() -> f64 { 0.08 }
-fn default_overscroll_threshold() -> f64 { 0.625 }
+fn default_swipe_vertical_tolerance() -> f64 {
+    0.4
+}
+fn default_swipe_fingers() -> usize {
+    3
+}
+fn default_distance_pct() -> f64 {
+    0.08
+}
+fn default_overscroll_threshold() -> f64 {
+    0.625
+}
 
-fn default_stack_line_spacing() -> f64 { 1.0 }
-fn default_stack_line_thickness() -> f64 { 20.0 }
+fn default_stack_line_spacing() -> f64 {
+    1.0
+}
+fn default_stack_line_thickness() -> f64 {
+    20.0
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
@@ -1169,7 +1223,9 @@ impl Config {
         Self::parse(&buf)
     }
 
-    pub fn default() -> Config { Self::parse(include_str!("../../rift.default.toml")).unwrap() }
+    pub fn default() -> Config {
+        Self::parse(include_str!("../../rift.default.toml")).unwrap()
+    }
 
     /// Save the current config to a file
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {

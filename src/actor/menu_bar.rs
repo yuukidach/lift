@@ -190,8 +190,12 @@ impl Menu {
 
     fn handle_action(&mut self, action: MenuAction) {
         match action {
-            MenuAction::SetLayout(mode) => self
-                .send_layout_command(LayoutCommand::SetWorkspaceLayout { workspace: None, mode }),
+            MenuAction::SetLayout(mode) => {
+                self.send_layout_command(LayoutCommand::SetWorkspaceLayout {
+                    workspace: None,
+                    mode: mode.runtime(),
+                })
+            }
             MenuAction::NextWorkspace => {
                 self.send_layout_command(LayoutCommand::NextWorkspace(None));
             }
@@ -382,7 +386,7 @@ mod tests {
     #[test]
     fn signature_changes_when_workspace_layout_mode_changes() {
         let base = vec![workspace("bsp")];
-        let changed = vec![workspace("master_stack")];
+        let changed = vec![workspace("bsp-alt")];
 
         let before = sig(1, true, Some(0), &base, &[]);
         let after = sig(1, true, Some(0), &changed, &[]);

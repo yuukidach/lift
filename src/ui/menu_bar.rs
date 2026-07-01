@@ -293,22 +293,18 @@ fn as_any_object<T: Message>(obj: &T) -> &AnyObject {
 
 fn parse_layout_mode(layout_mode: &str) -> Option<LayoutMode> {
     match layout_mode {
-        "traditional" => Some(LayoutMode::Traditional),
         "bsp" => Some(LayoutMode::Bsp),
-        "stack" => Some(LayoutMode::Stack),
-        "master_stack" => Some(LayoutMode::MasterStack),
-        "scrolling" => Some(LayoutMode::Scrolling),
         _ => None,
     }
 }
 
 fn layout_title(mode: LayoutMode) -> &'static str {
     match mode {
-        LayoutMode::Traditional => "Traditional",
         LayoutMode::Bsp => "BSP",
-        LayoutMode::Stack => "Stack",
-        LayoutMode::MasterStack => "Master Stack",
-        LayoutMode::Scrolling => "Scrolling",
+        LayoutMode::Traditional
+        | LayoutMode::Stack
+        | LayoutMode::MasterStack
+        | LayoutMode::Scrolling => "BSP",
     }
 }
 
@@ -373,19 +369,13 @@ fn build_status_menu(
     let layout_submenu: Retained<NSMenu> =
         unsafe { msg_send![NSMenu::alloc(mtm), initWithTitle: &*layout_submenu_title] };
 
-    for mode in [
-        LayoutMode::Traditional,
-        LayoutMode::Bsp,
-        LayoutMode::Stack,
-        LayoutMode::MasterStack,
-        LayoutMode::Scrolling,
-    ] {
+    for mode in [LayoutMode::Bsp] {
         let action = match mode {
-            LayoutMode::Traditional => sel!(onSetLayoutTraditional:),
             LayoutMode::Bsp => sel!(onSetLayoutBsp:),
-            LayoutMode::Stack => sel!(onSetLayoutStack:),
-            LayoutMode::MasterStack => sel!(onSetLayoutMasterStack:),
-            LayoutMode::Scrolling => sel!(onSetLayoutScrolling:),
+            LayoutMode::Traditional
+            | LayoutMode::Stack
+            | LayoutMode::MasterStack
+            | LayoutMode::Scrolling => sel!(onSetLayoutBsp:),
         };
         let item = make_menu_item(
             mtm,
@@ -677,7 +667,9 @@ impl MenuActionHandler {
         unsafe { msg_send![super(this), init] }
     }
 
-    fn emit(&self, action: MenuAction) { let _ = self.ivars().action_tx.send(action); }
+    fn emit(&self, action: MenuAction) {
+        let _ = self.ivars().action_tx.send(action);
+    }
 }
 
 define_class!(
@@ -690,7 +682,7 @@ define_class!(
     impl MenuActionHandler {
         #[unsafe(method(onSetLayoutTraditional:))]
         fn on_set_layout_traditional(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::SetLayout(LayoutMode::Traditional));
+            self.emit(MenuAction::SetLayout(LayoutMode::Bsp));
         }
 
         #[unsafe(method(onSetLayoutBsp:))]
@@ -700,17 +692,17 @@ define_class!(
 
         #[unsafe(method(onSetLayoutStack:))]
         fn on_set_layout_stack(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::SetLayout(LayoutMode::Stack));
+            self.emit(MenuAction::SetLayout(LayoutMode::Bsp));
         }
 
         #[unsafe(method(onSetLayoutMasterStack:))]
         fn on_set_layout_master_stack(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::SetLayout(LayoutMode::MasterStack));
+            self.emit(MenuAction::SetLayout(LayoutMode::Bsp));
         }
 
         #[unsafe(method(onSetLayoutScrolling:))]
         fn on_set_layout_scrolling(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::SetLayout(LayoutMode::Scrolling));
+            self.emit(MenuAction::SetLayout(LayoutMode::Bsp));
         }
 
         #[unsafe(method(onToggleSpaceActivation:))]

@@ -11,7 +11,7 @@ use crate::common::config::{
 };
 use crate::common::log::trace_misc;
 use crate::layout_engine::Direction;
-use crate::layout_engine::systems::LayoutSystemKind;
+use crate::layout_engine::systems::{BspLayoutSystem, LayoutSystemKind};
 use crate::model::{WindowRegistryHandle, WindowWorkspaceInfo};
 use crate::sys::app::pid_t;
 use crate::sys::geometry::CGRectDef;
@@ -102,12 +102,23 @@ pub struct VirtualWorkspace {
     last_focused: Option<WindowId>,
     #[serde(default = "default_layout_system_kind")]
     pub layout_system: LayoutSystemKind,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_runtime_layout_mode")]
     pub layout_mode: LayoutMode,
 }
 
 fn default_layout_system_kind() -> LayoutSystemKind {
-    VirtualWorkspace::create_layout_system(LayoutMode::default(), &LayoutSettings::default())
+    VirtualWorkspace::create_layout_system()
+}
+
+fn normalize_layout_mode(_mode: LayoutMode) -> LayoutMode {
+    _mode.runtime()
+}
+
+fn deserialize_runtime_layout_mode<'de, D>(deserializer: D) -> Result<LayoutMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    LayoutMode::deserialize(deserializer).map(LayoutMode::runtime)
 }
 
 impl VirtualWorkspace {
@@ -116,9 +127,10 @@ impl VirtualWorkspace {
         name: String,
         space: SpaceId,
         mode: LayoutMode,
-        settings: &LayoutSettings,
+        _settings: &LayoutSettings,
     ) -> Self {
-        let layout_system = Self::create_layout_system(mode, settings);
+        let mode = normalize_layout_mode(mode);
+        let layout_system = Self::create_layout_system();
         Self {
             number,
             name,
@@ -142,28 +154,8 @@ impl VirtualWorkspace {
         self.layout_mode
     }
 
-    pub fn create_layout_system(mode: LayoutMode, settings: &LayoutSettings) -> LayoutSystemKind {
-        match mode {
-            LayoutMode::Traditional => LayoutSystemKind::Traditional(
-                crate::layout_engine::systems::TraditionalLayoutSystem::default(),
-            ),
-            LayoutMode::Bsp => {
-                LayoutSystemKind::Bsp(crate::layout_engine::systems::BspLayoutSystem::default())
-            }
-            LayoutMode::Stack => {
-                LayoutSystemKind::Stack(crate::layout_engine::systems::StackLayoutSystem::new(
-                    settings.stack.default_orientation,
-                ))
-            }
-            LayoutMode::MasterStack => LayoutSystemKind::MasterStack(
-                crate::layout_engine::systems::MasterStackLayoutSystem::new(
-                    settings.master_stack.clone(),
-                ),
-            ),
-            LayoutMode::Scrolling => LayoutSystemKind::Scrolling(
-                crate::layout_engine::systems::ScrollingLayoutSystem::new(&settings.scrolling),
-            ),
-        }
+    pub fn create_layout_system() -> LayoutSystemKind {
+        LayoutSystemKind::Bsp(BspLayoutSystem::default())
     }
 
     pub fn contains_window(&self, window_id: WindowId) -> bool {
@@ -303,7 +295,7 @@ impl VirtualWorkspaceManager {
             max_workspaces,
             workspace_auto_back_and_forth: config.workspace_auto_back_and_forth,
             workspace_rules: config.workspace_rules.clone(),
-            default_layout_mode: layout_settings.mode,
+            default_layout_mode: normalize_layout_mode(layout_settings.mode),
             layout_settings: layout_settings.clone(),
             workspace_by_number: HashMap::default(),
             display_for_workspace: HashMap::default(),
@@ -333,7 +325,7 @@ impl VirtualWorkspaceManager {
     ) {
         self.app_rules = config.app_rules.clone();
         self.workspace_rules = config.workspace_rules.clone();
-        self.default_layout_mode = layout_settings.mode;
+        self.default_layout_mode = normalize_layout_mode(layout_settings.mode);
         self.layout_settings = layout_settings.clone();
         self.workspace_auto_back_and_forth = config.workspace_auto_back_and_forth;
         self.display_default_workspaces = config.display_default_workspaces.clone();
@@ -450,17 +442,17 @@ impl VirtualWorkspaceManager {
         // Check workspace_rules (last matching rule wins, like app_rules)
         for rule in self.workspace_rules.iter().rev() {
             match &rule.workspace {
-                WorkspaceSelector::Index(idx) if *idx == index => return rule.layout,
-                WorkspaceSelector::Name(n) if n == name => return rule.layout,
+                WorkspaceSelector::Index(idx) if *idx == index => {
+                    return normalize_layout_mode(rule.layout);
+                }
+                WorkspaceSelector::Name(n) if n == name => {
+                    return normalize_layout_mode(rule.layout);
+                }
                 _ => continue,
             }
         }
         // Fall back to global default
-        self.default_layout_mode
-    }
-
-    pub fn desired_layout_mode_for_workspace(&self, index: usize, name: &str) -> LayoutMode {
-        self.resolve_layout_mode_for_workspace(index, name)
+        normalize_layout_mode(self.default_layout_mode)
     }
 
     pub fn initialized_spaces(&self) -> Vec<SpaceId> {
@@ -2441,6 +2433,22 @@ mod tests {
 
         let workspace = manager.workspace_info(space, ws_id).unwrap();
         assert_eq!(workspace.name, "Test Workspace");
+    }
+
+    #[test]
+    fn workspace_layout_mode_deserializes_as_runtime_bsp() {
+        let encoded = serde_json::json!({
+            "number": 1,
+            "name": "legacy",
+            "space": 1,
+            "windows": [],
+            "last_focused": null,
+            "layout_system": { "kind": "scrolling" },
+            "layout_mode": "scrolling"
+        });
+        let decoded: VirtualWorkspace = serde_json::from_value(encoded).unwrap();
+
+        assert_eq!(decoded.layout_mode(), LayoutMode::Bsp);
     }
 
     #[test]

@@ -211,9 +211,6 @@ impl CommandEventHandler {
         }
 
         reactor.handle_layout_response(response, workspace_space);
-        if requires_workspace_space {
-            reactor.update_event_tap_layout_mode();
-        }
     }
 
     /// Switch to whichever workspace owns global slot `slot`. The target may
@@ -316,7 +313,6 @@ impl CommandEventHandler {
                         &LayoutCommand::SwitchToLastWorkspace,
                     );
                 reactor.handle_layout_response(response, Some(target.space));
-                reactor.update_event_tap_layout_mode();
                 return;
             }
 
@@ -337,7 +333,6 @@ impl CommandEventHandler {
             &LayoutCommand::SwitchToWorkspace(target.per_space_index),
         );
         reactor.handle_layout_response(response, Some(target.space));
-        reactor.update_event_tap_layout_mode();
     }
 
     pub fn handle_command_metrics(_reactor: &mut Reactor, cmd: MetricsCommand) {
