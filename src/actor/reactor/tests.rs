@@ -683,6 +683,66 @@ fn auto_workspace_switch_focuses_activated_window_not_stale_workspace_focus() {
 }
 
 #[test]
+fn move_window_to_workspace_prefers_cursor_window_when_focus_follows_mouse() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    reactor.config.settings.focus_follows_mouse = true;
+
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(
+        1,
+        make_windows(1),
+        Some(WindowId::new(1, 1)),
+        true,
+        true,
+    ));
+    reactor.handle_events(apps.make_app_with_opts(
+        2,
+        make_windows(1),
+        Some(WindowId::new(2, 1)),
+        false,
+        true,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+
+    let vscode = WindowId::new(1, 1);
+    let chrome = WindowId::new(2, 1);
+    reactor.handle_event(Event::ApplicationGloballyActivated(1));
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space, vscode));
+    reactor.window_manager.track_window_server_id(WindowServerId::new(42), chrome);
+    crate::sys::window_server::set_test_window_under_cursor(Some(WindowServerId::new(42)));
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace { workspace: 1, window_id: None },
+    )));
+    crate::sys::window_server::set_test_window_under_cursor(None);
+
+    let target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(1)
+        .expect("move should create workspace 1");
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(
+        vwm.workspace_for_window(chrome),
+        Some(target.workspace_id),
+        "cursor window should move even when layout focus points at another app",
+    );
+    assert_ne!(
+        vwm.workspace_for_window(vscode),
+        Some(target.workspace_id),
+        "stale layout-focused window must not be moved",
+    );
+}
+
+#[test]
 fn windows_discovered_does_not_reintroduce_inactive_workspace_window() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test(LayoutEngine::new(

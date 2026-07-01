@@ -30,10 +30,17 @@ impl CommandEventHandler {
     fn resolve_current_window_for_command(
         reactor: &Reactor,
         command_space: Option<crate::sys::screen::SpaceId>,
+        prefer_window_under_cursor: bool,
+        layout_focus: Option<WindowId>,
     ) -> Option<WindowId> {
-        reactor
-            .main_window()
-            .or_else(|| reactor.window_id_under_cursor())
+        let preferred_window = if prefer_window_under_cursor {
+            reactor.window_id_under_cursor().or_else(|| reactor.main_window())
+        } else {
+            reactor.main_window().or_else(|| reactor.window_id_under_cursor())
+        };
+
+        preferred_window
+            .or(layout_focus)
             .or_else(|| {
                 command_space.and_then(|space| {
                     reactor
@@ -106,8 +113,13 @@ impl CommandEventHandler {
 
         if let LayoutCommand::MoveWindowToWorkspace { workspace, window_id: None } = &cmd {
             let layout_focus = reactor.layout_manager.layout_engine.focused_window_for_command();
-            let main_window = reactor.main_window();
-            let main_window_without_workspace = reactor.main_window().filter(|wid| {
+            let current_window = Self::resolve_current_window_for_command(
+                reactor,
+                command_space,
+                reactor.config.settings.focus_follows_mouse,
+                layout_focus,
+            );
+            let current_window_without_workspace = current_window.filter(|wid| {
                 reactor
                     .layout_manager
                     .layout_engine
@@ -115,24 +127,35 @@ impl CommandEventHandler {
                     .workspace_for_window(*wid)
                     .is_none()
             });
-            if let Some(window_id) = main_window_without_workspace {
+            if let Some(window_id) = current_window_without_workspace {
                 reactor.remember_recent_workspace_target_for_slot(window_id, *workspace);
                 reactor.handle_layout_response(EventResponse::default(), workspace_space);
                 return;
             }
 
-            if let Some(main_window) = main_window
-                && layout_focus != Some(main_window)
-                && let Some(space) = Self::assigned_space_for_window(reactor, main_window)
-                    .or_else(|| reactor.intended_space_for_window_id(main_window))
-            {
-                reactor.send_layout_event(LayoutEvent::WindowFocused(space, main_window));
+            if let Some(window_id) = current_window {
+                if layout_focus != Some(window_id)
+                    && let Some(space) = Self::assigned_space_for_window(reactor, window_id)
+                        .or_else(|| reactor.intended_space_for_window_id(window_id))
+                {
+                    reactor.send_layout_event(LayoutEvent::WindowFocused(space, window_id));
+                }
+
+                let workspace_targets_before = reactor.snapshot_window_workspaces();
+                let response = if let Some(space) = command_space {
+                    reactor
+                        .layout_manager
+                        .layout_engine
+                        .move_window_to_workspace_number(space, *workspace, window_id)
+                } else {
+                    EventResponse::default()
+                };
+                reactor.remember_recent_workspace_targets_changed_since(&workspace_targets_before);
+                reactor.handle_layout_response(response, workspace_space);
+                return;
             }
 
-            if let Some(window_id) = main_window
-                .or(layout_focus)
-                .or_else(|| reactor.window_id_under_cursor())
-            {
+            if let Some(window_id) = layout_focus {
                 reactor.remember_recent_workspace_target_for_slot(window_id, *workspace);
             }
         }
@@ -733,7 +756,12 @@ impl CommandEventHandler {
         let command_space = reactor.workspace_command_space();
         let target = window_server_id
             .and_then(|wsid| reactor.window_manager.tracked_window_id(wsid))
-            .or_else(|| Self::resolve_current_window_for_command(reactor, command_space));
+            .or_else(|| Self::resolve_current_window_for_command(
+                reactor,
+                command_space,
+                false,
+                None,
+            ));
         if let Some(wid) = target {
             reactor.request_close_window(wid);
         } else {

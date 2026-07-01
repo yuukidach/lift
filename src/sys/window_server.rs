@@ -29,6 +29,11 @@ use crate::sys::skylight::*;
 
 static G_CONNECTION: Lazy<i32> = Lazy::new(|| unsafe { SLSMainConnectionID() });
 static LAST_WINDOWSERVER_ACTIVITY_US: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+thread_local! {
+    static TEST_WINDOW_UNDER_CURSOR: std::cell::Cell<Option<WindowServerId>> =
+        const { std::cell::Cell::new(None) };
+}
 
 pub const WINDOWSERVER_QUIET_US: u64 = 350_000;
 const EFFECTIVELY_INVISIBLE_WINDOW_ALPHA: f32 = 0.01;
@@ -509,9 +514,20 @@ pub fn current_cursor_location() -> Result<CGPoint, CGError> {
     Ok(point)
 }
 
+#[cfg(not(test))]
 pub fn window_under_cursor() -> Option<WindowServerId> {
     let point = current_cursor_location().ok()?;
     get_window_at_point(point)
+}
+
+#[cfg(test)]
+pub fn window_under_cursor() -> Option<WindowServerId> {
+    TEST_WINDOW_UNDER_CURSOR.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub fn set_test_window_under_cursor(id: Option<WindowServerId>) {
+    TEST_WINDOW_UNDER_CURSOR.with(|value| value.set(id));
 }
 
 #[cfg(test)]
