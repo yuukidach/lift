@@ -143,6 +143,14 @@ impl DisplayTopologyManager {
         }
     }
 
+    pub fn active_reconfig_flags(&self) -> Option<DisplayReconfigFlags> {
+        match self.state {
+            TopologyState::Churning { flags, .. }
+            | TopologyState::AwaitingCommitSnapshot { flags, .. } => Some(flags),
+            TopologyState::Stable => None,
+        }
+    }
+
     pub fn quarantine_appeared(&mut self) { self.quarantine_stats.appeared_dropped += 1; }
 
     pub fn quarantine_destroyed(&mut self) { self.quarantine_stats.destroyed_dropped += 1; }

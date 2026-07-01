@@ -3932,7 +3932,16 @@ fn display_unplug_migrates_windows_to_remaining_display() {
         "precondition: window now lives on space2's active workspace"
     );
 
-    // Unplug screen2: send a screen_params_event with only screen1.
+    // Unplug screen2: display reconfiguration reported a real removal, then
+    // the committed screen snapshot contains only screen1.
+    reactor.display_topology_manager.begin_churn(
+        90,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor
+        .display_topology_manager
+        .end_churn_to_awaiting(90, crate::sys::skylight::DisplayReconfigFlags::REMOVE);
     reactor.handle_event(screen_params_event(vec![screen1], vec![Some(space1)], vec![]));
 
     // The window must still be alive, now living on space1's active ws.
@@ -3973,6 +3982,65 @@ fn display_unplug_migrates_windows_to_remaining_display() {
             "no surviving workspace may live on the unplugged display's space"
         );
     }
+}
+
+#[test]
+fn transient_missing_display_snapshot_does_not_migrate_workspaces() {
+    let TwoSpaceFixture {
+        mut reactor,
+        screen1,
+        space1,
+        space2,
+        ..
+    } = two_space_fixture();
+
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(61, make_windows(1)));
+    let win = WindowId::new(61, 1);
+
+    let active_ws_space2 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .active_workspace(space2)
+        .expect("space2 has an active workspace after lazy init");
+    let (assigned, destroyed) = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .assign_window_to_workspace(space2, win, active_ws_space2);
+    assert!(assigned);
+    for (sp, ws_id) in destroyed {
+        reactor.layout_manager.layout_engine.drop_workspace_layout(sp, ws_id);
+    }
+
+    reactor.handle_event(screen_params_event(vec![screen1], vec![Some(space1)], vec![]));
+
+    assert_eq!(
+        reactor.space_manager.screens.len(),
+        2,
+        "transient missing-display snapshots without remove/disable reconfig must be ignored"
+    );
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(win),
+        Some(active_ws_space2),
+        "window must remain on its original display workspace"
+    );
 }
 
 #[test]

@@ -933,11 +933,13 @@ impl Reactor {
                 return;
             }
             Event::DisplayChurnEnd => {
+                let completed_flags = crate::sys::display_churn::completed_flags();
                 let (epoch, _, flags) = self.display_topology_manager.current_churn().unwrap_or((
                     crate::sys::display_churn::epoch(),
                     std::time::Instant::now(),
-                    crate::sys::display_churn::flags(),
+                    completed_flags,
                 ));
+                let flags = flags | completed_flags;
                 self.display_topology_manager.end_churn_to_awaiting(epoch, flags);
                 return;
             }

@@ -13,6 +13,7 @@ use crate::actor::wm_controller::WmEvent;
 use crate::common::collections::{HashMap, HashSet};
 use crate::sys::app::AppInfo;
 use crate::sys::screen::{ScreenId, SpaceId};
+use crate::sys::skylight::DisplayReconfigFlags;
 use crate::sys::window_server::WindowServerId;
 
 pub struct SpaceEventHandler;
@@ -200,10 +201,31 @@ impl SpaceEventHandler {
         let new_displays: HashSet<String> =
             screens.iter().map(|s| s.display_uuid.clone()).collect();
         let displays_changed = previous_displays != new_displays;
+        let missing_displays = previous_displays.difference(&new_displays).next().is_some();
         let display_order_changed = previous_screens
             .iter()
             .map(|s| s.display_uuid.as_str())
             .ne(screens.iter().map(|s| s.display_uuid.as_str()));
+        let reconfig_flags = reactor.display_topology_manager.active_reconfig_flags();
+        let allow_missing_display_snapshot = reconfig_flags
+            .map(|flags| {
+                flags.intersects(DisplayReconfigFlags::REMOVE | DisplayReconfigFlags::DISABLED)
+            })
+            .unwrap_or(false);
+
+        if missing_displays
+            && !allow_missing_display_snapshot
+            && !previous_displays.is_empty()
+            && !new_displays.is_empty()
+        {
+            debug!(
+                previous_displays = ?previous_displays,
+                new_displays = ?new_displays,
+                reconfig_flags = ?reconfig_flags,
+                "Ignoring ScreenParametersChanged with missing display and no remove/disable reconfig"
+            );
+            return;
+        }
 
         // IMPORTANT:
         // Only treat display topology changes as such once we have a prior known set.
@@ -236,10 +258,8 @@ impl SpaceEventHandler {
             // multi-remaining case starts to matter.
             let dead_uuids: Vec<String> =
                 previous_displays.difference(&new_displays).cloned().collect();
-            let receiver_uuid: Option<String> = screens
-                .iter()
-                .find(|s| s.space.is_some())
-                .map(|s| s.display_uuid.clone());
+            let receiver_uuid: Option<String> =
+                screens.iter().find(|s| s.space.is_some()).map(|s| s.display_uuid.clone());
             if let Some(receiver_uuid) = receiver_uuid {
                 for dead_uuid in &dead_uuids {
                     if dead_uuid == &receiver_uuid {
