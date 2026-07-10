@@ -15,6 +15,11 @@ use crate::sys::timer::Timer;
 #[derive(Debug)]
 pub enum Event {
     RaiseRequest(RaiseRequest),
+    /// Sent before the switch response is known, so even an empty workspace
+    /// cancels focus work left behind by the previous switch.
+    WorkspaceSwitchStarted {
+        generation: u64,
+    },
     RaiseCompleted {
         window_id: WindowId,
         sequence_id: u64,
@@ -34,6 +39,10 @@ pub struct RaiseRequest {
     pub focus_window: Option<(WindowId, Option<CGPoint>)>,
     pub app_handles: HashMap<i32, AppThreadHandle>,
     pub focus_quiet: Quiet,
+    /// Identifies focus work produced by a workspace switch. Newer switch
+    /// requests supersede older tagged work so stale focus cannot reactivate a
+    /// workspace that the user has already left.
+    pub workspace_switch_generation: Option<u64>,
 }
 
 pub struct RaiseManager {
@@ -49,6 +58,7 @@ pub struct RaiseManager {
 #[derive(Debug)]
 struct ActiveSequence {
     sequence_id: u64,
+    workspace_switch_generation: Option<u64>,
     pending_raises: HashSet<WindowId>,
     focus_batch: Option<(pid_t, Vec<WindowId>, Option<CGPoint>, Quiet)>,
     app_handles: HashMap<i32, AppThreadHandle>,
@@ -126,24 +136,19 @@ impl RaiseManager {
 
     fn handle_message(&mut self, msg: Event) {
         match msg {
-            Event::RaiseRequest(RaiseRequest {
-                raise_windows,
-                focus_window,
-                app_handles,
-                focus_quiet,
-            }) => {
+            Event::RaiseRequest(request) => {
                 debug!(
                     "Processing layout response with {} raise_windows",
-                    raise_windows.len()
+                    request.raise_windows.len()
                 );
 
-                // Always queue the sequence
-                self.queued_sequences.push_back(RaiseRequest {
-                    raise_windows,
-                    focus_window,
-                    app_handles,
-                    focus_quiet,
-                });
+                if let Some(generation) = request.workspace_switch_generation {
+                    self.supersede_workspace_switches(generation);
+                }
+                self.queued_sequences.push_back(request);
+            }
+            Event::WorkspaceSwitchStarted { generation } => {
+                self.supersede_workspace_switches(generation);
             }
             Event::RaiseCompleted { window_id, sequence_id } => {
                 trace!("Raise completed for {:?} in sequence {}", window_id, sequence_id);
@@ -194,6 +199,25 @@ impl RaiseManager {
         }
     }
 
+    fn supersede_workspace_switches(&mut self, generation: u64) {
+        self.queued_sequences
+            .retain(|request| request.workspace_switch_generation.is_none());
+
+        let Some(active) = self.active_sequence.as_ref() else {
+            return;
+        };
+        let Some(stale_generation) = active.workspace_switch_generation else {
+            return;
+        };
+
+        debug!(
+            stale_generation,
+            generation, "Cancelling superseded workspace raise sequence"
+        );
+        let stale = self.active_sequence.take().expect("active sequence disappeared");
+        stale.raise_token.cancel();
+    }
+
     fn process_queued_responses(&mut self) -> bool {
         if self.active_sequence.is_none() {
             if let Some(queued) = self.queued_sequences.pop_front() {
@@ -211,6 +235,7 @@ impl RaiseManager {
             focus_window,
             app_handles,
             focus_quiet,
+            workspace_switch_generation,
         }: RaiseRequest,
     ) {
         let sequence_id = self.next_sequence_id;
@@ -261,6 +286,7 @@ impl RaiseManager {
         if !pending_raises.is_empty() || focus_batch.is_some() {
             self.active_sequence = Some(ActiveSequence {
                 sequence_id,
+                workspace_switch_generation,
                 pending_raises,
                 focus_batch,
                 app_handles,
@@ -354,6 +380,21 @@ mod tests {
             focus_window,
             app_handles,
             focus_quiet,
+            workspace_switch_generation: None,
+        })
+    }
+
+    fn create_workspace_switch_response(
+        focus_window: WindowId,
+        app_handles: HashMap<i32, AppThreadHandle>,
+        generation: u64,
+    ) -> Event {
+        Event::RaiseRequest(RaiseRequest {
+            raise_windows: Vec::new(),
+            focus_window: Some((focus_window, None)),
+            app_handles,
+            focus_quiet: Quiet::Yes,
+            workspace_switch_generation: Some(generation),
         })
     }
 
@@ -672,6 +713,102 @@ mod tests {
     }
 
     #[test]
+    fn newer_workspace_switch_cancels_active_workspace_raise() {
+        Executor::run(async {
+            let mut raise_manager = RaiseManager::new();
+            let (app_handles, mut app_rx) = create_test_app_handles();
+            let first_focus = WindowId::new(1, 1);
+            let latest_focus = WindowId::new(1, 2);
+
+            raise_manager.handle_message(create_workspace_switch_response(
+                first_focus,
+                app_handles.clone(),
+                1,
+            ));
+            let first_requests = collect_requests(&mut app_rx);
+            let [Request::Raise(first_wids, first_token, 1, Quiet::Yes)] =
+                first_requests.as_slice()
+            else {
+                panic!("unexpected first workspace raise: {first_requests:?}");
+            };
+            assert_eq!(first_wids.as_slice(), [first_focus]);
+            let first_token = first_token.clone();
+            assert!(!first_token.is_cancelled());
+
+            raise_manager.handle_message(Event::WorkspaceSwitchStarted { generation: 2 });
+            assert!(
+                first_token.is_cancelled(),
+                "stale workspace raise must be cancelled"
+            );
+            assert!(raise_manager.active_sequence.is_none());
+
+            raise_manager.handle_message(create_workspace_switch_response(
+                latest_focus,
+                app_handles,
+                2,
+            ));
+
+            let latest_requests = collect_requests(&mut app_rx);
+            assert!(matches!(
+                latest_requests.as_slice(),
+                [Request::Raise(wids, token, 2, Quiet::Yes)]
+                    if wids.as_slice() == [latest_focus] && !token.is_cancelled()
+            ));
+            assert_eq!(
+                raise_manager
+                    .active_sequence
+                    .as_ref()
+                    .and_then(|sequence| sequence.workspace_switch_generation),
+                Some(2)
+            );
+            assert!(raise_manager.queued_sequences.is_empty());
+        });
+    }
+
+    #[test]
+    fn newer_workspace_switch_replaces_queued_workspace_raise() {
+        Executor::run(async {
+            let mut raise_manager = RaiseManager::new();
+            let (app_handles, _app_rx) = create_test_app_handles();
+            let blocking_window = WindowId::new(1, 1);
+            let stale_focus = WindowId::new(1, 2);
+            let latest_focus = WindowId::new(1, 3);
+
+            raise_manager.handle_message(create_layout_response(
+                vec![blocking_window],
+                None,
+                app_handles.clone(),
+                Quiet::No,
+            ));
+            raise_manager.handle_message(Event::WorkspaceSwitchStarted { generation: 1 });
+            raise_manager.handle_message(create_workspace_switch_response(
+                stale_focus,
+                app_handles.clone(),
+                1,
+            ));
+            raise_manager.handle_message(Event::WorkspaceSwitchStarted { generation: 2 });
+            raise_manager.handle_message(create_workspace_switch_response(
+                latest_focus,
+                app_handles,
+                2,
+            ));
+
+            assert_eq!(
+                raise_manager
+                    .active_sequence
+                    .as_ref()
+                    .map(|sequence| sequence.workspace_switch_generation),
+                Some(None),
+                "ordinary active raises must not be cancelled"
+            );
+            assert_eq!(raise_manager.queued_sequences.len(), 1);
+            let queued = raise_manager.queued_sequences.front().unwrap();
+            assert_eq!(queued.workspace_switch_generation, Some(2));
+            assert_eq!(queued.focus_window.map(|(wid, _)| wid), Some(latest_focus));
+        });
+    }
+
+    #[test]
     fn test_multiple_iterations_required_for_chained_completions() {
         Executor::run(async {
             let mut raise_manager = RaiseManager::new();
@@ -799,6 +936,7 @@ mod tests {
                 focus_window: Some((WindowId::new(1, 7), None)),
                 app_handles,
                 focus_quiet: Quiet::No,
+                workspace_switch_generation: None,
             });
 
             // Handle the batched raise request

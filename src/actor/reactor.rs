@@ -348,6 +348,7 @@ impl Reactor {
                 active_workspace_switch: None,
                 pending_workspace_switch_origin: None,
                 pending_workspace_mouse_warp: None,
+                quiet_activation_deadlines: HashMap::default(),
             },
             recording_manager: managers::RecordingManager { record },
             communication_manager: managers::CommunicationManager {
@@ -1025,7 +1026,17 @@ impl Reactor {
                             );
                         }
                     }
-                    self.handle_app_activation_workspace_switch(pid);
+                    if self
+                        .workspace_switch_manager
+                        .should_suppress_global_activation(pid)
+                    {
+                        trace!(
+                            pid,
+                            "Skipping auto workspace switch for a Rift-initiated global activation"
+                        );
+                    } else {
+                        self.handle_app_activation_workspace_switch(pid);
+                    }
                 }
             }
             Event::RegisterWmSender(sender) => {
@@ -2481,6 +2492,21 @@ impl Reactor {
         response: layout::EventResponse,
         workspace_switch_space: Option<SpaceId>,
     ) {
+        let workspace_switch_generation = if self.workspace_switch_manager.workspace_switch_state
+            == WorkspaceSwitchState::Active
+        {
+            self.workspace_switch_manager.active_workspace_switch
+        } else {
+            None
+        };
+        if let Some(generation) = workspace_switch_generation
+            && let Err(e) = self.communication_manager.raise_manager_tx.try_send(
+                raise_manager::Event::WorkspaceSwitchStarted { generation },
+            )
+        {
+            warn!("Failed to supersede stale workspace raises: {}", e);
+        }
+
         if self.is_in_drag() {
             self.workspace_switch_manager.mark_workspace_switch_inactive();
             return;
@@ -2650,16 +2676,26 @@ impl Reactor {
             };
             (wid, warp)
         });
+        let frontmost_pid = self.main_window().map(|wid| wid.pid);
+        let quiet_activation_pid = workspace_switch_generation
+            .and_then(|_| focus_window_with_warp.as_ref().map(|(wid, _)| wid.pid))
+            .filter(|pid| Some(*pid) != frontmost_pid);
 
         let msg = raise_manager::Event::RaiseRequest(RaiseRequest {
             raise_windows: windows_by_app_and_screen.into_values().collect(),
             focus_window: focus_window_with_warp,
             app_handles,
             focus_quiet,
+            workspace_switch_generation,
         });
 
-        if let Err(e) = self.communication_manager.raise_manager_tx.try_send(msg) {
-            warn!("Failed to send raise request to raise manager: {}", e);
+        match self.communication_manager.raise_manager_tx.try_send(msg) {
+            Ok(()) => {
+                if let Some(pid) = quiet_activation_pid {
+                    self.workspace_switch_manager.expect_quiet_activation(pid);
+                }
+            }
+            Err(e) => warn!("Failed to send raise request to raise manager: {}", e),
         }
     }
 
@@ -2911,6 +2947,7 @@ impl Reactor {
                 focus_window: Some((wid, warp)),
                 app_handles,
                 focus_quiet: quiet,
+                workspace_switch_generation: None,
             }));
     }
 

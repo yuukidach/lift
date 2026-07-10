@@ -668,18 +668,57 @@ fn auto_workspace_switch_focuses_activated_window_not_stale_workspace_focus() {
     reactor.handle_event(Event::Command(Command::Layout(
         LayoutCommand::SwitchToWorkspace(0),
     )));
-    while raise_manager_rx.try_recv().is_ok() {}
+    let mut rapid_switch_starts = Vec::new();
+    let mut rapid_switch_requests = Vec::new();
+    while let Ok((_, msg)) = raise_manager_rx.try_recv() {
+        match msg {
+            raise_manager::Event::WorkspaceSwitchStarted { generation } => {
+                rapid_switch_starts.push(generation);
+            }
+            raise_manager::Event::RaiseRequest(RaiseRequest {
+                workspace_switch_generation: Some(generation),
+                ..
+            }) => {
+                rapid_switch_requests.push(generation);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(rapid_switch_starts.len(), 2);
+    assert_eq!(rapid_switch_requests, rapid_switch_starts);
+    assert!(rapid_switch_starts[0] < rapid_switch_starts[1]);
 
     reactor.maybe_auto_switch_to_window_workspace(activated.pid, activated, space);
 
-    let msg = raise_manager_rx.try_recv().expect("Should have sent an event").1;
-    match msg {
-        raise_manager::Event::RaiseRequest(RaiseRequest { focus_window, focus_quiet, .. }) => {
-            assert_eq!(focus_window.map(|(wid, _)| wid), Some(activated));
-            assert_eq!(focus_quiet, Quiet::Yes);
+    let mut auto_switch_start = None;
+    let mut auto_switch_request = None;
+    while let Ok((_, msg)) = raise_manager_rx.try_recv() {
+        match msg {
+            raise_manager::Event::WorkspaceSwitchStarted { generation } => {
+                auto_switch_start = Some(generation);
+            }
+            raise_manager::Event::RaiseRequest(request) => {
+                auto_switch_request = Some(request);
+            }
+            _ => {}
         }
-        _ => panic!("Unexpected event: {msg:?}"),
     }
+    let request = auto_switch_request.expect("Should have sent a raise request");
+    assert_eq!(request.focus_window.map(|(wid, _)| wid), Some(activated));
+    assert_eq!(request.focus_quiet, Quiet::Yes);
+    assert_eq!(request.workspace_switch_generation, auto_switch_start);
+    assert_eq!(
+        request.workspace_switch_generation,
+        reactor.workspace_switch_manager.active_workspace_switch
+    );
+    reactor.workspace_switch_manager.active_workspace_switch = None;
+    reactor.workspace_switch_manager.mark_workspace_switch_inactive();
+    assert!(
+        reactor
+            .workspace_switch_manager
+            .should_suppress_global_activation(activated.pid),
+        "Rift-initiated focus must stay quiet after frame stabilization"
+    );
 }
 
 #[test]

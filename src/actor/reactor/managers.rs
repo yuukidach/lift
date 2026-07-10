@@ -1,5 +1,5 @@
 use objc2_core_foundation::CGRect;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::trace;
 
 use super::replay::Record;
@@ -118,9 +118,13 @@ pub struct WorkspaceSwitchManager {
     pub active_workspace_switch: Option<u64>,
     pub pending_workspace_switch_origin: Option<WorkspaceSwitchOrigin>,
     pub pending_workspace_mouse_warp: Option<WindowId>,
+    /// Carbon global-activation events do not carry the app actor's `Quiet` bit.
+    pub quiet_activation_deadlines: HashMap<pid_t, Instant>,
 }
 
 impl WorkspaceSwitchManager {
+    const QUIET_ACTIVATION_GRACE: Duration = Duration::from_secs(1);
+
     pub fn start_workspace_switch(&mut self, origin: WorkspaceSwitchOrigin) {
         self.workspace_switch_generation = self.workspace_switch_generation.wrapping_add(1);
         self.active_workspace_switch = Some(self.workspace_switch_generation);
@@ -136,6 +140,18 @@ impl WorkspaceSwitchManager {
     pub fn mark_workspace_switch_inactive(&mut self) {
         self.workspace_switch_state = WorkspaceSwitchState::Inactive;
         self.pending_workspace_switch_origin = None;
+    }
+
+    pub fn expect_quiet_activation(&mut self, pid: pid_t) {
+        let now = Instant::now();
+        self.quiet_activation_deadlines.retain(|_, deadline| *deadline > now);
+        self.quiet_activation_deadlines.insert(pid, now + Self::QUIET_ACTIVATION_GRACE);
+    }
+
+    pub fn should_suppress_global_activation(&mut self, pid: pid_t) -> bool {
+        let now = Instant::now();
+        self.quiet_activation_deadlines.retain(|_, deadline| *deadline > now);
+        self.quiet_activation_deadlines.contains_key(&pid)
     }
 }
 

@@ -500,6 +500,7 @@ impl CommandEventHandler {
                 focus_window: Some((window_id, None)),
                 app_handles,
                 focus_quiet: Quiet::No,
+                workspace_switch_generation: None,
             });
             if let Err(e) = reactor.communication_manager.raise_manager_tx.try_send(request) {
                 warn!("Failed to send raise request: {}", e);
@@ -541,6 +542,7 @@ impl CommandEventHandler {
                     focus_window: Some((window_id, warp)),
                     app_handles,
                     focus_quiet: Quiet::No,
+                    workspace_switch_generation: None,
                 });
                 if let Err(e) = reactor.communication_manager.raise_manager_tx.try_send(request) {
                     warn!(
