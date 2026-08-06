@@ -33,14 +33,38 @@ impl CommandEventHandler {
         prefer_window_under_cursor: bool,
         layout_focus: Option<WindowId>,
     ) -> Option<WindowId> {
+        let main_window = reactor.main_window();
+
+        // AXMainWindow can lag behind Rift's own focus selection (in
+        // particular immediately after cycling between two windows owned by
+        // the same application).  When both observations refer to the same
+        // app, prefer the layout focus once both windows are known to the
+        // workspace model.  An unassigned main window is different: it is
+        // commonly a newly-created window racing discovery, and must retain
+        // priority so the pending workspace target can be recorded for it.
+        let app_focus = match (main_window, layout_focus) {
+            (Some(main), Some(layout)) if main.pid == layout.pid => {
+                let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+                let main_is_assigned = vwm.workspace_for_window(main).is_some();
+                let layout_is_assigned = vwm.workspace_for_window(layout).is_some();
+                if main_is_assigned && layout_is_assigned {
+                    Some(layout)
+                } else {
+                    Some(main)
+                }
+            }
+            (Some(main), _) => Some(main),
+            (None, Some(layout)) => Some(layout),
+            (None, None) => None,
+        };
+
         let preferred_window = if prefer_window_under_cursor {
-            reactor.window_id_under_cursor().or_else(|| reactor.main_window())
+            reactor.window_id_under_cursor().or(app_focus)
         } else {
-            reactor.main_window().or_else(|| reactor.window_id_under_cursor())
+            app_focus.or_else(|| reactor.window_id_under_cursor())
         };
 
         preferred_window
-            .or(layout_focus)
             .or_else(|| {
                 command_space.and_then(|space| {
                     reactor
@@ -61,6 +85,17 @@ impl CommandEventHandler {
                         .next()
                 })
             })
+    }
+
+    fn current_instance_pid_hint(reactor: &Reactor) -> Option<pid_t> {
+        let layout_focus = reactor.layout_manager.layout_engine.focused_window_for_command();
+        Self::resolve_current_window_for_command(
+            reactor,
+            reactor.workspace_command_space(),
+            reactor.config.settings.focus_follows_mouse,
+            layout_focus,
+        )
+        .map(|wid| wid.pid)
     }
 
     pub fn handle_command(reactor: &mut Reactor, cmd: Command) {
@@ -182,10 +217,27 @@ impl CommandEventHandler {
             }
             LayoutCommand::MoveWindowToWorkspace { .. } => {
                 if let Some(space) = command_space {
-                    reactor
-                        .layout_manager
-                        .layout_engine
-                        .handle_virtual_workspace_command(space, &cmd)
+                    match &cmd {
+                        LayoutCommand::MoveWindowToWorkspace {
+                            workspace,
+                            window_id: Some(window_idx),
+                        } => {
+                            let pid_hint = Self::current_instance_pid_hint(reactor);
+                            reactor
+                                .layout_manager
+                                .layout_engine
+                                .move_window_to_workspace_command(
+                                    space,
+                                    *workspace,
+                                    Some(*window_idx),
+                                    pid_hint,
+                                )
+                        }
+                        _ => reactor
+                            .layout_manager
+                            .layout_engine
+                            .handle_virtual_workspace_command(space, &cmd),
+                    }
                 } else {
                     EventResponse::default()
                 }
@@ -612,15 +664,43 @@ impl CommandEventHandler {
             let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
             match window_idx {
                 Some(idx) => {
-                    if let Some(space) = reactor.workspace_command_space() {
-                        vwm.find_window_by_idx(space, idx).or_else(|| {
+                    let pid_hint = Self::current_instance_pid_hint(reactor);
+                    let scoped = if let Some(pid) = pid_hint {
+                        if let Some(space) = reactor.workspace_command_space() {
+                            vwm.find_window_by_pid_idx(space, pid, idx).or_else(|| {
+                                reactor
+                                    .iter_active_spaces()
+                                    .find_map(|sp| vwm.find_window_by_pid_idx(sp, pid, idx))
+                            })
+                        } else {
+                            reactor
+                                .iter_active_spaces()
+                                .find_map(|sp| vwm.find_window_by_pid_idx(sp, pid, idx))
+                        }
+                    } else {
+                        None
+                    };
+                    let legacy_scoped = || {
+                        if let Some(space) = reactor.workspace_command_space() {
+                            vwm.find_window_by_idx(space, idx).or_else(|| {
+                                reactor
+                                    .iter_active_spaces()
+                                    .find_map(|sp| vwm.find_window_by_idx(sp, idx))
+                            })
+                        } else {
                             reactor
                                 .iter_active_spaces()
                                 .find_map(|sp| vwm.find_window_by_idx(sp, idx))
+                        }
+                    };
+                    scoped
+                        .or_else(|| {
+                            pid_hint
+                                .and_then(|pid| vwm.find_window_anywhere_by_pid_idx(pid, idx))
+                                .map(|(_, wid)| wid)
                         })
-                    } else {
-                        reactor.iter_active_spaces().find_map(|sp| vwm.find_window_by_idx(sp, idx))
-                    }
+                        .or_else(legacy_scoped)
+                        .or_else(|| vwm.find_window_anywhere_by_idx(idx).map(|(_, wid)| wid))
                 }
                 None => reactor.main_window().or_else(|| reactor.window_id_under_cursor()).or_else(
                     || {

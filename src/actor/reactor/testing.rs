@@ -136,6 +136,28 @@ impl Apps {
         is_frontmost: bool,
         with_ws_info: bool,
     ) -> Vec<Event> {
+        self.make_app_with_info(
+            pid,
+            AppInfo {
+                bundle_id: Some(format!("com.testapp{pid}")),
+                localized_name: Some(format!("TestApp{pid}")),
+            },
+            windows,
+            main_window,
+            is_frontmost,
+            with_ws_info,
+        )
+    }
+
+    pub fn make_app_with_info(
+        &mut self,
+        pid: pid_t,
+        info: AppInfo,
+        windows: Vec<WindowInfo>,
+        main_window: Option<WindowId>,
+        is_frontmost: bool,
+        with_ws_info: bool,
+    ) -> Vec<Event> {
         let windows: Vec<WindowInfo> = windows
             .into_iter()
             .enumerate()
@@ -158,10 +180,7 @@ impl Apps {
         let handle = AppThreadHandle::new_for_test(self.tx.clone());
         vec![Event::ApplicationLaunched {
             pid,
-            info: AppInfo {
-                bundle_id: Some(format!("com.testapp{pid}")),
-                localized_name: Some(format!("TestApp{pid}")),
-            },
+            info,
             handle,
             is_frontmost,
             main_window,

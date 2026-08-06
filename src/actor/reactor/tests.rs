@@ -782,6 +782,192 @@ fn move_window_to_workspace_prefers_cursor_window_when_focus_follows_mouse() {
 }
 
 #[test]
+fn move_window_to_workspace_prefers_layout_focus_within_same_app() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    let main_window = WindowId::new(7, 1);
+    let focused_window = WindowId::new(7, 2);
+
+    reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(
+        7,
+        make_windows(2),
+        Some(main_window),
+        true,
+        true,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_event(Event::ApplicationGloballyActivated(7));
+
+    // Simulate a focus change that has reached Rift's layout model while the
+    // AX main-window notification is still reporting the previous window.
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space, focused_window));
+    assert_eq!(
+        reactor.layout_manager.layout_engine.focused_window(),
+        Some(focused_window),
+        "precondition: layout focus should point at the second app window",
+    );
+    assert_eq!(reactor.main_window(), Some(main_window));
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace { workspace: 1, window_id: None },
+    )));
+
+    let target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(1)
+        .expect("move should create workspace 1");
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(
+        vwm.workspace_for_window(focused_window),
+        Some(target.workspace_id),
+        "the focused window must be moved",
+    );
+    assert_ne!(
+        vwm.workspace_for_window(main_window),
+        Some(target.workspace_id),
+        "the other window in the same app must remain in the source workspace",
+    );
+}
+
+#[test]
+fn move_window_to_workspace_prefers_frontmost_app_over_stale_layout_focus() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    let frontmost_window = WindowId::new(7, 1);
+    let stale_layout_focus = WindowId::new(8, 1);
+
+    reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(
+        7,
+        make_windows(1),
+        Some(frontmost_window),
+        true,
+        true,
+    ));
+    reactor.handle_events(apps.make_app_with_opts(
+        8,
+        make_windows(1),
+        Some(stale_layout_focus),
+        false,
+        true,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_event(Event::ApplicationGloballyActivated(7));
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space, stale_layout_focus));
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace { workspace: 1, window_id: None },
+    )));
+
+    let target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(1)
+        .expect("move should create workspace 1");
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(
+        vwm.workspace_for_window(frontmost_window),
+        Some(target.workspace_id),
+        "the frontmost app should win when layout focus belongs to another app",
+    );
+    assert_ne!(
+        vwm.workspace_for_window(stale_layout_focus),
+        Some(target.workspace_id),
+        "a stale focus from another app must not be moved",
+    );
+}
+
+#[test]
+fn move_window_to_workspace_idx_prefers_current_app_instance() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    let shared_info = crate::sys::app::AppInfo {
+        bundle_id: Some("com.example.shared".to_string()),
+        localized_name: Some("SharedApp".to_string()),
+    };
+
+    reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_info(
+        1,
+        shared_info.clone(),
+        make_windows(1),
+        Some(WindowId::new(1, 1)),
+        true,
+        true,
+    ));
+    reactor.handle_events(apps.make_app_with_info(
+        2,
+        shared_info,
+        make_windows(1),
+        Some(WindowId::new(2, 1)),
+        true,
+        true,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+
+    let first_instance = WindowId::new(1, 1);
+    let second_instance = WindowId::new(2, 1);
+    let source_ws_first = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .workspace_for_window(first_instance)
+        .expect("first instance should be assigned");
+
+    reactor.handle_event(Event::ApplicationGloballyActivated(2));
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space, second_instance));
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace {
+            workspace: 1,
+            window_id: Some(1),
+        },
+    )));
+
+    let target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(1)
+        .expect("move should create workspace 1");
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(
+        vwm.workspace_for_window(second_instance),
+        Some(target.workspace_id),
+        "explicit idx should resolve inside the current app instance"
+    );
+    assert_eq!(
+        vwm.workspace_for_window(first_instance),
+        Some(source_ws_first),
+        "same app's other pid with the same idx must not be moved"
+    );
+}
+
+#[test]
 fn windows_discovered_does_not_reintroduce_inactive_workspace_window() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test(LayoutEngine::new(
@@ -3620,7 +3806,7 @@ fn moved_window_stays_on_cross_display_workspace_after_app_refresh() {
         "precondition: second app window starts on ws1",
     );
 
-    reactor.send_layout_event(LayoutEvent::WindowFocused(space1, first));
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space1, moved));
 
     reactor.handle_event(Event::Command(Command::Layout(
         LayoutCommand::MoveWindowToWorkspace { workspace: 2, window_id: None },

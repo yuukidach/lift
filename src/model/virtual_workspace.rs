@@ -1535,6 +1535,17 @@ impl VirtualWorkspaceManager {
             .find_map(|(wid, info)| (info.space == space && wid.idx.get() == idx).then_some(wid))
     }
 
+    pub fn find_window_by_pid_idx(
+        &self,
+        space: SpaceId,
+        pid: pid_t,
+        idx: u32,
+    ) -> Option<WindowId> {
+        self.window_registry.get().iter_workspace_assignments().find_map(|(wid, info)| {
+            (info.space == space && wid.pid == pid && wid.idx.get() == idx).then_some(wid)
+        })
+    }
+
     /// Like `find_window_by_idx` but unscoped — scans every registry
     /// workspace assignment. Returns the matching `(SpaceId, WindowId)` so
     /// callers know which space owns the window without rerunning a per-space
@@ -1552,6 +1563,19 @@ impl VirtualWorkspaceManager {
     pub fn find_window_anywhere_by_idx(&self, idx: u32) -> Option<(SpaceId, WindowId)> {
         self.window_registry.get().iter_workspace_assignments().find_map(|(wid, info)| {
             if wid.idx.get() != idx {
+                return None;
+            }
+            Some((info.space, wid))
+        })
+    }
+
+    pub fn find_window_anywhere_by_pid_idx(
+        &self,
+        pid: pid_t,
+        idx: u32,
+    ) -> Option<(SpaceId, WindowId)> {
+        self.window_registry.get().iter_workspace_assignments().find_map(|(wid, info)| {
+            if wid.pid != pid || wid.idx.get() != idx {
                 return None;
             }
             Some((info.space, wid))

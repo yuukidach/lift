@@ -2327,46 +2327,7 @@ impl LayoutEngine {
             LayoutCommand::MoveWindowToWorkspace {
                 workspace: slot,
                 window_id: maybe_id,
-            } => {
-                // Resolve (focused_window, op_space). The command's `space` is
-                // the focused space at dispatch — NOT necessarily where the
-                // window lives. For the by-idx path: try focused space first
-                // (cheap), fall back to ANY space (mirrors `MoveWindowToDisplay`
-                // at command.rs:519-527). For the focused-window path:
-                // `space_with_window` is fine because the focused window is
-                // in an active workspace by construction. Without the by-idx
-                // fallback, Cmd+Shift+N from display A targeting a window
-                // tracked on display B silently no-ops, AND op_space ends up
-                // wrong even when the by-idx hit; both regressions broke
-                // tests in Task 3.3.
-                let (focused_window, op_space) = if let Some(spec_u32) = maybe_id {
-                    if let Some(w) =
-                        self.virtual_workspace_manager.find_window_by_idx(space, *spec_u32)
-                    {
-                        (w, space)
-                    } else if let Some((sp, w)) =
-                        self.virtual_workspace_manager.find_window_anywhere_by_idx(*spec_u32)
-                    {
-                        (w, sp)
-                    } else {
-                        return EventResponse::default();
-                    }
-                } else {
-                    let w = match self.focused_window {
-                        Some(wid) => wid,
-                        None => return EventResponse::default(),
-                    };
-                    let inferred_space = self.space_with_window(w);
-                    let op = if inferred_space == Some(space) {
-                        space
-                    } else {
-                        inferred_space.unwrap_or(space)
-                    };
-                    (w, op)
-                };
-
-                self.move_window_to_workspace_number_from_source(op_space, *slot, focused_window)
-            }
+            } => self.move_window_to_workspace_command(space, *slot, *maybe_id, None),
             LayoutCommand::CreateWorkspace => {
                 match self.virtual_workspace_manager.create_workspace(space, None) {
                     Ok(_workspace_id) => {
@@ -2429,6 +2390,60 @@ impl LayoutEngine {
             }
             _ => EventResponse::default(),
         }
+    }
+
+    pub fn move_window_to_workspace_command(
+        &mut self,
+        space: SpaceId,
+        slot: WorkspaceNumber,
+        maybe_id: Option<u32>,
+        pid_hint: Option<pid_t>,
+    ) -> EventResponse {
+        // Resolve (focused_window, op_space). The command's `space` is
+        // the focused space at dispatch — NOT necessarily where the
+        // window lives. For the by-idx path: try focused space first
+        // (cheap), fall back to ANY space (mirrors `MoveWindowToDisplay`).
+        // If the reactor can infer an app instance, prefer that pid because
+        // WindowId.idx values can repeat across different app instances.
+        let (focused_window, op_space) = if let Some(spec_u32) = maybe_id {
+            let scoped = pid_hint.and_then(|pid| {
+                self.virtual_workspace_manager
+                    .find_window_by_pid_idx(space, pid, spec_u32)
+                    .map(|w| (space, w))
+                    .or_else(|| {
+                        self.virtual_workspace_manager
+                            .find_window_anywhere_by_pid_idx(pid, spec_u32)
+                    })
+            });
+
+            if let Some((sp, w)) = scoped {
+                (w, sp)
+            } else if let Some(w) =
+                self.virtual_workspace_manager.find_window_by_idx(space, spec_u32)
+            {
+                (w, space)
+            } else if let Some((sp, w)) =
+                self.virtual_workspace_manager.find_window_anywhere_by_idx(spec_u32)
+            {
+                (w, sp)
+            } else {
+                return EventResponse::default();
+            }
+        } else {
+            let w = match self.focused_window {
+                Some(wid) => wid,
+                None => return EventResponse::default(),
+            };
+            let inferred_space = self.space_with_window(w);
+            let op = if inferred_space == Some(space) {
+                space
+            } else {
+                inferred_space.unwrap_or(space)
+            };
+            (w, op)
+        };
+
+        self.move_window_to_workspace_number_from_source(op_space, slot, focused_window)
     }
 
     pub fn switch_to_workspace_with_focus(
