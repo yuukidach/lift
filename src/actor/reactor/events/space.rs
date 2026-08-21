@@ -500,11 +500,23 @@ fn select_display_migration_receiver(
     screens: &[ScreenInfo],
     priority: &[String],
 ) -> Option<MigrationReceiver> {
-    let live = |screen: &&ScreenInfo| screen.space.is_some();
+    select_display_migration_receiver_with_user_space(screens, priority, |space| {
+        crate::sys::window_server::space_is_user(space.get())
+    })
+}
+
+fn select_display_migration_receiver_with_user_space(
+    screens: &[ScreenInfo],
+    priority: &[String],
+    is_user_space: impl Fn(SpaceId) -> bool,
+) -> Option<MigrationReceiver> {
+    let is_eligible = |screen: &ScreenInfo| {
+        screen.space.is_some_and(|space| is_user_space(space))
+    };
     for uuid in priority {
         if let Some(screen) = screens
             .iter()
-            .filter(live)
+            .filter(|screen| is_eligible(screen))
             .find(|screen| &screen.display_uuid == uuid)
         {
             return Some(MigrationReceiver {
@@ -516,11 +528,11 @@ fn select_display_migration_receiver(
     }
     let screen = screens
         .first()
-        .filter(|screen| screen.space.is_some())
+        .filter(|screen| is_eligible(screen))
         .or_else(|| {
             screens
                 .iter()
-                .filter(|screen| screen.space.is_some())
+                .filter(|screen| is_eligible(screen))
                 .min_by(|a, b| a.display_uuid.cmp(&b.display_uuid))
         })?;
     Some(MigrationReceiver {
@@ -607,19 +619,43 @@ mod tests {
     #[test]
     fn configured_receiver_priority_overrides_main_display() {
         let screens = test_screens(&["display-main", "display-b", "display-a"]);
-        let receiver = select_display_migration_receiver(
+        let receiver = select_display_migration_receiver_with_user_space(
             &screens,
             &["offline".into(), "display-a".into(), "display-b".into()],
+            |_: SpaceId| true,
         )
         .unwrap();
         assert_eq!(receiver.display_uuid, "display-a");
     }
 
     #[test]
+    fn receiver_skips_non_user_spaces() {
+        let screens = test_screens(&["display-main", "display-z", "display-a"]);
+        let is_user_space = |space: SpaceId| space != SpaceId::new(1);
+
+        assert_eq!(
+            select_display_migration_receiver_with_user_space(
+                &screens,
+                &["display-main".into(), "display-z".into()],
+                is_user_space,
+            )
+            .unwrap()
+            .display_uuid,
+            "display-z"
+        );
+        assert_eq!(
+            select_display_migration_receiver_with_user_space(&screens, &[], is_user_space)
+                .unwrap()
+                .display_uuid,
+            "display-a"
+        );
+    }
+
+    #[test]
     fn receiver_defaults_to_main_then_uuid_order() {
         let screens = test_screens(&["display-main", "display-z", "display-a"]);
         assert_eq!(
-            select_display_migration_receiver(&screens, &[])
+            select_display_migration_receiver_with_user_space(&screens, &[], |_: SpaceId| true)
                 .unwrap()
                 .display_uuid,
             "display-main"
@@ -634,7 +670,11 @@ mod tests {
             screens[2].clone(),
         ];
         assert_eq!(
-            select_display_migration_receiver(&incomplete_main, &[])
+            select_display_migration_receiver_with_user_space(
+                &incomplete_main,
+                &[],
+                |_: SpaceId| true,
+            )
                 .unwrap()
                 .display_uuid,
             "display-a"
