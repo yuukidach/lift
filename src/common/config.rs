@@ -89,6 +89,9 @@ pub struct VirtualWorkspaceSettings {
     /// number 1". Mid-session ws creation is not constrained by this map.
     #[serde(default)]
     pub display_default_workspaces: HashMap<String, usize>,
+    /// Ordered display UUIDs used as receivers when another display is removed.
+    #[serde(default)]
+    pub display_migration_priority: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -159,6 +162,7 @@ impl Default for VirtualWorkspaceSettings {
             app_rules: Vec::new(),
             workspace_rules: Vec::new(),
             display_default_workspaces: HashMap::default(),
+            display_migration_priority: Vec::new(),
         }
     }
 }
@@ -191,6 +195,18 @@ impl VirtualWorkspaceSettings {
                 issues.push(format!(
                     "display_default_workspaces[{}] = {} exceeds MAX_WORKSPACES ({})",
                     uuid, number, MAX_WORKSPACES
+                ));
+            }
+        }
+
+        let mut seen_migration_uuids = crate::common::collections::HashSet::default();
+        for uuid in &self.display_migration_priority {
+            if uuid.trim().is_empty() {
+                issues.push("display_migration_priority has empty display UUID".to_string());
+            } else if !seen_migration_uuids.insert(uuid.clone()) {
+                issues.push(format!(
+                    "display_migration_priority has duplicate display UUID '{}'",
+                    uuid
                 ));
             }
         }
@@ -1530,6 +1546,38 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_migration_priority_defaults_to_empty() {
+        assert!(VirtualWorkspaceSettings::default()
+            .display_migration_priority
+            .is_empty());
+    }
+
+    #[test]
+    fn display_migration_priority_preserves_configured_order() {
+        let settings: VirtualWorkspaceSettings = toml::from_str(
+            r#"display_migration_priority = ["display-b", "display-a"]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            settings.display_migration_priority,
+            vec!["display-b".to_string(), "display-a".to_string()]
+        );
+    }
+
+    #[test]
+    fn display_migration_priority_rejects_empty_and_duplicate_uuids() {
+        let mut settings = VirtualWorkspaceSettings::default();
+        settings.display_migration_priority = vec![
+            "display-a".into(),
+            "".into(),
+            "display-a".into(),
+        ];
+        let issues = settings.validate();
+        assert!(issues.iter().any(|issue| issue.contains("empty display UUID")));
+        assert!(issues.iter().any(|issue| issue.contains("duplicate display UUID")));
+    }
 
     #[test]
     fn test_normalize_hotkey_string() {

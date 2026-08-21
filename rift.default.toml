@@ -193,6 +193,11 @@ workspace_rules = []
 # display_default_workspaces = { "30999A24-1234-5678-..." = 1 }
 display_default_workspaces = {}
 
+# Preferred receivers when a display is removed, highest priority first.
+# Online entries override the macOS main display; unlisted displays fall back
+# to main-display-first, then display UUID alphabetical order.
+display_migration_priority = []
+
 # App rules (automatic assignment)
 # Define rules that match new windows and set properties (workspace, floating, etc).
 #

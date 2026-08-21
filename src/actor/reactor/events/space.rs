@@ -489,6 +489,47 @@ impl SpaceEventHandler {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct MigrationReceiver {
+    display_uuid: String,
+    space: SpaceId,
+    size: CGSize,
+}
+
+fn select_display_migration_receiver(
+    screens: &[ScreenInfo],
+    priority: &[String],
+) -> Option<MigrationReceiver> {
+    let live = |screen: &&ScreenInfo| screen.space.is_some();
+    for uuid in priority {
+        if let Some(screen) = screens
+            .iter()
+            .filter(live)
+            .find(|screen| &screen.display_uuid == uuid)
+        {
+            return Some(MigrationReceiver {
+                display_uuid: screen.display_uuid.clone(),
+                space: screen.space.unwrap(),
+                size: screen.frame.size,
+            });
+        }
+    }
+    let screen = screens
+        .first()
+        .filter(|screen| screen.space.is_some())
+        .or_else(|| {
+            screens
+                .iter()
+                .filter(|screen| screen.space.is_some())
+                .min_by(|a, b| a.display_uuid.cmp(&b.display_uuid))
+        })?;
+    Some(MigrationReceiver {
+        display_uuid: screen.display_uuid.clone(),
+        space: screen.space.unwrap(),
+        size: screen.frame.size,
+    })
+}
+
 fn resolve_last_known_user_space(
     reactor: &Reactor,
     window_id: Option<crate::actor::app::WindowId>,
@@ -538,4 +579,65 @@ fn update_stale_cleanup_state(reactor: &mut Reactor, spaces_all_none: bool) {
     } else {
         StaleCleanupState::Enabled
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use objc2_core_foundation::{CGPoint, CGRect};
+
+    use super::*;
+
+    fn test_screens(display_uuids: &[&str]) -> Vec<ScreenInfo> {
+        display_uuids
+            .iter()
+            .enumerate()
+            .map(|(index, display_uuid)| ScreenInfo {
+                id: ScreenId::new(index as u32),
+                frame: CGRect::new(
+                    CGPoint::new(index as f64 * 100.0, 0.0),
+                    CGSize::new(100.0, 100.0),
+                ),
+                display_uuid: (*display_uuid).to_string(),
+                name: Some(format!("Display {index}")),
+                space: Some(SpaceId::new(index as u64 + 1)),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn configured_receiver_priority_overrides_main_display() {
+        let screens = test_screens(&["display-main", "display-b", "display-a"]);
+        let receiver = select_display_migration_receiver(
+            &screens,
+            &["offline".into(), "display-a".into(), "display-b".into()],
+        )
+        .unwrap();
+        assert_eq!(receiver.display_uuid, "display-a");
+    }
+
+    #[test]
+    fn receiver_defaults_to_main_then_uuid_order() {
+        let screens = test_screens(&["display-main", "display-z", "display-a"]);
+        assert_eq!(
+            select_display_migration_receiver(&screens, &[])
+                .unwrap()
+                .display_uuid,
+            "display-main"
+        );
+
+        let incomplete_main = vec![
+            ScreenInfo {
+                space: None,
+                ..screens[0].clone()
+            },
+            screens[1].clone(),
+            screens[2].clone(),
+        ];
+        assert_eq!(
+            select_display_migration_receiver(&incomplete_main, &[])
+                .unwrap()
+                .display_uuid,
+            "display-a"
+        );
+    }
 }
