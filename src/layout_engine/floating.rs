@@ -101,6 +101,10 @@ impl FloatingManager {
         }
     }
 
+    pub(crate) fn remove_active_space(&mut self, space: SpaceId) {
+        self.active_floating_windows.remove(&space);
+    }
+
     pub(crate) fn remap_space(&mut self, old_space: SpaceId, new_space: SpaceId) {
         if old_space == new_space {
             return;

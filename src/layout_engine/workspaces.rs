@@ -126,6 +126,20 @@ impl WorkspaceLayouts {
         }
     }
 
+    pub(crate) fn relocate_workspace(
+        &mut self,
+        old_space: SpaceId,
+        new_space: SpaceId,
+        workspace_id: crate::model::VirtualWorkspaceId,
+    ) {
+        if old_space == new_space {
+            return;
+        }
+        if let Some(info) = self.map.remove(&(old_space, workspace_id)) {
+            self.map.insert((new_space, workspace_id), info);
+        }
+    }
+
     pub(crate) fn active(
         &self,
         space: SpaceId,
@@ -228,5 +242,49 @@ impl WorkspaceLayouts {
         workspace_id: crate::model::VirtualWorkspaceId,
     ) {
         self.map.remove(&(space, workspace_id));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use slotmap::SlotMap;
+
+    use super::*;
+    use crate::layout_engine::systems::BspLayoutSystem;
+    use crate::model::VirtualWorkspaceId;
+
+    #[test]
+    fn workspace_relocation_merges_layout_entries() {
+        let source = SpaceId::new(1);
+        let receiver = SpaceId::new(2);
+        let size = CGSize::new(1440.0, 900.0);
+        let mut layouts = WorkspaceLayouts::default();
+        let mut workspace_ids: SlotMap<VirtualWorkspaceId, ()> = SlotMap::default();
+        let source_ws1 = workspace_ids.insert(());
+        let source_ws2 = workspace_ids.insert(());
+        let receiver_ws4 = workspace_ids.insert(());
+        let receiver_ws5 = workspace_ids.insert(());
+        let mut tree = BspLayoutSystem::default();
+
+        for workspace_id in [source_ws1, source_ws2] {
+            layouts.ensure_active_for_workspace(source, size, workspace_id, &mut tree);
+        }
+        for workspace_id in [receiver_ws4, receiver_ws5] {
+            layouts.ensure_active_for_workspace(receiver, size, workspace_id, &mut tree);
+        }
+        let receiver_ws4_layout =
+            layouts.active(receiver, receiver_ws4).expect("receiver workspace 4 layout");
+        let receiver_ws5_layout =
+            layouts.active(receiver, receiver_ws5).expect("receiver workspace 5 layout");
+
+        layouts.relocate_workspace(source, receiver, source_ws1);
+        layouts.relocate_workspace(source, receiver, source_ws2);
+
+        assert!(layouts.active(source, source_ws1).is_none());
+        assert!(layouts.active(source, source_ws2).is_none());
+        assert!(layouts.active(receiver, source_ws1).is_some());
+        assert!(layouts.active(receiver, source_ws2).is_some());
+        assert_eq!(layouts.active(receiver, receiver_ws4), Some(receiver_ws4_layout));
+        assert_eq!(layouts.active(receiver, receiver_ws5), Some(receiver_ws5_layout));
     }
 }

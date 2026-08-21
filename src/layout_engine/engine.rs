@@ -15,7 +15,7 @@ use crate::layout_engine::systems::WindowLayoutConstraints;
 use crate::model::WindowRegistryHandle;
 use crate::model::virtual_workspace::{
     AppRuleAssignment, AppRuleResult, VirtualWorkspace, VirtualWorkspaceId,
-    VirtualWorkspaceManager, WorkspaceError, WorkspaceNumber,
+    VirtualWorkspaceManager, WorkspaceError, WorkspaceNumber, WorkspaceRelocation,
 };
 use crate::sys::screen::SpaceId;
 
@@ -1066,6 +1066,55 @@ impl LayoutEngine {
                 *space = new_space;
             }
         }
+    }
+
+    pub fn rebind_workspaces_to_display(
+        &mut self,
+        dead_uuid: &str,
+        receiver_uuid: &str,
+        receiver_size: CGSize,
+    ) -> Vec<WorkspaceRelocation> {
+        let relocations = self
+            .virtual_workspace_manager
+            .rebind_workspaces_to_display(dead_uuid, receiver_uuid);
+        if relocations.is_empty() {
+            return relocations;
+        }
+
+        let departed_spaces: HashSet<SpaceId> = relocations
+            .iter()
+            .filter(|relocation| relocation.old_space != relocation.new_space)
+            .map(|relocation| relocation.old_space)
+            .collect();
+        for space in departed_spaces {
+            self.floating.remove_active_space(space);
+        }
+
+        for relocation in &relocations {
+            self.workspace_layouts.relocate_workspace(
+                relocation.old_space,
+                relocation.new_space,
+                relocation.workspace_id,
+            );
+        }
+
+        for relocation in &relocations {
+            let tree = &mut self.virtual_workspace_manager.workspaces[relocation.workspace_id]
+                .layout_system;
+            self.workspace_layouts.ensure_active_for_workspace(
+                relocation.new_space,
+                receiver_size,
+                relocation.workspace_id,
+                tree,
+            );
+        }
+
+        let receiver_space = relocations[0].new_space;
+        let windows_in_workspace =
+            self.virtual_workspace_manager.windows_in_active_workspace(receiver_space);
+        self.floating.rebuild_active_for_workspace(receiver_space, windows_in_workspace);
+
+        relocations
     }
 
     pub fn prune_display_state(&mut self, active_display_uuids: &[String]) {
@@ -2838,6 +2887,72 @@ mod tests {
         centers.insert(middle, CGPoint::new(2000.0, 0.0));
 
         (vec![left, right, middle], centers, left, middle, right)
+    }
+
+    #[test]
+    fn layout_engine_rebinds_workspaces_without_replacing_receiver_layouts() {
+        let mut engine = test_engine();
+        let source_space = SpaceId::new(301);
+        let receiver_space = SpaceId::new(302);
+        let source_size = CGSize::new(1280.0, 800.0);
+        let receiver_size = CGSize::new(1920.0, 1080.0);
+        let source_window = WindowId::new(301, 1);
+        let receiver_window = WindowId::new(302, 1);
+        let source_floating = WindowId::new(301, 2);
+        let receiver_floating = WindowId::new(302, 2);
+        let window_info = |wid| (wid, None, None, None, true, CGSize::new(0.0, 0.0), None, None);
+
+        engine.update_space_display(source_space, Some("display-a".to_string()));
+        engine.update_space_display(receiver_space, Some("display-b".to_string()));
+        let _ = engine.handle_event(LayoutEvent::SpaceExposed(source_space, source_size));
+        let _ = engine.handle_event(LayoutEvent::SpaceExposed(receiver_space, receiver_size));
+        let source_workspace = engine.active_workspace(source_space).expect("source workspace");
+        let receiver_workspace =
+            engine.active_workspace(receiver_space).expect("receiver workspace");
+
+        let _ = engine.handle_event(LayoutEvent::WindowsOnScreenUpdated(
+            source_space,
+            source_window.pid,
+            vec![window_info(source_window)],
+            None,
+        ));
+        let _ = engine.handle_event(LayoutEvent::WindowsOnScreenUpdated(
+            receiver_space,
+            receiver_window.pid,
+            vec![window_info(receiver_window)],
+            None,
+        ));
+        assert!(
+            engine
+                .virtual_workspace_manager_mut()
+                .assign_window_to_workspace(source_space, source_floating, source_workspace)
+                .0
+        );
+        assert!(
+            engine
+                .virtual_workspace_manager_mut()
+                .assign_window_to_workspace(receiver_space, receiver_floating, receiver_workspace)
+                .0
+        );
+        engine.floating.add_floating(source_floating);
+        engine.floating.add_active(source_space, source_floating.pid, source_floating);
+        engine.floating.add_floating(receiver_floating);
+        engine
+            .floating
+            .add_active(receiver_space, receiver_floating.pid, receiver_floating);
+
+        let moved = engine.rebind_workspaces_to_display("display-a", "display-b", receiver_size);
+
+        assert_eq!(moved.len(), 1);
+        assert_eq!(engine.active_workspace(receiver_space), Some(receiver_workspace));
+        assert!(engine.workspace_layouts.active(source_space, source_workspace).is_none());
+        assert!(engine.workspace_layouts.active(receiver_space, source_workspace).is_some());
+        assert!(engine.workspace_layouts.active(receiver_space, receiver_workspace).is_some());
+        assert!(engine.floating.active_flat(source_space).is_empty());
+        assert_eq!(
+            engine.floating.active_flat(receiver_space),
+            vec![receiver_floating]
+        );
     }
 
     #[test]
