@@ -508,7 +508,9 @@ impl Reactor {
 
         if !activated.is_empty() || !deactivated.is_empty() {
             self.refresh_window_server_snapshot_for_active_spaces();
-            self.check_for_new_windows();
+            if !self.pending_space_change_manager.topology_relayout_pending {
+                self.check_for_new_windows();
+            }
         }
 
         if !activated.is_empty() {
@@ -575,11 +577,11 @@ impl Reactor {
         }
     }
 
-    fn maybe_commit_display_topology_snapshot(&mut self) {
+    fn maybe_commit_display_topology_snapshot(&mut self) -> bool {
         let Some((epoch, started_at, flags, pre_known_wsids)) =
             self.display_topology_manager.take_awaiting_commit()
         else {
-            return;
+            return false;
         };
 
         if self.space_manager.screens.is_empty()
@@ -592,7 +594,24 @@ impl Reactor {
                 flags,
                 pre_known_wsids,
             );
-            return;
+            return false;
+        }
+
+        let mut unique_spaces = HashSet::default();
+        if self
+            .space_manager
+            .screens
+            .iter()
+            .filter_map(|screen| screen.space)
+            .any(|space| !unique_spaces.insert(space))
+        {
+            self.display_topology_manager.restore_awaiting_commit(
+                epoch,
+                started_at,
+                flags,
+                pre_known_wsids,
+            );
+            return false;
         }
 
         let ws_info = self.authoritative_window_snapshot_for_active_spaces();
@@ -605,6 +624,7 @@ impl Reactor {
             snapshot,
         );
         self.display_topology_manager.mark_stable();
+        true
     }
 
     fn reconcile_windows_after_topology_commit(
@@ -1510,7 +1530,12 @@ impl Reactor {
         }
         let ws_info = self.filter_ws_info_to_active_spaces(ws_info);
         self.update_complete_window_server_info(ws_info);
-        self.check_for_new_windows();
+        // A topology completion has one refresh owner: the topology commit,
+        // or the pending-relayout fallback when no commit snapshot exists.
+        // Ordinary finalization must not issue a duplicate app refresh.
+        if !self.pending_space_change_manager.topology_relayout_pending {
+            self.check_for_new_windows();
+        }
 
         if let Some(space) =
             spaces.iter().copied().flatten().find(|space| self.is_space_active(*space))

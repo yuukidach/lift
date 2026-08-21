@@ -130,20 +130,40 @@ On `ScreenParametersChanged`:
 
 1. Preserve and filter fullscreen/transient snapshots as today.
 2. Compare old and new display UUID sets.
-3. For a real remove/disable transition, choose the receiver from the complete
-   new screen snapshot.
-4. Rebind each removed display's workspaces through the layout-engine wrapper.
-5. Prune departed display mappings.
-6. Reconcile spaces, expose layouts, refresh the authoritative window snapshot,
-   and commit the display topology.
-7. If the snapshot is complete and non-duplicated, perform and clear the
-   one-shot topology refresh in this handler. If it is incomplete, keep the
-   pending flag for the later complete screen or space snapshot.
+3. Queue newly missing UUIDs only while the accepted reconfiguration flags
+   include `REMOVE` or `DISABLED`. Ignore unflagged missing snapshots, including
+   an empty snapshot, and remove any queued UUID that appears in the latest live
+   UUID set before considering migration.
+4. When the screen/space snapshot is complete, non-duplicated, and has a user
+   Space receiver, vacate every departing SpaceId before whole-space
+   reconciliation can reuse it:
+   - if the receiver already has a live model mapping, rebind all departing
+     workspaces to that retained receiver SpaceId first, then reconcile the
+     receiver and other retained displays onto their newly reported SpaceIds;
+   - if the receiver is genuinely new, register only its reported mapping,
+     rebind all departing workspaces to it, and then reconcile the full screen
+     snapshot.
+   This ordering makes `A@1 + B@2 -> A@2` merge-safe: B's workspace/layout
+   entries leave Space 2 before the destructive `remap_space(1, 2)` step.
+5. Clear the completed removal queue and prune departed display mappings.
+6. Recompute active spaces, expose/finalize layouts without an ordinary app
+   refresh, and commit the display topology.
+7. The topology commit owns the single layout pass and exactly one
+   `GetVisibleWindows` request per registered app. If no commit snapshot exists,
+   the pending-relayout helper performs that work once as the explicit fallback;
+   it then clears the one-shot flag.
 
 The pending flag must be armed before attempting to consume it. A complete
 `ScreenParametersChanged` event is sufficient to consume it; Rift must not
 depend on a separate `SpaceChanged` notification, because the notification
 layer suppresses that event while a screen refresh is pending.
+
+If a removal snapshot is incomplete or has no eligible receiver, retain its
+screen UUID/frame data and the removal queue. A later complete, unique
+`SpaceChanged` vector updates those retained screens' SpaceIds and runs the same
+receiver selection, collision-safe migration/reconciliation, pruning, topology
+commit, and single-refresh completion path. A queued UUID that reappears in an
+intervening screen snapshot is cancelled and never replayed.
 
 ## Reconnection behavior
 
@@ -166,7 +186,8 @@ workspace and receives a new default workspace using the existing
 - The receiver's active workspace remains valid and unchanged.
 - No layout mirror belonging to a pre-existing receiver workspace is removed.
 - Existing transient-missing-display protection remains in place: migration
-  only runs for remove/disable reconfiguration flags.
+  only runs for remove/disable reconfiguration flags, and unflagged empty screen
+  snapshots do not queue removal candidates.
 
 ## Files and responsibilities
 

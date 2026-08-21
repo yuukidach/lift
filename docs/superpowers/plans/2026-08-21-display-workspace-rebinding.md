@@ -17,6 +17,9 @@
 - Explicit `display_migration_priority` order overrides the macOS main display; without an online configured UUID, choose the main display and then UUID lexical order.
 - Reconnecting a display never moves workspaces back.
 - Migration runs only for accepted remove/disable topology snapshots and never for transient missing-display snapshots.
+- Pending removal UUIDs are cancelled when they reappear in the latest screen snapshot.
+- Either a complete unique screen snapshot or a complete unique `SpaceChanged` snapshot may finish migration.
+- One topology completion owns exactly one visible-window refresh per registered app and one layout pass.
 - Do not add `Co-Authored-By` lines to commits.
 - Run library tests serially because tests share process state.
 - The pre-change baseline has one unrelated persistent failure after the reconnect contract test is updated: `actor::reactor::tests::it_preserves_layout_after_login_screen`.
@@ -525,22 +528,53 @@ Expected: assertions fail against destructive migration and stale pending behavi
 
 In `handle_screen_parameters_changed`:
 
-1. compute `dead_uuids` and the owned receiver selection before moving `screens`;
-2. arm `topology_relayout_pending` as soon as `should_trigger_topology` is true;
-3. retain old display mappings until new screen spaces have been reconciled;
-4. after `reconcile_spaces_with_display_history`, call the engine rebind once per dead UUID using the receiver UUID and screen size;
-5. then call `prune_display_state` with the new active UUID list;
-6. continue recompute/finalize logic.
+1. queue `dead_uuids` only when active flags include `REMOVE` or `DISABLED`,
+   ignore unflagged empty/missing snapshots, and cancel queued UUIDs present in
+   the latest live UUID set;
+2. arm `topology_relayout_pending` before attempting completion;
+3. retain old display mappings while the snapshot is incomplete;
+4. for a complete unique snapshot with an eligible user-Space receiver, use
+   collision-safe ordering:
+   - an already-mapped receiver absorbs every departing workspace on its
+     retained old SpaceId before full reconciliation;
+   - a genuinely new receiver gets only its reported mapping first, then
+     absorbs every departing workspace;
+   - reconcile retained displays only after all departing SpaceIds are vacated;
+5. clear the completed queue, prune display state with the live UUID list, and
+   continue recompute/finalize logic.
 
-This ordering lets a simultaneously-added receiver obtain its real UUID/space mapping before source workspaces move, while preserving departed mappings long enough to locate source workspaces.
+This ordering preserves both sides of `A@1 + B@2 -> A@2`: B moves onto A's
+retained Space 1 first, then the combined state can be remapped to Space 2
+without destructive target replacement deleting B.
 
 - [x] **Step 6: Implement shared pending-relayout completion**
 
-Add a helper that returns without clearing when any current screen lacks a space, spaces are duplicated, or display topology is still churning/awaiting commit. Otherwise it clears the flag, requests visible windows once, and performs the existing topology layout update:
+Add a shared pending-migration helper used by both `ScreenParametersChanged`
+and `SpaceChanged`. It returns without clearing when a current screen lacks a
+space, spaces are duplicated, or no eligible user-Space receiver exists. On a
+complete snapshot it performs the collision-safe rebind/reconcile/prune order
+from Step 5 and clears the removal queue. `SpaceChanged` must first write its
+complete vector into the retained screen records so this helper can finish an
+incomplete/no-receiver screen snapshot.
+
+Keep pending-relayout completion separate from migration readiness. It returns
+without clearing while migration remains queued or topology is still churning.
+Ordinary active-space/finalize paths suppress their app refresh while the
+topology flag is armed. Make topology-commit completion explicit: the commit is
+the sole owner of one layout pass and one `GetVisibleWindows` per registered app;
+only when no commit snapshot exists does the helper perform that work as a
+single fallback. Then it clears the flag. Conceptually:
 
 ```rust
-fn finish_pending_topology_relayout_if_ready(reactor: &mut Reactor) -> bool {
+fn finish_pending_topology_relayout_if_ready(
+    reactor: &mut Reactor,
+    topology_commit_owned_refresh: bool,
+) -> bool {
     if !reactor.pending_space_change_manager.topology_relayout_pending
+        || !reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .is_empty()
         || reactor.display_topology_manager.is_churning_or_awaiting_commit()
         || reactor.space_manager.screens.is_empty()
         || reactor.space_manager.screens.iter().any(|screen| screen.space.is_none())
@@ -558,17 +592,22 @@ fn finish_pending_topology_relayout_if_ready(reactor: &mut Reactor) -> bool {
         return false;
     }
     reactor.pending_space_change_manager.topology_relayout_pending = false;
-    reactor.force_refresh_all_windows();
-    let _ = reactor.update_layout_or_warn_with(
-        false,
-        false,
-        "Layout update failed after topology change",
-    );
+    if !topology_commit_owned_refresh {
+        reactor.force_refresh_all_windows();
+        let _ = reactor.update_layout_or_warn_with(
+            false,
+            false,
+            "Layout update failed after topology change",
+        );
+    }
     true
 }
 ```
 
-Call `maybe_commit_display_topology_snapshot` before this helper at the end of both complete screen-parameter and space-change paths. Delete the old late arming block and inline SpaceChanged consumer.
+Call the migration helper and then `maybe_commit_display_topology_snapshot`
+before the pending-relayout helper at the end of both complete screen-parameter
+and space-change paths. Delete the early `SpaceChanged` return that previously
+blocked queued migration.
 
 - [x] **Step 7: Run integration and regression tests and verify GREEN**
 
@@ -579,6 +618,11 @@ cargo test --lib display_unplug_preserves_global_workspaces -- --test-threads=1
 cargo test --lib display_removal_uses_configured_receiver_priority -- --test-threads=1
 cargo test --lib display_replug_does_not_reclaim_migrated_workspaces -- --test-threads=1
 cargo test --lib complete_topology_snapshot_does_not_defer_refresh -- --test-threads=1
+cargo test --lib display_removal_space_collision_preserves_all_workspace_state -- --test-threads=1
+cargo test --lib unflagged_empty_screen_snapshot_recovers_without_queuing_removal -- --test-threads=1
+cargo test --lib queued_display_removal_is_cancelled_when_display_reappears -- --test-threads=1
+cargo test --lib space_changed_completes_pending_display_removal -- --test-threads=1
+cargo test --lib removing_main_and_second_display_uses_single_default_receiver -- --test-threads=1
 cargo test --lib transient_missing_display_snapshot_does_not_migrate_workspaces -- --test-threads=1
 cargo test --lib normal_macos_space_switch_does_not_arm_topology_relayout -- --test-threads=1
 cargo test --lib fullscreen_space_in_screen_params_does_not_trigger_topology_relayout -- --test-threads=1

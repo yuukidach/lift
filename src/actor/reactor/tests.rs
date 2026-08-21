@@ -106,7 +106,7 @@ fn it_manages_windows_on_enabled_spaces() {
 }
 
 #[test]
-fn it_clears_screen_state_when_no_displays_are_reported() {
+fn unflagged_empty_screen_snapshot_recovers_without_queuing_removal() {
     let mut reactor = Reactor::new_for_test(LayoutEngine::new(
         &crate::common::config::VirtualWorkspaceSettings::default(),
         &crate::common::config::LayoutSettings::default(),
@@ -120,12 +120,25 @@ fn it_clears_screen_state_when_no_displays_are_reported() {
         vec![],
     ));
     assert_eq!(1, reactor.space_manager.screens.len());
+    let original_workspace = reactor
+        .layout_manager
+        .layout_engine
+        .active_workspace(SpaceId::new(1))
+        .expect("initial screen must have an active workspace");
 
     reactor.handle_event(screen_params_event(vec![], vec![], vec![]));
-    assert!(reactor.space_manager.screens.is_empty());
-
-    reactor.handle_event(Event::SpaceChanged(vec![]));
-    assert!(reactor.space_manager.screens.is_empty());
+    assert_eq!(
+        reactor.space_manager.screens.len(),
+        1,
+        "an unflagged empty snapshot is transient and must be ignored"
+    );
+    assert!(
+        reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .is_empty(),
+        "an unflagged empty snapshot must not queue a display removal"
+    );
 
     reactor.handle_event(screen_params_event(
         vec![screen],
@@ -133,6 +146,11 @@ fn it_clears_screen_state_when_no_displays_are_reported() {
         vec![],
     ));
     assert_eq!(1, reactor.space_manager.screens.len());
+    assert_eq!(
+        reactor.layout_manager.layout_engine.active_workspace(SpaceId::new(1)),
+        Some(original_workspace),
+        "the recovery snapshot must retain the original workspace"
+    );
 }
 
 #[test]
@@ -2712,6 +2730,79 @@ fn display_removal_uses_configured_receiver_priority() {
 }
 
 #[test]
+fn removing_main_and_second_display_uses_single_default_receiver() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-0".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 2);
+    settings.display_default_workspaces.insert("test-display-2".to_string(), 3);
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let frames = vec![
+        CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.)),
+        CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.)),
+        CGRect::new(CGPoint::new(2000., 0.), CGSize::new(1000., 1000.)),
+    ];
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    let space3 = SpaceId::new(3);
+    let initial_screens = make_screen_snapshots(
+        frames,
+        vec![Some(space1), Some(space2), Some(space3)],
+    );
+    reactor.handle_event(Event::ScreenParametersChanged(initial_screens.clone()));
+    for space in [space1, space2, space3] {
+        let _ = reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .list_workspaces(space);
+    }
+    let original_ids: Vec<_> = (1..=3)
+        .map(|number| {
+            reactor
+                .layout_manager
+                .layout_engine
+                .virtual_workspace_manager()
+                .resolve_workspace(number)
+                .unwrap()
+                .workspace_id
+        })
+        .collect();
+    let receiver_active = original_ids[1];
+
+    reactor.display_topology_manager.begin_churn(
+        83,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor.display_topology_manager.end_churn_to_awaiting(
+        83,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+    );
+    let mut receiver = initial_screens[1].clone();
+    receiver.space = Some(space1);
+    reactor.handle_event(Event::ScreenParametersChanged(vec![receiver]));
+
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    for (number, original_id) in (1..=3).zip(original_ids) {
+        let resolved = vwm
+            .resolve_workspace(number)
+            .unwrap_or_else(|| panic!("workspace {number} must survive the two-display removal"));
+        assert_eq!(resolved.workspace_id, original_id);
+        assert_eq!(resolved.display_uuid, "test-display-1");
+        assert_eq!(resolved.space, space1);
+    }
+    assert_eq!(
+        reactor.layout_manager.layout_engine.active_workspace(space1),
+        Some(receiver_active),
+        "the only remaining display must keep its active workspace"
+    );
+}
+
+#[test]
 fn switch_to_global_slot_creates_workspace_when_absent() {
     // Cmd+N for a workspace number that doesn't exist creates it on the
     // focused display, then activates it.
@@ -4316,6 +4407,252 @@ fn display_unplug_preserves_global_workspaces() {
     assert_ne!(vwm.workspace_for_window(window_on_ws2), Some(receiver_active_before));
 }
 
+fn workspace_layout_snapshot(
+    engine: &LayoutEngine,
+    space: SpaceId,
+    workspace: crate::model::VirtualWorkspaceId,
+    screen: CGRect,
+) -> Vec<(WindowId, CGRect)> {
+    let mut snapshot = engine.calculate_layout_for_workspace(
+        space,
+        workspace,
+        screen,
+        &crate::common::config::GapSettings::default(),
+        0.0,
+        crate::common::config::HorizontalPlacement::Top,
+        crate::common::config::VerticalPlacement::Right,
+    );
+    snapshot.sort_unstable_by_key(|(window, _)| *window);
+    snapshot
+}
+
+#[test]
+fn display_removal_space_collision_preserves_all_workspace_state() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-0".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 2);
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let layout_surface = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+    for space in [space1, space2] {
+        let _ = reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .list_workspaces(space);
+    }
+
+    let receiver_uuid = "test-display-0";
+    let departing_uuid = "test-display-1";
+    let receiver_active = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(1)
+        .unwrap()
+        .workspace_id;
+    let departing_active = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(2)
+        .unwrap()
+        .workspace_id;
+    let departing_inactive = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        3,
+        departing_uuid,
+        space2,
+        screen2.size,
+    );
+    let receiver_last = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        4,
+        receiver_uuid,
+        space1,
+        screen1.size,
+    );
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, receiver_last)
+    );
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, receiver_active)
+    );
+
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(66, make_windows(4)));
+    apps.simulate_until_quiet(&mut reactor);
+    let receiver_active_window = WindowId::new(66, 1);
+    let receiver_last_window = WindowId::new(66, 2);
+    let departing_floating_window = WindowId::new(66, 3);
+    let departing_tiled_window = WindowId::new(66, 4);
+    for (workspace_number, window) in [
+        (4, receiver_last_window),
+        (2, departing_floating_window),
+        (3, departing_tiled_window),
+    ] {
+        let _ = reactor.layout_manager.layout_engine.move_window_to_workspace_number(
+            space1,
+            workspace_number,
+            window,
+        );
+    }
+    let _ = reactor.layout_manager.layout_engine.handle_event(LayoutEvent::WindowFocused(
+        space2,
+        departing_floating_window,
+    ));
+    let _ = reactor.layout_manager.layout_engine.handle_command(
+        Some(space2),
+        &[space1, space2],
+        &crate::common::collections::HashMap::default(),
+        LayoutCommand::ToggleWindowFloating,
+    );
+    let stored_floating_position = CGRect::new(
+        CGPoint::new(1200.0, 150.0),
+        CGSize::new(320.0, 240.0),
+    );
+    reactor.layout_manager.layout_engine.store_floating_window_positions(
+        space2,
+        &[(departing_floating_window, stored_floating_position)],
+    );
+
+    let before_layouts = [
+        (
+            receiver_active,
+            workspace_layout_snapshot(
+                &reactor.layout_manager.layout_engine,
+                space1,
+                receiver_active,
+                layout_surface,
+            ),
+        ),
+        (
+            receiver_last,
+            workspace_layout_snapshot(
+                &reactor.layout_manager.layout_engine,
+                space1,
+                receiver_last,
+                layout_surface,
+            ),
+        ),
+        (
+            departing_active,
+            workspace_layout_snapshot(
+                &reactor.layout_manager.layout_engine,
+                space2,
+                departing_active,
+                layout_surface,
+            ),
+        ),
+        (
+            departing_inactive,
+            workspace_layout_snapshot(
+                &reactor.layout_manager.layout_engine,
+                space2,
+                departing_inactive,
+                layout_surface,
+            ),
+        ),
+    ];
+    assert_eq!(before_layouts[0].1[0].0, receiver_active_window);
+    assert_eq!(before_layouts[1].1[0].0, receiver_last_window);
+    assert_eq!(before_layouts[2].1, vec![(departing_floating_window, stored_floating_position)]);
+    assert_eq!(before_layouts[3].1[0].0, departing_tiled_window);
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .is_window_floating(departing_floating_window)
+    );
+    let _ = apps.requests();
+
+    reactor.display_topology_manager.begin_churn(
+        94,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor.display_topology_manager.end_churn_to_awaiting(
+        94,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+    );
+    // The receiver changes from Space 1 to Space 2 exactly as the departing
+    // display releases Space 2. Whole-space remap before rebind destroys the
+    // departing display's preserved workspace state.
+    reactor.handle_event(screen_params_event(vec![screen1], vec![Some(space2)], vec![]));
+
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    for (number, expected_workspace) in [
+        (1, receiver_active),
+        (2, departing_active),
+        (3, departing_inactive),
+        (4, receiver_last),
+    ] {
+        let resolved = vwm
+            .resolve_workspace(number)
+            .unwrap_or_else(|| panic!("workspace {number} must survive the SpaceId collision"));
+        assert_eq!(resolved.workspace_id, expected_workspace);
+        assert_eq!(resolved.display_uuid, receiver_uuid);
+        assert_eq!(resolved.space, space2);
+    }
+    for (window, workspace) in [
+        (receiver_active_window, receiver_active),
+        (receiver_last_window, receiver_last),
+        (departing_floating_window, departing_active),
+        (departing_tiled_window, departing_inactive),
+    ] {
+        assert_eq!(vwm.workspace_for_window(window), Some(workspace));
+    }
+    assert_eq!(
+        reactor.layout_manager.layout_engine.active_workspace(space2),
+        Some(receiver_active)
+    );
+    assert_eq!(vwm.last_workspace(space2), Some(receiver_last));
+    assert_eq!(
+        vwm.last_focused_window(space2, departing_active),
+        Some(departing_floating_window)
+    );
+    assert_eq!(
+        vwm.get_floating_position(space2, departing_active, departing_floating_window),
+        Some(stored_floating_position)
+    );
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .is_window_floating(departing_floating_window)
+    );
+    for (workspace, before) in before_layouts {
+        assert_eq!(
+            workspace_layout_snapshot(
+                &reactor.layout_manager.layout_engine,
+                space2,
+                workspace,
+                layout_surface,
+            ),
+            before,
+            "workspace layout tree must survive the SpaceId collision"
+        );
+    }
+}
+
 #[test]
 fn complete_topology_snapshot_does_not_defer_refresh() {
     let TwoSpaceFixture { mut reactor, screen1, space1, space2, .. } = two_space_fixture();
@@ -4351,6 +4688,7 @@ fn complete_topology_snapshot_does_not_defer_refresh() {
 
     let mut apps = Apps::new();
     reactor.handle_events(apps.make_app(62, make_windows(1)));
+    reactor.handle_events(apps.make_app_with_opts(67, vec![], None, false, false));
     apps.simulate_until_quiet(&mut reactor);
     let window = WindowId::new(62, 1);
     let (assigned, destroyed) = reactor
@@ -4383,11 +4721,13 @@ fn complete_topology_snapshot_does_not_defer_refresh() {
     ));
     assert!(!reactor.pending_space_change_manager.topology_relayout_pending);
     let topology_requests = apps.requests();
-    assert!(
+    assert_eq!(
         topology_requests
             .iter()
-            .any(|request| matches!(request, Request::GetVisibleWindows)),
-        "topology completion must refresh visible windows"
+            .filter(|request| matches!(request, Request::GetVisibleWindows))
+            .count(),
+        2,
+        "one completed topology event must request visible windows exactly once per registered app: {topology_requests:?}"
     );
 
     let (assigned, destroyed) = reactor
@@ -4498,6 +4838,166 @@ fn display_removal_retries_after_incomplete_receiver_snapshot() {
     assert_eq!(vwm.workspace_for_window(window), Some(ws2));
     assert_eq!(vwm.space_display(space2), None);
     assert!(!reactor.pending_space_change_manager.topology_relayout_pending);
+}
+
+#[test]
+fn queued_display_removal_is_cancelled_when_display_reappears() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-0".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 2);
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+    for space in [space1, space2] {
+        let _ = reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .list_workspaces(space);
+    }
+    let original_workspace = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(2)
+        .expect("departing display must own workspace 2")
+        .workspace_id;
+
+    reactor.display_topology_manager.begin_churn(
+        95,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor.display_topology_manager.end_churn_to_awaiting(
+        95,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+    );
+    reactor.handle_event(screen_params_event(vec![screen1], vec![None], vec![]));
+    assert!(
+        reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .contains("test-display-1")
+    );
+
+    // The supposedly removed UUID is live again before a usable receiver
+    // snapshot exists. It must be removed from the queue, not replayed.
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+
+    let resolved = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(2)
+        .expect("reappeared display must retain workspace 2");
+    assert_eq!(resolved.workspace_id, original_workspace);
+    assert_eq!(resolved.display_uuid, "test-display-1");
+    assert_eq!(resolved.space, space2);
+    assert!(
+        reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .is_empty()
+    );
+    assert!(!reactor.pending_space_change_manager.topology_relayout_pending);
+    assert!(matches!(
+        reactor.display_topology_manager.state(),
+        TopologyState::Stable
+    ));
+}
+
+#[test]
+fn space_changed_completes_pending_display_removal() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-0".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 2);
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+    for space in [space1, space2] {
+        let _ = reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .list_workspaces(space);
+    }
+    let departing_workspace = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(2)
+        .expect("departing display must own workspace 2")
+        .workspace_id;
+
+    reactor.display_topology_manager.begin_churn(
+        96,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor.display_topology_manager.end_churn_to_awaiting(
+        96,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+    );
+    reactor.handle_event(screen_params_event(vec![screen1], vec![None], vec![]));
+    assert!(reactor.pending_space_change_manager.topology_relayout_pending);
+    assert!(
+        reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .contains("test-display-1")
+    );
+
+    // No second ScreenParametersChanged arrives; the complete SpaceChanged
+    // snapshot must finish the queued migration and topology commit itself.
+    reactor.handle_event(Event::SpaceChanged(vec![Some(space1)]));
+
+    let resolved = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(2)
+        .expect("SpaceChanged completion must preserve workspace 2");
+    assert_eq!(resolved.workspace_id, departing_workspace);
+    assert_eq!(resolved.display_uuid, "test-display-0");
+    assert_eq!(resolved.space, space1);
+    assert_eq!(reactor.space_manager.screens[0].space, Some(space1));
+    assert!(
+        reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .is_empty()
+    );
+    assert!(!reactor.pending_space_change_manager.topology_relayout_pending);
+    assert!(matches!(
+        reactor.display_topology_manager.state(),
+        TopologyState::Stable
+    ));
 }
 
 #[test]
