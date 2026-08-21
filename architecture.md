@@ -513,6 +513,12 @@ pub struct VirtualWorkspace {
 `VirtualWorkspaceManager` owns global workspace numbering, display binding,
 active workspace state, app rules, and workspace assignment metadata.
 
+Display bindings are sticky while their display is online. If that display
+disappears, its workspaces are rebound in place to a selected online receiver:
+their `VirtualWorkspaceId`, global number, membership, layouts, and floating
+state survive, while the receiver's active and last workspace state remains
+unchanged. Reconnecting the former display does not reclaim those workspaces.
+
 ```rust
 pub struct VirtualWorkspaceManager {
     pub(crate) workspaces: SlotMap<VirtualWorkspaceId, VirtualWorkspace>,

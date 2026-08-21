@@ -52,6 +52,10 @@ has at most one workspace; derive its SpaceId via the workspace.
 - One workspace per (number, display) — `workspace_by_number` enforces global single-owner
 - Workspace's `.space` is the authoritative space ownership; everything else mirrors
 - Display UUIDs survive replug (macOS reissues SpaceId, not display UUID); SpaceIds do not
+- A display binding stays sticky while that display is online. When a display
+  disappears, rebind its workspaces to the selected online receiver in place:
+  preserve their IDs, global numbers, window membership, layouts, and receiver
+  active/last state; never reclaim them when the display reappears
 - Workspaces are created lazily (one default per display) and destroyed when last window leaves AND not active anywhere
 
 ## Destroy helper trio — pick carefully
@@ -62,7 +66,7 @@ silently corrupts the active/last tables.
 | Helper | Active-anywhere guard? | Scrubs active/last tables? | Use when |
 | --- | --- | --- | --- |
 | `destroy_workspace_no_rebuild(ws_id)` | No | No | You've already verified safety AND already scrubbed the per-display tables yourself. **Rare.** |
-| `destroy_workspace_purge_active(ws_id)` | No (forces destruction) | Yes | `remap_space` and other paths that must destroy regardless of active state (e.g., display went away). |
+| `destroy_workspace_purge_active(ws_id)` | No (forces destruction) | Yes | `remap_space` and other paths that must destroy regardless of active state. Display removal rebinds workspaces instead. |
 | `destroy_workspace_if_ephemeral(ws_id)` / `destroy_ephemeral_workspaces(iter)` | Yes (refuses if active) | Yes (via no_rebuild + ephemeral guard) | Normal lifecycle — window removed, may or may not be safe to destroy. **Default choice.** |
 
 If you're tempted to call `destroy_workspace_no_rebuild` directly, you almost
