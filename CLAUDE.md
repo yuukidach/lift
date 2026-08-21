@@ -98,8 +98,6 @@ plan docs, prior conversations, or upstream code, they're gone:
 
 ## Where work lives
 
-- `docs/superpowers/specs/` — design docs (input to plans)
-- `docs/superpowers/plans/` — implementation plans (current: `2026-05-15-hyprland-workspaces.md`)
 - `src/model/virtual_workspace.rs` — the model rewritten in Phase 4
 - `src/layout_engine/engine.rs` — wiring between virtual workspaces and the tile layout
 - `src/actor/reactor/` — event loop; `events/command.rs` handles user commands
@@ -107,8 +105,6 @@ plan docs, prior conversations, or upstream code, they're gone:
 
 ## Workflow conventions
 
-- Subagent-Driven Development: per-task implementer + two-stage review (spec
-  compliance → code quality). Plans use `- [ ]` checkbox steps.
 - Do not skip hooks (`--no-verify`) on commits
 - Do not amend published commits; create new ones for follow-up fixes
 - Commit message convention: `<area>: <imperative summary>` (e.g.

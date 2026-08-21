@@ -2321,8 +2321,7 @@ impl LayoutEngine {
     ) -> EventResponse {
         match command {
             // Contract: cycles only across workspaces bound to the focused
-            // display. Never causes a cross-display jump. See spec:
-            // docs/superpowers/specs/2026-05-15-hyprland-workspaces-design.md
+            // display. Never causes a cross-display jump.
             LayoutCommand::NextWorkspace(skip_empty) => {
                 if let Some(current_workspace) =
                     self.virtual_workspace_manager.active_workspace(space)
@@ -2346,8 +2345,7 @@ impl LayoutEngine {
                 EventResponse::default()
             }
             // Contract: cycles only across workspaces bound to the focused
-            // display. Never causes a cross-display jump. See spec:
-            // docs/superpowers/specs/2026-05-15-hyprland-workspaces-design.md
+            // display. Never causes a cross-display jump.
             LayoutCommand::PrevWorkspace(skip_empty) => {
                 if let Some(current_workspace) =
                     self.virtual_workspace_manager.active_workspace(space)
@@ -2389,8 +2387,7 @@ impl LayoutEngine {
                 EventResponse::default()
             }
             // Contract: returns to the previous workspace on the focused
-            // display only. Per-display history, not global. See spec:
-            // docs/superpowers/specs/2026-05-15-hyprland-workspaces-design.md
+            // display only. Per-display history, not global.
             LayoutCommand::SwitchToLastWorkspace => {
                 if let Some(last_workspace) = self.virtual_workspace_manager.last_workspace(space) {
                     let previous_workspace = self.virtual_workspace_manager.active_workspace(space);
