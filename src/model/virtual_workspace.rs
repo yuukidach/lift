@@ -63,6 +63,14 @@ pub struct SlotTarget {
     pub display_uuid: String,
 }
 
+/// A workspace whose native-space binding moved while preserving its identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceRelocation {
+    pub workspace_id: VirtualWorkspaceId,
+    pub old_space: SpaceId,
+    pub new_space: SpaceId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceError {
     NoWorkspacesAvailable,
@@ -1400,6 +1408,71 @@ impl VirtualWorkspaceManager {
             return false;
         };
         self.active_workspace_per_display.values().any(|n| *n == number)
+    }
+
+    /// Rebind every workspace owned by the departing display to a live
+    /// receiver space without changing workspace identity, global number,
+    /// membership, or window-rule metadata. The returned relocations let the
+    /// layout engine move its per-workspace mirrors using the same keys.
+    ///
+    /// The receiver is resolved before any mutation so an unknown receiver
+    /// leaves all model state untouched. This must run before display pruning
+    /// removes the departed display's space mapping.
+    pub fn rebind_workspaces_to_display(
+        &mut self,
+        dead_uuid: &str,
+        receiver_uuid: &str,
+    ) -> Vec<WorkspaceRelocation> {
+        if dead_uuid == receiver_uuid {
+            return Vec::new();
+        }
+
+        // The receiver must be live before we touch anything.
+        let Some(receiver_space) = self.space_for_display(receiver_uuid) else {
+            return Vec::new();
+        };
+
+        let relocations: Vec<WorkspaceRelocation> = self
+            .workspace_ids_for_display(dead_uuid)
+            .into_iter()
+            .filter_map(|workspace_id| {
+                self.workspaces.get(workspace_id).map(|workspace| WorkspaceRelocation {
+                    workspace_id,
+                    old_space: workspace.space,
+                    new_space: receiver_space,
+                })
+            })
+            .collect();
+
+        for relocation in &relocations {
+            let windows: Vec<WindowId> = self.workspaces[relocation.workspace_id]
+                .windows()
+                .collect();
+            self.workspaces[relocation.workspace_id].space = relocation.new_space;
+            self.display_for_workspace
+                .insert(relocation.workspace_id, receiver_uuid.to_string());
+            for window_id in windows {
+                self.window_registry.get_mut().assign_window_to_workspace(
+                    window_id,
+                    WindowWorkspaceInfo {
+                        space: relocation.new_space,
+                        workspace_id: relocation.workspace_id,
+                    },
+                );
+            }
+            if let Some(positions) = self
+                .floating_positions
+                .remove(&(relocation.old_space, relocation.workspace_id))
+            {
+                self.floating_positions
+                    .insert((relocation.new_space, relocation.workspace_id), positions);
+            }
+        }
+
+        self.active_workspace_per_display.remove(dead_uuid);
+        self.last_workspace_per_display.remove(dead_uuid);
+
+        relocations
     }
 
     /// Phase 3.4: when display `dead_uuid` goes offline, move every window
@@ -2889,6 +2962,83 @@ mod tests {
 
         assert_eq!(manager.space_display(old_space), None);
         assert_eq!(manager.space_display(new_space), Some("display-A"));
+    }
+
+    #[test]
+    fn rebind_workspaces_to_display_preserves_workspace_identity_and_window_metadata() {
+        let mut manager = VirtualWorkspaceManager::new();
+        let source_space = SpaceId::new(1);
+        let receiver_space = SpaceId::new(2);
+        manager.set_space_display(source_space, Some("display-a".to_string()));
+        manager.set_space_display(receiver_space, Some("display-b".to_string()));
+
+        let ws1 = manager.create_workspace_with_number(1, "display-a", source_space);
+        let ws2 = manager.create_workspace_with_number(2, "display-a", source_space);
+        let ws3 = manager.create_workspace_with_number(3, "display-a", source_space);
+        let ws4 = manager.create_workspace_with_number(4, "display-b", receiver_space);
+        let ws5 = manager.create_workspace_with_number(5, "display-b", receiver_space);
+        let ws6 = manager.create_workspace_with_number(6, "display-b", receiver_space);
+        let window_on_ws2 = WindowId::new(42, 2);
+        let floating_position = CGRect::new(
+            CGPoint::new(10.0, 20.0),
+            CGSize::new(300.0, 400.0),
+        );
+
+        assert!(manager.assign_window_to_workspace(source_space, window_on_ws2, ws2).0);
+        manager.window_registry().get_mut().set_rule_floating(window_on_ws2, true);
+        manager.set_last_rule_decision(source_space, window_on_ws2, true);
+        manager.store_floating_position(source_space, ws2, window_on_ws2, floating_position);
+        assert!(manager.set_active_workspace(source_space, ws2));
+        assert!(manager.set_active_workspace(receiver_space, ws4));
+        assert!(manager.set_active_workspace(receiver_space, ws5));
+        let receiver_last = manager.last_workspace(receiver_space);
+
+        let relocations = manager.rebind_workspaces_to_display("display-a", "display-b");
+
+        assert_eq!(relocations.len(), 3);
+        for (number, original_id) in [(1, ws1), (2, ws2), (3, ws3)] {
+            let target = manager.resolve_workspace(number).unwrap();
+            assert_eq!(target.workspace_id, original_id);
+            assert_eq!(target.display_uuid, "display-b");
+            assert_eq!(target.space, receiver_space);
+        }
+        assert_eq!(manager.active_workspace(receiver_space), Some(ws5));
+        assert_eq!(manager.last_workspace(receiver_space), receiver_last);
+        assert_eq!(manager.workspace_for_window(window_on_ws2), Some(ws2));
+        assert_eq!(
+            manager.window_registry().get().workspace_info_for_window(window_on_ws2),
+            Some(WindowWorkspaceInfo { space: receiver_space, workspace_id: ws2 })
+        );
+        assert!(manager.window_registry().get().rule_floating(window_on_ws2));
+        assert!(manager.window_registry().get().last_rule_decision(window_on_ws2));
+        assert_eq!(
+            manager.get_floating_position(receiver_space, ws2, window_on_ws2),
+            Some(floating_position)
+        );
+        assert!(manager
+            .get_workspace_floating_positions(source_space, ws2)
+            .is_empty(), "source floating-position key must move with the workspace");
+
+        for (number, original_id) in [(4, ws4), (5, ws5), (6, ws6)] {
+            assert_eq!(manager.resolve_workspace(number).unwrap().workspace_id, original_id);
+        }
+
+        let state_before_missing_receiver = (
+            manager.resolve_workspace(1),
+            manager.active_workspace(receiver_space),
+            manager.workspace_for_window(window_on_ws2),
+        );
+        assert!(manager
+            .rebind_workspaces_to_display("display-b", "missing-receiver")
+            .is_empty());
+        assert_eq!(
+            (
+                manager.resolve_workspace(1),
+                manager.active_workspace(receiver_space),
+                manager.workspace_for_window(window_on_ws2),
+            ),
+            state_before_missing_receiver
+        );
     }
 
     /// When `set_active_workspace` runs before `set_space_display`, it
