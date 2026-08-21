@@ -610,7 +610,7 @@ git commit -m "fix: preserve workspaces across display removal"
 
 In `CLAUDE.md`, add the display-removal invariant beside the workspace data-model invariants. In `architecture.md`, replace statements that say display removal destroys workspaces or frees their numbers. State that display binding is sticky while online and is reassigned, not destroyed, when the display disappears. Do not edit unrelated architecture sections.
 
-- [x] **Step 2: Run formatting and static checks**
+- [ ] **Step 2: Run formatting and static checks**
 
 Run:
 
