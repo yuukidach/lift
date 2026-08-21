@@ -240,45 +240,21 @@ impl SpaceEventHandler {
         let topology_changed = displays_changed || display_order_changed;
         let should_trigger_topology = topology_changed
             && (reactor.space_manager.has_seen_display_set || !previous_displays.is_empty());
+        let dead_uuids: Vec<String> =
+            previous_displays.difference(&new_displays).cloned().collect();
+        let migration_receiver = if displays_changed {
+            select_display_migration_receiver(
+                &screens,
+                &reactor.config.virtual_workspaces.display_migration_priority,
+            )
+        } else {
+            None
+        };
+        let active_display_uuids: Vec<String> =
+            screens.iter().map(|screen| screen.display_uuid.clone()).collect();
 
-        if displays_changed {
-            // Phase 3.4: BEFORE pruning the dead display's space mappings,
-            // migrate its workspaces' windows to a remaining display and
-            // destroy the now-orphaned workspaces. Pruning clears
-            // `display_uuid_for_space` for the dead spaces; once that
-            // happens, `migrate_workspaces_off_display` can no longer
-            // find which workspaces belong to the dead display, so the
-            // ordering matters.
-            //
-            // Receiver = the first display in the new screen vector that
-            // still has a SpaceId. The plan calls for "focused remaining
-            // display"; in practice the first-with-space choice is good
-            // enough for the common laptop+external case (one external
-            // dies → laptop is the only candidate). Refine when the
-            // multi-remaining case starts to matter.
-            let dead_uuids: Vec<String> =
-                previous_displays.difference(&new_displays).cloned().collect();
-            let receiver_uuid: Option<String> =
-                screens.iter().find(|s| s.space.is_some()).map(|s| s.display_uuid.clone());
-            if let Some(receiver_uuid) = receiver_uuid {
-                for dead_uuid in &dead_uuids {
-                    if dead_uuid == &receiver_uuid {
-                        continue;
-                    }
-                    let destroyed = reactor
-                        .layout_manager
-                        .layout_engine
-                        .virtual_workspace_manager_mut()
-                        .migrate_workspaces_off_display(dead_uuid, &receiver_uuid);
-                    reactor
-                        .layout_manager
-                        .layout_engine
-                        .drain_destroyed_workspace_layouts(destroyed);
-                }
-            }
-
-            let active_list: Vec<String> = new_displays.iter().cloned().collect();
-            reactor.layout_manager.layout_engine.prune_display_state(&active_list);
+        if should_trigger_topology {
+            reactor.pending_space_change_manager.topology_relayout_pending = true;
         }
         if !new_displays.is_empty() {
             reactor.space_manager.has_seen_display_set = true;
@@ -291,6 +267,9 @@ impl SpaceEventHandler {
                 reactor.expose_all_spaces();
             }
 
+            if displays_changed {
+                reactor.layout_manager.layout_engine.prune_display_state(&active_display_uuids);
+            }
             reactor.recompute_and_set_active_spaces(&[]);
             reactor.update_complete_window_server_info(Vec::new());
         } else {
@@ -345,6 +324,19 @@ impl SpaceEventHandler {
                 && spaces.iter().all(|space| space.is_some());
             reactor.reconcile_spaces_with_display_history(&spaces, allow_space_remap);
 
+            if displays_changed {
+                if let Some(receiver) = migration_receiver {
+                    for dead_uuid in &dead_uuids {
+                        reactor.layout_manager.layout_engine.rebind_workspaces_to_display(
+                            dead_uuid,
+                            &receiver.display_uuid,
+                            receiver.size,
+                        );
+                    }
+                }
+                reactor.layout_manager.layout_engine.prune_display_state(&active_display_uuids);
+            }
+
             // Display UUIDs must be registered before recompute exposes newly
             // activated spaces. Otherwise VWM lazy-init uses a synthetic
             // per-space UUID and misses display_default_workspaces pins after
@@ -376,12 +368,7 @@ impl SpaceEventHandler {
         }
         reactor.try_apply_pending_space_change();
         reactor.maybe_commit_display_topology_snapshot();
-
-        // Mark that we should perform a one-shot relayout after spaces are applied,
-        // so windows return to their prior displays post-topology change.
-        if should_trigger_topology {
-            reactor.pending_space_change_manager.topology_relayout_pending = true;
-        }
+        finish_pending_topology_relayout_if_ready(reactor);
     }
 
     pub fn handle_space_changed(reactor: &mut Reactor, mut spaces: Vec<Option<SpaceId>>) {
@@ -462,18 +449,8 @@ impl SpaceEventHandler {
         let ws_info = reactor.authoritative_window_snapshot_for_active_spaces();
         reactor.finalize_space_change(&spaces, ws_info);
 
-        // If a topology change was detected earlier, perform a one-shot refresh/layout
-        // now that we have a consistent space vector matching the screens.
-        if reactor.pending_space_change_manager.topology_relayout_pending {
-            reactor.pending_space_change_manager.topology_relayout_pending = false;
-            reactor.force_refresh_all_windows();
-            let _ = reactor.update_layout_or_warn_with(
-                false,
-                false,
-                "Layout update failed after topology change",
-            );
-        }
         reactor.maybe_commit_display_topology_snapshot();
+        finish_pending_topology_relayout_if_ready(reactor);
     }
 
     pub fn handle_mission_control_native_entered(reactor: &mut Reactor) {
@@ -487,6 +464,36 @@ impl SpaceEventHandler {
         reactor.repair_spaces_after_mission_control();
         reactor.refresh_windows_after_mission_control();
     }
+}
+
+fn finish_pending_topology_relayout_if_ready(reactor: &mut Reactor) -> bool {
+    if !reactor.pending_space_change_manager.topology_relayout_pending
+        || reactor.display_topology_manager.is_churning_or_awaiting_commit()
+        || reactor.space_manager.screens.is_empty()
+        || reactor.space_manager.screens.iter().any(|screen| screen.space.is_none())
+    {
+        return false;
+    }
+
+    let mut unique = HashSet::default();
+    if reactor
+        .space_manager
+        .screens
+        .iter()
+        .filter_map(|screen| screen.space)
+        .any(|space| !unique.insert(space))
+    {
+        return false;
+    }
+
+    reactor.pending_space_change_manager.topology_relayout_pending = false;
+    reactor.force_refresh_all_windows();
+    let _ = reactor.update_layout_or_warn_with(
+        false,
+        false,
+        "Layout update failed after topology change",
+    );
+    true
 }
 
 #[derive(Debug, Clone, PartialEq)]

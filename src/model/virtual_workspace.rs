@@ -652,8 +652,8 @@ impl VirtualWorkspaceManager {
             None => {
                 // Defensive scrub: removing this space's display binding
                 // leaves entries keyed by the prior UUID dangling unless the
-                // caller already scrubbed them (current call sites do, via
-                // `migrate_workspaces_off_display`, but that's an unenforced
+                // caller already scrubbed them (current display-removal call
+                // sites do this before pruning, but that is not an enforced
                 // precondition). Walk the per-display tables and prune any
                 // entries that would otherwise become orphans.
                 let Some(prior_uuid) = self.display_uuid_for_space.remove(&space) else {
@@ -669,8 +669,8 @@ impl VirtualWorkspaceManager {
                 // workspaces are still alive in the SlotMap; clearing the
                 // number mapping would orphan the slotmap entry from the
                 // global-slot resolver. Callers that wanted the workspaces
-                // destroyed should use `migrate_workspaces_off_display` /
-                // `destroy_workspace_*` first.
+                // destroyed should use the explicit workspace-destruction
+                // helpers first.
                 let space_workspaces: Vec<VirtualWorkspaceId> = self
                     .workspaces
                     .iter()
@@ -1473,103 +1473,6 @@ impl VirtualWorkspaceManager {
         self.last_workspace_per_display.remove(dead_uuid);
 
         relocations
-    }
-
-    /// Phase 3.4: when display `dead_uuid` goes offline, move every window
-    /// living on its workspaces to the active workspace of `receiver_uuid`,
-    /// then destroy the dead workspaces (freeing their numbers for re-use
-    /// by Cmd+N create-on-demand).
-    ///
-    /// Returns the (space, ws_id) pairs that were destroyed; the caller
-    /// MUST drain the list into `LayoutEngine::drop_workspace_layout` so
-    /// the engine's `workspace_layouts` mirror doesn't keep dangling
-    /// entries that `rebalance_all_layouts` would later dereference.
-    ///
-    /// Returns an empty Vec (no migration performed) when:
-    /// - the receiver display isn't known to the manager (its space is
-    ///   offline or `set_space_display` was never called for it),
-    /// - the receiver's space has no active workspace (lazy init never
-    ///   happened, e.g. on a freshly-attached display the user never
-    ///   touched), or
-    /// - no spaces are bound to `dead_uuid` (the unplug already pruned).
-    ///
-    /// Must run BEFORE `LayoutEngine::prune_display_state`: that prune
-    /// clears `display_uuid_for_space` for the dead spaces, after which
-    /// this method can no longer find which workspaces belonged to the
-    /// dead display.
-    #[must_use = "destroyed workspaces must be propagated to LayoutEngine::drop_workspace_layout"]
-    pub fn migrate_workspaces_off_display(
-        &mut self,
-        dead_uuid: &str,
-        receiver_uuid: &str,
-    ) -> Vec<(SpaceId, VirtualWorkspaceId)> {
-        // Receiver must be live with an active workspace before we touch
-        // anything; without it there's nowhere for the windows to land.
-        let Some(receiver_space) = self.space_for_display(receiver_uuid) else {
-            return Vec::new();
-        };
-        let Some(receiver_ws) = self.active_workspace(receiver_space) else {
-            warn!(
-                dead_uuid = %dead_uuid,
-                receiver_uuid = %receiver_uuid,
-                "migrate_workspaces_off_display: receiver has no active workspace; \
-                 no migration will occur (workspaces on dead display will be pruned without re-homing)"
-            );
-            return Vec::new();
-        };
-
-        // Find every space currently bound to the dead display.
-        let dead_spaces: Vec<SpaceId> = self
-            .display_uuid_for_space
-            .iter()
-            .filter(|(_, uuid)| uuid.as_str() == dead_uuid)
-            .map(|(space, _)| *space)
-            .collect();
-        if dead_spaces.is_empty() {
-            return Vec::new();
-        }
-
-        // Clear the dead display's active/last entries up front so the
-        // ephemeral guard in `destroy_workspace_no_rebuild` sees these
-        // workspaces as inactive.
-        self.active_workspace_per_display.remove(dead_uuid);
-        self.last_workspace_per_display.remove(dead_uuid);
-
-        let mut destroyed: Vec<(SpaceId, VirtualWorkspaceId)> = Vec::new();
-        for dead_space in &dead_spaces {
-            let dead_ws_ids: Vec<VirtualWorkspaceId> = self
-                .workspaces
-                .iter()
-                .filter(|(_, ws)| ws.space == *dead_space)
-                .map(|(id, _)| id)
-                .collect();
-            for dead_id in dead_ws_ids {
-                let windows: Vec<WindowId> = self
-                    .workspaces
-                    .get(dead_id)
-                    .map(|ws| ws.windows().collect())
-                    .unwrap_or_default();
-                for win in windows {
-                    if let Some(ws) = self.workspaces.get_mut(receiver_ws) {
-                        ws.add_window(win);
-                    }
-                    self.window_registry.get_mut().assign_window_to_workspace(
-                        win,
-                        WindowWorkspaceInfo {
-                            space: receiver_space,
-                            workspace_id: receiver_ws,
-                        },
-                    );
-                    self.window_registry.get_mut().clear_rule_metadata(win);
-                }
-                self.floating_positions.remove(&(*dead_space, dead_id));
-                if let Some(space) = self.destroy_workspace_no_rebuild(dead_id) {
-                    destroyed.push((space, dead_id));
-                }
-            }
-        }
-
-        destroyed
     }
 
     /// Gets all windows in the active virtual workspace for a given native space.

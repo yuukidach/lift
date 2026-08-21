@@ -2552,12 +2552,10 @@ fn switch_to_global_slot_cross_display_skips_old_target_workspace_focus() {
 }
 
 #[test]
-fn switch_to_global_slot_survives_display_replug() {
-    // Reproduces the user-reported bug: after a display unplug + replug
-    // (which gives the display a fresh SpaceId), Cmd+1 must still land on
-    // the secondary display when slot 1 is pinned to its UUID.
+fn display_replug_does_not_reclaim_migrated_workspaces() {
     let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
-    settings.display_default_workspaces.insert("test-display-1".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-0".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 2);
     let mut reactor = Reactor::new_for_test(LayoutEngine::new(
         &settings,
         &crate::common::config::LayoutSettings::default(),
@@ -2573,52 +2571,148 @@ fn switch_to_global_slot_survives_display_replug() {
         vec![Some(space1), Some(original_space2)],
         vec![],
     ));
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(original_space2);
 
-    let initial_slot = reactor
+    let original_ws1 = reactor
         .layout_manager
         .layout_engine
         .virtual_workspace_manager()
         .resolve_workspace(1)
-        .expect("pinned slot 1 should resolve on startup");
-    assert_eq!(initial_slot.space, original_space2);
+        .expect("workspace 1 should resolve on the receiver at startup")
+        .workspace_id;
+    let migrated_ws2 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(2)
+        .expect("workspace 2 should resolve on the departing display at startup")
+        .workspace_id;
 
-    // Unplug the secondary display. Its workspaces are migrated/destroyed,
-    // freeing workspace number 1 for a fresh default on replug.
+    reactor.display_topology_manager.begin_churn(
+        80,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor.display_topology_manager.end_churn_to_awaiting(
+        80,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+    );
     reactor.handle_event(screen_params_event(vec![screen1], vec![Some(space1)], vec![]));
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(vwm.resolve_workspace(1).unwrap().space, space1);
+    assert_eq!(vwm.resolve_workspace(2).unwrap().space, space1);
 
-    // Replug the same display UUID with a fresh SpaceId.
     let new_space2 = SpaceId::new(999);
+    reactor.display_topology_manager.begin_churn(
+        81,
+        crate::sys::skylight::DisplayReconfigFlags::ADD,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor
+        .display_topology_manager
+        .end_churn_to_awaiting(81, crate::sys::skylight::DisplayReconfigFlags::ADD);
     reactor.handle_event(screen_params_event(
         vec![screen1, screen2],
         vec![Some(space1), Some(new_space2)],
         vec![],
     ));
 
-    // Press Cmd+1 from screen1 (the non-pinned display).
-    reactor.handle_event(Event::Command(Command::Layout(
-        LayoutCommand::SwitchToGlobalSlot(1),
-    )));
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(vwm.resolve_workspace(1).unwrap().space, space1);
+    assert_eq!(vwm.resolve_workspace(2).unwrap().space, space1);
+    let fresh = vwm
+        .resolve_workspace(0)
+        .expect("returning display must receive the smallest-unused default workspace");
+    assert_eq!(fresh.space, new_space2);
+    assert_ne!(fresh.workspace_id, original_ws1);
+    assert_ne!(fresh.workspace_id, migrated_ws2);
+    assert_ne!(
+        reactor.layout_manager.layout_engine.active_workspace(new_space2),
+        Some(original_ws1)
+    );
+    assert_ne!(
+        reactor.layout_manager.layout_engine.active_workspace(new_space2),
+        Some(migrated_ws2)
+    );
+}
 
-    // Slot 1 should be active on screen2's NEW SpaceId, not screen1. The
-    // workspace_id is preserved across the replug because remap_space rewires
-    // the SpaceId on the existing entry.
-    let slot_target = reactor
+#[test]
+fn display_removal_uses_configured_receiver_priority() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_migration_priority = vec!["test-display-1".to_string()];
+    settings.display_default_workspaces.insert("test-display-0".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 2);
+    settings.display_default_workspaces.insert("test-display-2".to_string(), 3);
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    reactor.config.virtual_workspaces.display_migration_priority =
+        settings.display_migration_priority.clone();
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let screen3 = CGRect::new(CGPoint::new(2000., 0.), CGSize::new(1000., 1000.));
+    let space2 = crate::sys::screen::managed_display_space_ids()
+        .into_values()
+        .flatten()
+        .find(|space| crate::sys::window_server::space_is_user(space.get()))
+        .expect("macOS must expose at least one user space");
+    let space1 = SpaceId::new(space2.get() + 10_000);
+    let space3 = SpaceId::new(space2.get() + 20_000);
+
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2, screen3],
+        vec![Some(space1), Some(space2), Some(space3)],
+        vec![],
+    ));
+    for space in [space1, space2, space3] {
+        let _ = reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .list_workspaces(space);
+    }
+    let departing_ws = reactor
         .layout_manager
         .layout_engine
         .virtual_workspace_manager()
-        .resolve_workspace(1)
-        .expect("slot 1 should resolve after replug");
-    assert_eq!(
-        slot_target.space, new_space2,
-        "slot 1 must live on the pinned display's new SpaceId after replug"
-    );
+        .resolve_workspace(3)
+        .expect("third display should own workspace 3")
+        .workspace_id;
 
-    let new_space2_active = reactor.layout_manager.layout_engine.active_workspace(new_space2);
-    assert_eq!(
-        new_space2_active,
-        Some(slot_target.workspace_id),
-        "slot 1 must land on the pinned display after replug"
+    reactor.display_topology_manager.begin_churn(
+        82,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
     );
+    reactor.display_topology_manager.end_churn_to_awaiting(
+        82,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+    );
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+
+    let target = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(3)
+        .expect("departing workspace identity must remain globally resolvable");
+    assert_eq!(target.workspace_id, departing_ws);
+    assert_eq!(target.space, space2);
 }
 
 #[test]
@@ -4090,24 +4184,25 @@ fn move_window_to_workspace_moves_to_existing_workspace_on_other_display() {
     );
 }
 
-// Task 3.4: When a display is unplugged, the windows on that display's
-// workspaces must migrate to the active workspace of a remaining display,
-// and the dead workspaces must be destroyed (freeing their numbers for
-// re-use). The window must remain alive — just on a different space —
-// and `resolve_workspace(N)` must no longer return the dead space for any
-// surviving workspace number.
 #[test]
-fn display_unplug_migrates_windows_to_remaining_display() {
-    let TwoSpaceFixture {
-        mut reactor,
-        screen1,
-        screen2: _,
-        space1,
-        space2,
-    } = two_space_fixture();
-
-    // Lazy-init both spaces so each has a default workspace and the
-    // display-uuid mirror is populated.
+fn display_unplug_preserves_global_workspaces() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-0".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 2);
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
     let _ = reactor
         .layout_manager
         .layout_engine
@@ -4119,46 +4214,85 @@ fn display_unplug_migrates_windows_to_remaining_display() {
         .virtual_workspace_manager_mut()
         .list_workspaces(space2);
 
-    // Spawn a window. `make_app` doesn't pick the space — that depends on
-    // wherever the discovery handler routes the window — so we'll relocate
-    // it to space2 explicitly via the VWM API below.
-    let mut apps = Apps::new();
-    reactor.handle_events(apps.make_app(60, make_windows(1)));
-    let win = WindowId::new(60, 1);
-
-    // Move the window onto space2's active workspace. We don't care which
-    // space `make_app` picked; `assign_window_to_workspace` rewires
-    // `window_to_workspace` and removes the window from any prior workspace.
-    let active_ws_space2 = reactor
+    let receiver_active_before = reactor
+        .layout_manager
+        .layout_engine
+        .active_workspace(space1)
+        .expect("receiver must have an active workspace");
+    let receiver_uuid = reactor
         .layout_manager
         .layout_engine
         .virtual_workspace_manager()
-        .active_workspace(space2)
-        .expect("space2 has an active workspace after lazy init");
-    let (assigned, destroyed) = reactor
+        .space_display(space1)
+        .unwrap()
+        .to_string();
+    let departing_uuid = reactor
         .layout_manager
         .layout_engine
-        .virtual_workspace_manager_mut()
-        .assign_window_to_workspace(space2, win, active_ws_space2);
-    assert!(
-        assigned,
-        "precondition: window must be assignable to space2's active ws"
+        .virtual_workspace_manager()
+        .space_display(space2)
+        .unwrap()
+        .to_string();
+    let ws2 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(2)
+        .unwrap()
+        .workspace_id;
+    let ws3 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        3,
+        &departing_uuid,
+        space2,
+        screen2.size,
     );
-    for (sp, ws_id) in destroyed {
-        reactor.layout_manager.layout_engine.drop_workspace_layout(sp, ws_id);
-    }
-    assert_eq!(
+    let receiver_last_before = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        4,
+        &receiver_uuid,
+        space1,
+        screen1.size,
+    );
+    assert!(
         reactor
             .layout_manager
             .layout_engine
-            .virtual_workspace_manager()
-            .workspace_for_window(win),
-        Some(active_ws_space2),
-        "precondition: window now lives on space2's active workspace"
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, receiver_last_before)
+    );
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .set_active_workspace(space1, receiver_active_before)
     );
 
-    // Unplug screen2: display reconfiguration reported a real removal, then
-    // the committed screen snapshot contains only screen1.
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(60, make_windows(4)));
+    let window_on_receiver_active = WindowId::new(60, 1);
+    let window_on_receiver_last = WindowId::new(60, 2);
+    let window_on_ws2 = WindowId::new(60, 3);
+    let window_on_ws3 = WindowId::new(60, 4);
+    for (window, workspace, space) in [
+        (window_on_receiver_active, receiver_active_before, space1),
+        (window_on_receiver_last, receiver_last_before, space1),
+        (window_on_ws2, ws2, space2),
+        (window_on_ws3, ws3, space2),
+    ] {
+        let (assigned, destroyed) = reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .assign_window_to_workspace(space, window, workspace);
+        assert!(assigned);
+        for (space, workspace_id) in destroyed {
+            reactor
+                .layout_manager
+                .layout_engine
+                .drop_workspace_layout(space, workspace_id);
+        }
+    }
+
     reactor.display_topology_manager.begin_churn(
         90,
         crate::sys::skylight::DisplayReconfigFlags::REMOVE,
@@ -4169,44 +4303,125 @@ fn display_unplug_migrates_windows_to_remaining_display() {
         .end_churn_to_awaiting(90, crate::sys::skylight::DisplayReconfigFlags::REMOVE);
     reactor.handle_event(screen_params_event(vec![screen1], vec![Some(space1)], vec![]));
 
-    // The window must still be alive, now living on space1's active ws.
-    let active_on_space1 = reactor
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(vwm.workspace_for_window(window_on_ws2), Some(ws2));
+    assert_eq!(vwm.workspace_for_window(window_on_ws3), Some(ws3));
+    assert_eq!(vwm.resolve_workspace(2).unwrap().workspace_id, ws2);
+    assert_eq!(vwm.resolve_workspace(3).unwrap().workspace_id, ws3);
+    assert_eq!(vwm.resolve_workspace(2).unwrap().space, space1);
+    assert_eq!(vwm.resolve_workspace(3).unwrap().space, space1);
+    assert_eq!(vwm.resolve_workspace(1).unwrap().workspace_id, receiver_active_before);
+    assert_eq!(vwm.resolve_workspace(4).unwrap().workspace_id, receiver_last_before);
+    assert_eq!(
+        reactor.layout_manager.layout_engine.active_workspace(space1),
+        Some(receiver_active_before)
+    );
+    assert_eq!(vwm.last_workspace(space1), Some(receiver_last_before));
+    assert_ne!(vwm.workspace_for_window(window_on_ws2), Some(receiver_active_before));
+}
+
+#[test]
+fn complete_topology_snapshot_does_not_defer_refresh() {
+    let TwoSpaceFixture { mut reactor, screen1, space1, space2, .. } = two_space_fixture();
+    let _ = reactor
         .layout_manager
         .layout_engine
-        .active_workspace(space1)
-        .expect("space1 still has an active workspace after the unplug");
-    let ws_for_win = reactor
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+    let departing_uuid = reactor
         .layout_manager
         .layout_engine
         .virtual_workspace_manager()
-        .workspace_for_window(win)
-        .expect("window must have migrated to space1");
-    assert_eq!(
-        ws_for_win, active_on_space1,
-        "window must land on space1's active workspace after the migration"
+        .space_display(space2)
+        .unwrap()
+        .to_string();
+    let ws2 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        2,
+        &departing_uuid,
+        space2,
+        screen1.size,
+    );
+    let ws3 = reactor.layout_manager.layout_engine.create_workspace_on_display(
+        3,
+        &departing_uuid,
+        space2,
+        screen1.size,
     );
 
-    // No surviving workspace number should still resolve to space2 — the
-    // dead workspaces have been destroyed and their numbers freed.
-    let nums: Vec<_> = reactor
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(62, make_windows(1)));
+    apps.simulate_until_quiet(&mut reactor);
+    let window = WindowId::new(62, 1);
+    let (assigned, destroyed) = reactor
         .layout_manager
         .layout_engine
-        .virtual_workspace_manager()
-        .all_workspace_numbers()
-        .collect();
-    assert!(!nums.is_empty(), "space1's workspaces must still resolve");
-    for n in &nums {
-        let target = reactor
+        .virtual_workspace_manager_mut()
+        .assign_window_to_workspace(space2, window, ws2);
+    assert!(assigned);
+    for (space, workspace_id) in destroyed {
+        reactor
+            .layout_manager
+            .layout_engine
+            .drop_workspace_layout(space, workspace_id);
+    }
+
+    reactor.display_topology_manager.begin_churn(
+        91,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor.display_topology_manager.end_churn_to_awaiting(
+        91,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+    );
+    reactor.handle_event(screen_params_event(vec![screen1], vec![Some(space1)], vec![]));
+
+    assert!(matches!(
+        reactor.display_topology_manager.state(),
+        TopologyState::Stable
+    ));
+    assert!(!reactor.pending_space_change_manager.topology_relayout_pending);
+    let topology_requests = apps.requests();
+    assert!(
+        topology_requests
+            .iter()
+            .any(|request| matches!(request, Request::GetVisibleWindows)),
+        "topology completion must refresh visible windows"
+    );
+
+    let (assigned, destroyed) = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .assign_window_to_workspace(space1, window, ws3);
+    assert!(assigned);
+    for (space, workspace_id) in destroyed {
+        reactor
+            .layout_manager
+            .layout_engine
+            .drop_workspace_layout(space, workspace_id);
+    }
+    reactor.handle_event(Event::SpaceChanged(vec![Some(space1)]));
+    assert_eq!(
+        reactor
             .layout_manager
             .layout_engine
             .virtual_workspace_manager()
-            .resolve_workspace(*n)
-            .expect("every reported number must resolve");
-        assert_ne!(
-            target.space, space2,
-            "no surviving workspace may live on the unplugged display's space"
-        );
-    }
+            .workspace_for_window(window),
+        Some(ws3)
+    );
+    let duplicate_requests = apps.requests();
+    assert!(
+        duplicate_requests
+            .iter()
+            .all(|request| !matches!(request, Request::GetVisibleWindows)),
+        "duplicate SpaceChanged must not request another refresh: {duplicate_requests:?}"
+    );
 }
 
 #[test]
