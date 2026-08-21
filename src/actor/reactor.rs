@@ -383,6 +383,7 @@ impl Reactor {
             pending_space_change_manager: managers::PendingSpaceChangeManager {
                 pending_space_change: None,
                 topology_relayout_pending: false,
+                pending_removed_display_uuids: HashSet::default(),
             },
             active_spaces: HashSet::default(),
             display_topology_manager: DisplayTopologyManager::default(),

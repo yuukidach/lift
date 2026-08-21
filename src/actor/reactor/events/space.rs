@@ -242,7 +242,27 @@ impl SpaceEventHandler {
             && (reactor.space_manager.has_seen_display_set || !previous_displays.is_empty());
         let dead_uuids: Vec<String> =
             previous_displays.difference(&new_displays).cloned().collect();
-        let migration_receiver = if displays_changed {
+        reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .extend(dead_uuids);
+        let migration_pending = !reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .is_empty();
+        let snapshot_spaces_complete =
+            !screens.is_empty() && screens.iter().all(|screen| screen.space.is_some());
+        let snapshot_spaces_unique = {
+            let mut unique_spaces: HashSet<SpaceId> = HashSet::default();
+            screens
+                .iter()
+                .filter_map(|screen| screen.space)
+                .all(|space| unique_spaces.insert(space))
+        };
+        let migration_receiver = if migration_pending
+            && snapshot_spaces_complete
+            && snapshot_spaces_unique
+        {
             select_display_migration_receiver(
                 &screens,
                 &reactor.config.virtual_workspaces.display_migration_priority,
@@ -253,7 +273,7 @@ impl SpaceEventHandler {
         let active_display_uuids: Vec<String> =
             screens.iter().map(|screen| screen.display_uuid.clone()).collect();
 
-        if should_trigger_topology {
+        if should_trigger_topology || migration_pending {
             reactor.pending_space_change_manager.topology_relayout_pending = true;
         }
         if !new_displays.is_empty() {
@@ -267,7 +287,7 @@ impl SpaceEventHandler {
                 reactor.expose_all_spaces();
             }
 
-            if displays_changed {
+            if displays_changed && !migration_pending {
                 reactor.layout_manager.layout_engine.prune_display_state(&active_display_uuids);
             }
             reactor.recompute_and_set_active_spaces(&[]);
@@ -319,55 +339,82 @@ impl SpaceEventHandler {
                 let mut unique_spaces: HashSet<SpaceId> = HashSet::default();
                 spaces.iter().flatten().any(|space| !unique_spaces.insert(*space))
             };
-            let allow_space_remap = should_trigger_topology
+            let complete_unique_snapshot =
+                !has_duplicate_spaces && spaces.iter().all(|space| space.is_some());
+            let migration_snapshot_ready = migration_pending
+                && complete_unique_snapshot
+                && migration_receiver.is_some();
+            let allow_space_remap = (should_trigger_topology || migration_pending)
                 && !has_duplicate_spaces
                 && spaces.iter().all(|space| space.is_some());
-            reactor.reconcile_spaces_with_display_history(&spaces, allow_space_remap);
+            if !migration_pending || migration_snapshot_ready {
+                reactor.reconcile_spaces_with_display_history(&spaces, allow_space_remap);
+            }
 
-            if displays_changed {
+            if migration_snapshot_ready {
                 if let Some(receiver) = migration_receiver {
-                    for dead_uuid in &dead_uuids {
+                    let queued_dead_uuids: Vec<String> = reactor
+                        .pending_space_change_manager
+                        .pending_removed_display_uuids
+                        .iter()
+                        .cloned()
+                        .collect();
+                    for dead_uuid in &queued_dead_uuids {
                         reactor.layout_manager.layout_engine.rebind_workspaces_to_display(
                             dead_uuid,
                             &receiver.display_uuid,
                             receiver.size,
                         );
                     }
+                    reactor
+                        .pending_space_change_manager
+                        .pending_removed_display_uuids
+                        .clear();
                 }
+                reactor.layout_manager.layout_engine.prune_display_state(&active_display_uuids);
+            } else if displays_changed && !migration_pending {
                 reactor.layout_manager.layout_engine.prune_display_state(&active_display_uuids);
             }
 
-            // Display UUIDs must be registered before recompute exposes newly
-            // activated spaces. Otherwise VWM lazy-init uses a synthetic
-            // per-space UUID and misses display_default_workspaces pins after
-            // a display reconnect that reports a fresh SpaceId.
-            reactor.recompute_and_set_active_spaces(&spaces);
-            if !resized_screens.is_empty() {
-                let resized_info: Vec<(SpaceId, CGSize)> = reactor
-                    .space_manager
-                    .screens
-                    .iter()
-                    .filter(|screen| resized_screens.contains(&screen.id))
-                    .filter_map(|screen| screen.space.map(|s| (s, screen.frame.size)))
-                    .collect();
+            if !migration_pending || migration_snapshot_ready {
+                // Display UUIDs must be registered before recompute exposes newly
+                // activated spaces. Otherwise VWM lazy-init uses a synthetic
+                // per-space UUID and misses display_default_workspaces pins after
+                // a display reconnect that reports a fresh SpaceId.
+                reactor.recompute_and_set_active_spaces(&spaces);
+                if !resized_screens.is_empty() {
+                    let resized_info: Vec<(SpaceId, CGSize)> = reactor
+                        .space_manager
+                        .screens
+                        .iter()
+                        .filter(|screen| resized_screens.contains(&screen.id))
+                        .filter_map(|screen| screen.space.map(|s| (s, screen.frame.size)))
+                        .collect();
 
-                for (space, size) in resized_info {
-                    if !reactor.is_space_active(space) {
-                        continue;
+                    for (space, size) in resized_info {
+                        if !reactor.is_space_active(space) {
+                            continue;
+                        }
+                        reactor
+                            .layout_manager
+                            .layout_engine
+                            .virtual_workspace_manager_mut()
+                            .list_workspaces(space);
+                        reactor.send_layout_event(LayoutEvent::SpaceExposed(space, size));
                     }
-                    reactor
-                        .layout_manager
-                        .layout_engine
-                        .virtual_workspace_manager_mut()
-                        .list_workspaces(space);
-                    reactor.send_layout_event(LayoutEvent::SpaceExposed(space, size));
                 }
+                let ws_info = reactor.authoritative_window_snapshot_for_active_spaces();
+                reactor.finalize_space_change(&spaces, ws_info);
             }
-            let ws_info = reactor.authoritative_window_snapshot_for_active_spaces();
-            reactor.finalize_space_change(&spaces, ws_info);
         }
         reactor.try_apply_pending_space_change();
-        reactor.maybe_commit_display_topology_snapshot();
+        if reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .is_empty()
+        {
+            reactor.maybe_commit_display_topology_snapshot();
+        }
         finish_pending_topology_relayout_if_ready(reactor);
     }
 
@@ -379,6 +426,18 @@ impl SpaceEventHandler {
                 "Dropping oversize spaces vector (screens={}, spaces_len={})",
                 reactor.space_manager.screens.len(),
                 spaces.len()
+            );
+            return;
+        }
+
+        if !reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .is_empty()
+        {
+            debug!(
+                ?spaces,
+                "Deferring SpaceChanged until pending display migrations complete"
             );
             return;
         }
@@ -449,7 +508,13 @@ impl SpaceEventHandler {
         let ws_info = reactor.authoritative_window_snapshot_for_active_spaces();
         reactor.finalize_space_change(&spaces, ws_info);
 
-        reactor.maybe_commit_display_topology_snapshot();
+        if reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .is_empty()
+        {
+            reactor.maybe_commit_display_topology_snapshot();
+        }
         finish_pending_topology_relayout_if_ready(reactor);
     }
 
@@ -468,6 +533,10 @@ impl SpaceEventHandler {
 
 fn finish_pending_topology_relayout_if_ready(reactor: &mut Reactor) -> bool {
     if !reactor.pending_space_change_manager.topology_relayout_pending
+        || !reactor
+            .pending_space_change_manager
+            .pending_removed_display_uuids
+            .is_empty()
         || reactor.display_topology_manager.is_churning_or_awaiting_commit()
         || reactor.space_manager.screens.is_empty()
         || reactor.space_manager.screens.iter().any(|screen| screen.space.is_none())
@@ -507,10 +576,20 @@ fn select_display_migration_receiver(
     screens: &[ScreenInfo],
     priority: &[String],
 ) -> Option<MigrationReceiver> {
-    select_display_migration_receiver_with_user_space(screens, priority, |space| {
-        crate::sys::window_server::space_is_user(space.get())
-    })
+    select_display_migration_receiver_with_user_space(
+        screens,
+        priority,
+        display_migration_space_is_user,
+    )
 }
+
+#[cfg(not(test))]
+fn display_migration_space_is_user(space: SpaceId) -> bool {
+    crate::sys::window_server::space_is_user(space.get())
+}
+
+#[cfg(test)]
+fn display_migration_space_is_user(_space: SpaceId) -> bool { true }
 
 fn select_display_migration_receiver_with_user_space(
     screens: &[ScreenInfo],

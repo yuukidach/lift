@@ -2662,13 +2662,9 @@ fn display_removal_uses_configured_receiver_priority() {
     let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
     let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
     let screen3 = CGRect::new(CGPoint::new(2000., 0.), CGSize::new(1000., 1000.));
-    let space2 = crate::sys::screen::managed_display_space_ids()
-        .into_values()
-        .flatten()
-        .find(|space| crate::sys::window_server::space_is_user(space.get()))
-        .expect("macOS must expose at least one user space");
-    let space1 = SpaceId::new(space2.get() + 10_000);
-    let space3 = SpaceId::new(space2.get() + 20_000);
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    let space3 = SpaceId::new(3);
 
     reactor.handle_event(screen_params_event(
         vec![screen1, screen2, screen3],
@@ -4422,6 +4418,183 @@ fn complete_topology_snapshot_does_not_defer_refresh() {
             .all(|request| !matches!(request, Request::GetVisibleWindows)),
         "duplicate SpaceChanged must not request another refresh: {duplicate_requests:?}"
     );
+}
+
+#[test]
+fn display_removal_retries_after_incomplete_receiver_snapshot() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-0".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 2);
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space1);
+    let _ = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .list_workspaces(space2);
+    let ws2 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(2)
+        .unwrap()
+        .workspace_id;
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(63, make_windows(1)));
+    let window = WindowId::new(63, 1);
+    let (assigned, destroyed) = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .assign_window_to_workspace(space2, window, ws2);
+    assert!(assigned);
+    for (space, workspace_id) in destroyed {
+        reactor
+            .layout_manager
+            .layout_engine
+            .drop_workspace_layout(space, workspace_id);
+    }
+
+    reactor.display_topology_manager.begin_churn(
+        92,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor.display_topology_manager.end_churn_to_awaiting(
+        92,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+    );
+    reactor.handle_event(screen_params_event(vec![screen1], vec![None], vec![]));
+
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(vwm.resolve_workspace(2).unwrap().workspace_id, ws2);
+    assert_eq!(vwm.resolve_workspace(2).unwrap().space, space2);
+    assert_eq!(vwm.workspace_for_window(window), Some(ws2));
+    assert_eq!(vwm.space_display(space2), Some("test-display-1"));
+    assert!(reactor.pending_space_change_manager.topology_relayout_pending);
+
+    reactor.handle_event(screen_params_event(vec![screen1], vec![Some(space1)], vec![]));
+
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(vwm.resolve_workspace(2).unwrap().workspace_id, ws2);
+    assert_eq!(vwm.resolve_workspace(2).unwrap().space, space1);
+    assert_eq!(vwm.workspace_for_window(window), Some(ws2));
+    assert_eq!(vwm.space_display(space2), None);
+    assert!(!reactor.pending_space_change_manager.topology_relayout_pending);
+}
+
+#[test]
+fn display_removal_retries_after_duplicate_space_snapshot() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-0".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 2);
+    settings.display_default_workspaces.insert("test-display-2".to_string(), 3);
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let screen3 = CGRect::new(CGPoint::new(2000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    let space3 = SpaceId::new(3);
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2, screen3],
+        vec![Some(space1), Some(space2), Some(space3)],
+        vec![],
+    ));
+    for space in [space1, space2, space3] {
+        let _ = reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .list_workspaces(space);
+    }
+    let ws3 = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(3)
+        .unwrap()
+        .workspace_id;
+    let mut apps = Apps::new();
+    reactor.handle_events(apps.make_app(64, make_windows(1)));
+    let window = WindowId::new(64, 1);
+    let (assigned, destroyed) = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager_mut()
+        .assign_window_to_workspace(space3, window, ws3);
+    assert!(assigned);
+    for (space, workspace_id) in destroyed {
+        reactor
+            .layout_manager
+            .layout_engine
+            .drop_workspace_layout(space, workspace_id);
+    }
+
+    reactor.display_topology_manager.begin_churn(
+        93,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor.display_topology_manager.end_churn_to_awaiting(
+        93,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+    );
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space1)],
+        vec![],
+    ));
+
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(vwm.resolve_workspace(3).unwrap().workspace_id, ws3);
+    assert_eq!(vwm.resolve_workspace(3).unwrap().space, space3);
+    assert_eq!(vwm.workspace_for_window(window), Some(ws3));
+    assert_eq!(vwm.space_display(space1), Some("test-display-0"));
+    assert_eq!(vwm.space_display(space2), Some("test-display-1"));
+    assert_eq!(vwm.space_display(space3), Some("test-display-2"));
+    assert!(reactor.pending_space_change_manager.topology_relayout_pending);
+
+    reactor.handle_event(Event::SpaceChanged(vec![Some(space1), Some(space1)]));
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(vwm.space_display(space1), Some("test-display-0"));
+    assert_eq!(vwm.space_display(space2), Some("test-display-1"));
+    assert_eq!(vwm.space_display(space3), Some("test-display-2"));
+    assert!(reactor.pending_space_change_manager.topology_relayout_pending);
+
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    assert_eq!(vwm.resolve_workspace(3).unwrap().workspace_id, ws3);
+    assert_eq!(vwm.resolve_workspace(3).unwrap().space, space1);
+    assert_eq!(vwm.workspace_for_window(window), Some(ws3));
+    assert_eq!(vwm.space_display(space3), None);
+    assert!(!reactor.pending_space_change_manager.topology_relayout_pending);
 }
 
 #[test]
