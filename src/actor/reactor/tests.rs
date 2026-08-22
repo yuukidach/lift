@@ -4654,6 +4654,251 @@ fn display_removal_space_collision_preserves_all_workspace_state() {
 }
 
 #[test]
+fn display_removal_uses_latest_receiver_space_after_prior_space_switch() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_default_workspaces.insert("test-display-0".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 2);
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    let receiver_previous_space = SpaceId::new(3);
+
+    reactor.handle_event(screen_params_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+        vec![],
+    ));
+    for space in [space1, space2] {
+        let _ = reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .list_workspaces(space);
+    }
+    let departing_workspace = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(2)
+        .expect("departing display workspace")
+        .workspace_id;
+
+    reactor.handle_event(Event::SpaceChanged(vec![
+        Some(receiver_previous_space),
+        Some(space2),
+    ]));
+    let receiver_current_workspace = reactor
+        .layout_manager
+        .layout_engine
+        .active_workspace(receiver_previous_space)
+        .expect("receiver must initialize its newly selected Space");
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .last_space_for_display_uuid("test-display-0"),
+        Some(receiver_previous_space)
+    );
+    assert_eq!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .space_display(space1),
+        Some("test-display-0"),
+        "the old mapping must remain present to reproduce the stale lookup"
+    );
+
+    reactor.display_topology_manager.begin_churn(
+        95,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor.display_topology_manager.end_churn_to_awaiting(
+        95,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+    );
+    reactor.handle_event(screen_params_event(vec![screen1], vec![Some(space2)], vec![]));
+
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    let migrated = vwm.resolve_workspace(2).expect("departing workspace must survive");
+    assert_eq!(migrated.workspace_id, departing_workspace);
+    assert_eq!(migrated.display_uuid, "test-display-0");
+    assert_eq!(
+        migrated.space, space2,
+        "migration must target the receiver SpaceId from the live snapshot"
+    );
+    assert_eq!(
+        vwm.workspace_space(receiver_current_workspace),
+        Some(space2),
+        "the receiver's current workspace must follow its live SpaceId"
+    );
+    assert_eq!(
+        vwm.active_workspace(space2),
+        Some(receiver_current_workspace),
+        "the receiver must retain its active workspace across the SpaceId change"
+    );
+}
+
+#[test]
+fn newly_added_receiver_does_not_steal_retained_display_state_on_space_reuse() {
+    let mut settings = crate::common::config::VirtualWorkspaceSettings::default();
+    settings.display_migration_priority = vec!["test-display-2".to_string()];
+    settings.display_default_workspaces.insert("test-display-0".to_string(), 1);
+    settings.display_default_workspaces.insert("test-display-1".to_string(), 2);
+    settings.display_default_workspaces.insert("test-display-2".to_string(), 3);
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &settings,
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    reactor.config.virtual_workspaces.display_migration_priority =
+        settings.display_migration_priority.clone();
+    let screen_a = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen_b = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let screen_c = CGRect::new(CGPoint::new(2000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    let retained_new_space = SpaceId::new(3);
+    let initial_screens = make_screen_snapshots(
+        vec![screen_a, screen_b],
+        vec![Some(space1), Some(space2)],
+    );
+
+    reactor.handle_event(Event::ScreenParametersChanged(initial_screens.clone()));
+    for space in [space1, space2] {
+        let _ = reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager_mut()
+            .list_workspaces(space);
+    }
+    let retained_workspace = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(1)
+        .expect("retained display workspace")
+        .workspace_id;
+    let departing_workspace = reactor
+        .layout_manager
+        .layout_engine
+        .virtual_workspace_manager()
+        .resolve_workspace(2)
+        .expect("departing display workspace")
+        .workspace_id;
+
+    let mut retained = initial_screens[0].clone();
+    retained.space = Some(retained_new_space);
+    let new_receiver = ScreenInfo {
+        id: crate::sys::screen::ScreenId::new(2),
+        frame: screen_c,
+        space: Some(space1),
+        display_uuid: "test-display-2".to_string(),
+        name: None,
+    };
+    reactor.display_topology_manager.begin_churn(
+        96,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+    );
+    reactor.display_topology_manager.end_churn_to_awaiting(
+        96,
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+    );
+    reactor.handle_event(Event::ScreenParametersChanged(vec![retained, new_receiver]));
+
+    let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
+    let retained = vwm.resolve_workspace(1).expect("retained workspace must survive");
+    assert_eq!(retained.workspace_id, retained_workspace);
+    assert_eq!(retained.display_uuid, "test-display-0");
+    assert_eq!(retained.space, retained_new_space);
+    assert_eq!(
+        vwm.active_workspace(retained_new_space),
+        Some(retained_workspace),
+        "the retained display must keep its active workspace"
+    );
+
+    let migrated = vwm.resolve_workspace(2).expect("departing workspace must survive");
+    assert_eq!(migrated.workspace_id, departing_workspace);
+    assert_eq!(migrated.display_uuid, "test-display-2");
+    assert_eq!(
+        migrated.space, space1,
+        "the newly added receiver must own its reported SpaceId without stealing retained state"
+    );
+    assert_eq!(
+        vwm.active_workspace(space1),
+        Some(departing_workspace),
+        "the new receiver must activate the migrated workspace"
+    );
+}
+
+#[test]
+fn topology_commit_with_appeared_window_refreshes_each_app_once() {
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings::default(),
+        None,
+    ));
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen], vec![Some(space)], vec![]));
+
+    let mut apps = Apps::new();
+    let pid = 68;
+    reactor.handle_events(apps.make_app_with_opts(pid, vec![], None, false, false));
+    apps.simulate_until_quiet(&mut reactor);
+    let _ = apps.requests();
+
+    let wsid = WindowServerId::new(680_001);
+    let window = crate::sys::window_server::WindowServerInfo {
+        id: wsid,
+        pid,
+        layer: 0,
+        frame: CGRect::new(CGPoint::new(100.0, 100.0), CGSize::new(400.0, 300.0)),
+        min_frame: CGSize::ZERO,
+        max_frame: CGSize::ZERO,
+    };
+    let snapshot = DisplaySnapshot {
+        ordered_screens: reactor.space_manager.screens.clone(),
+        active_spaces: [space].into_iter().collect(),
+        inactive_spaces: crate::common::collections::HashSet::default(),
+        windows: [(wsid, WindowSnapshot { info: window, space: Some(space) })]
+            .into_iter()
+            .collect(),
+    };
+
+    reactor.reconcile_windows_after_topology_commit(
+        97,
+        std::time::Instant::now(),
+        crate::sys::skylight::DisplayReconfigFlags::REMOVE,
+        crate::common::collections::HashSet::default(),
+        snapshot,
+    );
+
+    assert!(
+        reactor.window_manager.knows_window_server_id(wsid)
+            || reactor.window_manager.is_window_server_observed(wsid),
+        "the topology snapshot's newly appeared window must be reconciled"
+    );
+    let requests = apps.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| matches!(request, Request::GetVisibleWindows))
+            .count(),
+        1,
+        "topology commit must own the only refresh for an app with an appeared window: {requests:?}"
+    );
+}
+
+#[test]
 fn complete_topology_snapshot_does_not_defer_refresh() {
     let TwoSpaceFixture { mut reactor, screen1, space1, space2, .. } = two_space_fixture();
     let _ = reactor

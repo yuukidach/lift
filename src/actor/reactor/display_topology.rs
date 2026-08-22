@@ -10,6 +10,7 @@ use crate::sys::window_server::{WindowServerId, WindowServerInfo};
 #[derive(Debug, Clone)]
 pub struct WindowSnapshot {
     pub info: WindowServerInfo,
+    pub space: Option<SpaceId>,
 }
 
 #[derive(Debug, Clone)]

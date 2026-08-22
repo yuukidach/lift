@@ -14,8 +14,9 @@ use crate::layout_engine::LayoutSystem;
 use crate::layout_engine::systems::WindowLayoutConstraints;
 use crate::model::WindowRegistryHandle;
 use crate::model::virtual_workspace::{
-    AppRuleAssignment, AppRuleResult, VirtualWorkspace, VirtualWorkspaceId,
-    VirtualWorkspaceManager, WorkspaceError, WorkspaceNumber, WorkspaceRelocation,
+    AppRuleAssignment, AppRuleResult, DisplaySpaceTransition, VirtualWorkspace,
+    VirtualWorkspaceId, VirtualWorkspaceManager, WorkspaceError, WorkspaceNumber,
+    WorkspaceRelocation,
 };
 use crate::sys::screen::SpaceId;
 
@@ -1072,11 +1073,12 @@ impl LayoutEngine {
         &mut self,
         dead_uuid: &str,
         receiver_uuid: &str,
+        receiver_space: SpaceId,
         receiver_size: CGSize,
     ) -> Vec<WorkspaceRelocation> {
         let relocations = self
             .virtual_workspace_manager
-            .rebind_workspaces_to_display(dead_uuid, receiver_uuid);
+            .rebind_workspaces_to_display(dead_uuid, receiver_uuid, receiver_space);
         if relocations.is_empty() {
             return relocations;
         }
@@ -1113,6 +1115,107 @@ impl LayoutEngine {
         let windows_in_workspace =
             self.virtual_workspace_manager.windows_in_active_workspace(receiver_space);
         self.floating.rebuild_active_for_workspace(receiver_space, windows_in_workspace);
+
+        relocations
+    }
+
+    /// Reconcile a complete display-removal snapshot without destructive
+    /// whole-Space replacement. Every workspace is relocated by identity, so
+    /// several displays may safely swap or reuse native SpaceIds.
+    pub fn reconcile_display_topology(
+        &mut self,
+        live_displays: &[(String, SpaceId, CGSize)],
+        removed_display_uuids: &[String],
+        receiver_uuid: &str,
+    ) -> Vec<WorkspaceRelocation> {
+        let transitions: Vec<DisplaySpaceTransition> = live_displays
+            .iter()
+            .map(|(display_uuid, new_space, _)| DisplaySpaceTransition {
+                display_uuid: display_uuid.clone(),
+                old_space: self.display_last_space.get(display_uuid).copied(),
+                new_space: *new_space,
+            })
+            .collect();
+        let relocations = self.virtual_workspace_manager.reconcile_display_topology(
+            &transitions,
+            removed_display_uuids,
+            receiver_uuid,
+        );
+
+        let sizes: HashMap<SpaceId, CGSize> = live_displays
+            .iter()
+            .map(|(_, space, size)| (*space, *size))
+            .collect();
+        for relocation in &relocations {
+            self.workspace_layouts.relocate_workspace(
+                relocation.old_space,
+                relocation.new_space,
+                relocation.workspace_id,
+            );
+            if let Some(size) = sizes.get(&relocation.new_space).copied() {
+                let tree = &mut self.virtual_workspace_manager.workspaces
+                    [relocation.workspace_id]
+                    .layout_system;
+                self.workspace_layouts.ensure_active_for_workspace(
+                    relocation.new_space,
+                    size,
+                    relocation.workspace_id,
+                    tree,
+                );
+            }
+        }
+
+        // Active floating membership is a per-Space cache. Clear every Space
+        // participating in the topology transition, then rebuild only the new
+        // live Spaces from the already-relocated workspace model.
+        let mut affected_spaces: HashSet<SpaceId> = HashSet::default();
+        for transition in &transitions {
+            if let Some(old_space) = transition.old_space {
+                affected_spaces.insert(old_space);
+            }
+            affected_spaces.insert(transition.new_space);
+        }
+        for relocation in &relocations {
+            affected_spaces.insert(relocation.old_space);
+            affected_spaces.insert(relocation.new_space);
+        }
+        for space in affected_spaces {
+            self.floating.remove_active_space(space);
+        }
+        let mut rebuilt_spaces: HashSet<SpaceId> = HashSet::default();
+        for transition in &transitions {
+            if rebuilt_spaces.insert(transition.new_space) {
+                let windows = self
+                    .virtual_workspace_manager
+                    .windows_in_active_workspace(transition.new_space);
+                self.floating
+                    .rebuild_active_for_workspace(transition.new_space, windows);
+            }
+        }
+
+        let removed: HashSet<&str> =
+            removed_display_uuids.iter().map(String::as_str).collect();
+        for transition in &transitions {
+            let Some(old_space) = transition.old_space else {
+                continue;
+            };
+            if old_space != transition.new_space
+                && self.space_display_map.get(&old_space).and_then(|uuid| uuid.as_deref())
+                    == Some(transition.display_uuid.as_str())
+            {
+                self.space_display_map.remove(&old_space);
+            }
+        }
+        self.space_display_map.retain(|_, uuid| {
+            uuid.as_ref().is_some_and(|uuid| !removed.contains(uuid.as_str()))
+        });
+        for transition in &transitions {
+            self.space_display_map
+                .insert(transition.new_space, Some(transition.display_uuid.clone()));
+            self.display_last_space
+                .insert(transition.display_uuid.clone(), transition.new_space);
+        }
+        self.display_last_space.retain(|uuid, _| !removed.contains(uuid.as_str()));
 
         relocations
     }
@@ -2938,7 +3041,12 @@ mod tests {
             .floating
             .add_active(receiver_space, receiver_floating.pid, receiver_floating);
 
-        let moved = engine.rebind_workspaces_to_display("display-a", "display-b", receiver_size);
+        let moved = engine.rebind_workspaces_to_display(
+            "display-a",
+            "display-b",
+            receiver_space,
+            receiver_size,
+        );
 
         assert_eq!(moved.len(), 1);
         assert_eq!(engine.active_workspace(receiver_space), Some(receiver_workspace));

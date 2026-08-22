@@ -71,6 +71,15 @@ pub struct WorkspaceRelocation {
     pub new_space: SpaceId,
 }
 
+/// One display's last accepted native Space and its Space in the new live
+/// topology. `old_space` is absent for a newly introduced display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplaySpaceTransition {
+    pub display_uuid: String,
+    pub old_space: Option<SpaceId>,
+    pub new_space: SpaceId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceError {
     NoWorkspacesAvailable,
@@ -1415,42 +1424,61 @@ impl VirtualWorkspaceManager {
     /// membership, or window-rule metadata. The returned relocations let the
     /// layout engine move its per-workspace mirrors using the same keys.
     ///
-    /// The receiver is resolved before any mutation so an unknown receiver
-    /// leaves all model state untouched. This must run before display pruning
-    /// removes the departed display's space mapping.
+    /// The caller supplies the receiver Space explicitly from its accepted
+    /// live snapshot. This avoids resolving an older historical mapping when
+    /// one display has been observed on more than one native Space.
     pub fn rebind_workspaces_to_display(
         &mut self,
         dead_uuid: &str,
         receiver_uuid: &str,
+        receiver_space: SpaceId,
     ) -> Vec<WorkspaceRelocation> {
         if dead_uuid == receiver_uuid {
             return Vec::new();
         }
 
-        // The receiver must be live before we touch anything.
-        let Some(receiver_space) = self.space_for_display(receiver_uuid) else {
+        // The receiver must own the exact Space selected by the caller before
+        // this single-display helper mutates anything. Topology churn uses the
+        // batch method below, which can safely introduce a new receiver.
+        if self.space_display(receiver_space) != Some(receiver_uuid) {
             return Vec::new();
-        };
+        }
 
-        let relocations: Vec<WorkspaceRelocation> = self
+        let targets: Vec<(WorkspaceRelocation, String)> = self
             .workspace_ids_for_display(dead_uuid)
             .into_iter()
             .filter_map(|workspace_id| {
-                self.workspaces.get(workspace_id).map(|workspace| WorkspaceRelocation {
-                    workspace_id,
-                    old_space: workspace.space,
-                    new_space: receiver_space,
+                self.workspaces.get(workspace_id).map(|workspace| {
+                    (
+                        WorkspaceRelocation {
+                            workspace_id,
+                            old_space: workspace.space,
+                            new_space: receiver_space,
+                        },
+                        receiver_uuid.to_string(),
+                    )
                 })
             })
             .collect();
 
-        for relocation in &relocations {
+        let relocations = self.apply_workspace_relocations(targets);
+        self.active_workspace_per_display.remove(dead_uuid);
+        self.last_workspace_per_display.remove(dead_uuid);
+
+        relocations
+    }
+
+    fn apply_workspace_relocations(
+        &mut self,
+        targets: Vec<(WorkspaceRelocation, String)>,
+    ) -> Vec<WorkspaceRelocation> {
+        for (relocation, target_uuid) in &targets {
             let windows: Vec<WindowId> = self.workspaces[relocation.workspace_id]
                 .windows()
                 .collect();
             self.workspaces[relocation.workspace_id].space = relocation.new_space;
             self.display_for_workspace
-                .insert(relocation.workspace_id, receiver_uuid.to_string());
+                .insert(relocation.workspace_id, target_uuid.clone());
             for window_id in windows {
                 self.window_registry.get_mut().assign_window_to_workspace(
                     window_id,
@@ -1469,8 +1497,143 @@ impl VirtualWorkspaceManager {
             }
         }
 
-        self.active_workspace_per_display.remove(dead_uuid);
-        self.last_workspace_per_display.remove(dead_uuid);
+        targets.into_iter().map(|(relocation, _)| relocation).collect()
+    }
+
+    /// Apply a complete display-removal topology as per-workspace moves.
+    ///
+    /// Whole-space remapping is intentionally avoided: macOS may reuse a
+    /// departing SpaceId for a retained or newly added display, so replacing
+    /// the target Space would destroy unrelated workspace state. Retained
+    /// displays move only workspace state from their last accepted current
+    /// Space (plus any historical Space now claimed by another live display),
+    /// while every departing workspace moves to the receiver's live Space.
+    pub fn reconcile_display_topology(
+        &mut self,
+        transitions: &[DisplaySpaceTransition],
+        removed_display_uuids: &[String],
+        receiver_uuid: &str,
+    ) -> Vec<WorkspaceRelocation> {
+        let Some(receiver_space) = transitions
+            .iter()
+            .find(|transition| transition.display_uuid == receiver_uuid)
+            .map(|transition| transition.new_space)
+        else {
+            return Vec::new();
+        };
+
+        let removed: HashSet<&str> =
+            removed_display_uuids.iter().map(String::as_str).collect();
+        if removed.contains(receiver_uuid) {
+            return Vec::new();
+        }
+
+        let by_uuid: HashMap<&str, &DisplaySpaceTransition> = transitions
+            .iter()
+            .map(|transition| (transition.display_uuid.as_str(), transition))
+            .collect();
+        let claimed_spaces: HashMap<SpaceId, &str> = transitions
+            .iter()
+            .map(|transition| (transition.new_space, transition.display_uuid.as_str()))
+            .collect();
+
+        let mut targets: Vec<(WorkspaceNumber, WorkspaceRelocation, String)> = self
+            .workspaces
+            .iter()
+            .filter_map(|(workspace_id, workspace)| {
+                let owner = self.display_uuid_for_workspace_id(workspace_id)?;
+                let target = if removed.contains(owner.as_str()) {
+                    Some((receiver_uuid, receiver_space))
+                } else if let Some(transition) = by_uuid.get(owner.as_str()) {
+                    let claimed_by_other = claimed_spaces
+                        .get(&workspace.space)
+                        .is_some_and(|claimed| *claimed != owner.as_str());
+                    let was_current = transition.old_space == Some(workspace.space);
+                    (workspace.space != transition.new_space
+                        && (was_current || claimed_by_other))
+                        .then_some((owner.as_str(), transition.new_space))
+                } else if owner.starts_with(SYNTHETIC_DISPLAY_UUID_PREFIX) {
+                    claimed_spaces
+                        .get(&workspace.space)
+                        .map(|uuid| (*uuid, workspace.space))
+                } else {
+                    None
+                }?;
+
+                Some((
+                    workspace.number,
+                    WorkspaceRelocation {
+                        workspace_id,
+                        old_space: workspace.space,
+                        new_space: target.1,
+                    },
+                    target.0.to_string(),
+                ))
+            })
+            .collect();
+        targets.sort_by_key(|(number, _, _)| *number);
+        let relocations = self.apply_workspace_relocations(
+            targets
+                .into_iter()
+                .map(|(_, relocation, target_uuid)| (relocation, target_uuid))
+                .collect(),
+        );
+
+        let synthetic_promotions: Vec<(String, String)> = transitions
+            .iter()
+            .filter_map(|transition| {
+                let prior = self.display_uuid_for_space.get(&transition.new_space)?;
+                prior
+                    .starts_with(SYNTHETIC_DISPLAY_UUID_PREFIX)
+                    .then(|| (prior.clone(), transition.display_uuid.clone()))
+            })
+            .collect();
+
+        // Remove previous-current mappings first, then install every live
+        // mapping. Two-phase replacement makes swaps and SpaceId reuse
+        // independent of screen iteration order.
+        for transition in transitions {
+            let Some(old_space) = transition.old_space else {
+                continue;
+            };
+            if old_space != transition.new_space
+                && self.display_uuid_for_space.get(&old_space).map(String::as_str)
+                    == Some(transition.display_uuid.as_str())
+            {
+                self.display_uuid_for_space.remove(&old_space);
+            }
+        }
+        self.display_uuid_for_space
+            .retain(|_, uuid| !removed.contains(uuid.as_str()));
+        for transition in transitions {
+            self.display_uuid_for_space
+                .insert(transition.new_space, transition.display_uuid.clone());
+        }
+
+        for (synthetic_uuid, real_uuid) in synthetic_promotions {
+            if let Some(number) = self.active_workspace_per_display.remove(&synthetic_uuid) {
+                self.active_workspace_per_display.entry(real_uuid.clone()).or_insert(number);
+            }
+            if let Some(number) = self.last_workspace_per_display.remove(&synthetic_uuid) {
+                self.last_workspace_per_display.entry(real_uuid).or_insert(number);
+            }
+        }
+        for dead_uuid in removed_display_uuids {
+            self.active_workspace_per_display.remove(dead_uuid);
+            self.last_workspace_per_display.remove(dead_uuid);
+        }
+        if !self.active_workspace_per_display.contains_key(receiver_uuid) {
+            let first_number = self
+                .workspace_ids_for_display(receiver_uuid)
+                .into_iter()
+                .filter_map(|workspace_id| {
+                    self.workspaces.get(workspace_id).map(|workspace| workspace.number)
+                })
+                .min();
+            if let Some(number) = first_number {
+                self.active_workspace_per_display.insert(receiver_uuid.to_string(), number);
+            }
+        }
 
         relocations
     }
@@ -2896,7 +3059,8 @@ mod tests {
         assert!(manager.set_active_workspace(receiver_space, ws5));
         let receiver_last = manager.last_workspace(receiver_space);
 
-        let relocations = manager.rebind_workspaces_to_display("display-a", "display-b");
+        let relocations =
+            manager.rebind_workspaces_to_display("display-a", "display-b", receiver_space);
 
         assert_eq!(relocations.len(), 3);
         for (number, original_id) in [(1, ws1), (2, ws2), (3, ws3)] {
@@ -2932,7 +3096,11 @@ mod tests {
             manager.workspace_for_window(window_on_ws2),
         );
         assert!(manager
-            .rebind_workspaces_to_display("display-b", "missing-receiver")
+            .rebind_workspaces_to_display(
+                "display-b",
+                "missing-receiver",
+                SpaceId::new(999),
+            )
             .is_empty());
         assert_eq!(
             (

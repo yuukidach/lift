@@ -567,7 +567,13 @@ impl Reactor {
             }
         }
 
-        let windows = ws_info.into_iter().map(|info| (info.id, WindowSnapshot { info })).collect();
+        let windows = ws_info
+            .into_iter()
+            .map(|info| {
+                let space = window_server::window_space(info.id);
+                (info.id, WindowSnapshot { info, space })
+            })
+            .collect();
 
         DisplaySnapshot {
             ordered_screens,
@@ -652,13 +658,17 @@ impl Reactor {
             if snapshot_window.info.layer != 0 {
                 continue;
             }
-            let Some(space) = window_server::window_space(wsid) else {
+            let Some(space) = snapshot_window.space else {
                 continue;
             };
             if !self.is_space_active(space) && !window_server::space_is_user(space.get()) {
                 continue;
             }
-            SpaceEventHandler::handle_window_server_appeared(self, wsid, space);
+            SpaceEventHandler::handle_window_server_snapshot_appeared(
+                self,
+                snapshot_window.info,
+                space,
+            );
             synthetic_appeared += 1;
         }
 

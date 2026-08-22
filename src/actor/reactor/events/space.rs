@@ -14,7 +14,7 @@ use crate::common::collections::{HashMap, HashSet};
 use crate::sys::app::AppInfo;
 use crate::sys::screen::{ScreenId, SpaceId};
 use crate::sys::skylight::DisplayReconfigFlags;
-use crate::sys::window_server::WindowServerId;
+use crate::sys::window_server::{WindowServerId, WindowServerInfo};
 
 pub struct SpaceEventHandler;
 
@@ -86,88 +86,26 @@ impl SpaceEventHandler {
         wsid: WindowServerId,
         sid: SpaceId,
     ) {
-        if reactor.window_manager.knows_window_server_id(wsid)
-            || reactor.window_manager.is_window_server_observed(wsid)
-        {
-            debug!(
-                ?wsid,
-                "Received WindowServerAppeared for known window - ignoring"
-            );
+        if !begin_window_server_appearance(reactor, wsid) {
             return;
         }
 
-        reactor.window_manager.mark_window_server_observed(wsid);
-        // TODO: figure out why this is happening, we should really know about this app,
-        // why dont we get notifications that its being launched?
         if let Some(window_server_info) = crate::sys::window_server::get_window(wsid) {
-            if window_server_info.layer != 0 {
-                trace!(
-                    ?wsid,
-                    layer = window_server_info.layer,
-                    "Ignoring non-normal window"
-                );
-                return;
-            }
-
-            // Filter out very small windows (likely tooltips or similar UI elements)
-            // that shouldn't be managed by the window manager
-            const MIN_MANAGEABLE_WINDOW_SIZE: f64 = 50.0;
-            if window_server_info.frame.size.width < MIN_MANAGEABLE_WINDOW_SIZE
-                || window_server_info.frame.size.height < MIN_MANAGEABLE_WINDOW_SIZE
-            {
-                trace!(
-                    ?wsid,
-                    "Ignoring tiny window ({}x{}) - likely tooltip",
-                    window_server_info.frame.size.width,
-                    window_server_info.frame.size.height
-                );
-                return;
-            }
-
-            if crate::sys::window_server::space_is_fullscreen(sid.get()) {
-                let window_id = reactor.window_manager.tracked_window_id(wsid);
-                let last_known_user_space = resolve_last_known_user_space(reactor, window_id);
-                record_fullscreen_window(
-                    reactor,
-                    sid,
-                    window_server_info.pid,
-                    window_id,
-                    last_known_user_space,
-                );
-                request_visible_windows(
-                    reactor,
-                    window_server_info.pid,
-                    "refresh after fullscreen appearance",
-                );
-
-                return;
-            }
-
-            reactor.update_partial_window_server_info(vec![window_server_info]);
-
-            if !reactor.app_manager.apps.contains_key(&window_server_info.pid) {
-                if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(
-                    window_server_info.pid,
-                ) {
-                    debug!(
-                        ?app,
-                        "Received WindowServerAppeared for unknown app - synthesizing AppLaunch"
-                    );
-                    reactor.communication_manager.wm_sender.as_ref().map(|wm| {
-                        wm.send(WmEvent::AppLaunch(window_server_info.pid, AppInfo::from(&*app)))
-                    });
-                }
-            } else if let Some(app) = reactor.app_manager.apps.get(&window_server_info.pid) {
-                if let Err(err) = app.handle.send(Request::GetVisibleWindows) {
-                    warn!(
-                        pid = window_server_info.pid,
-                        ?wsid,
-                        ?err,
-                        "Failed to refresh windows after WindowServerAppeared"
-                    );
-                }
-            }
+            handle_window_server_info_appeared(reactor, window_server_info, sid, true);
         }
+    }
+
+    pub(in crate::actor::reactor) fn handle_window_server_snapshot_appeared(
+        reactor: &mut Reactor,
+        window_server_info: WindowServerInfo,
+        sid: SpaceId,
+    ) {
+        if !begin_window_server_appearance(reactor, window_server_info.id) {
+            return;
+        }
+        // The topology commit owns one all-app refresh after every appeared
+        // and disappeared window has been reconciled.
+        handle_window_server_info_appeared(reactor, window_server_info, sid, false);
     }
 
     pub fn handle_screen_parameters_changed(reactor: &mut Reactor, screens: Vec<ScreenInfo>) {
@@ -497,6 +435,102 @@ impl SpaceEventHandler {
     }
 }
 
+fn begin_window_server_appearance(reactor: &mut Reactor, wsid: WindowServerId) -> bool {
+    if reactor.window_manager.knows_window_server_id(wsid)
+        || reactor.window_manager.is_window_server_observed(wsid)
+    {
+        debug!(
+            ?wsid,
+            "Received WindowServerAppeared for known window - ignoring"
+        );
+        return false;
+    }
+
+    reactor.window_manager.mark_window_server_observed(wsid);
+    true
+}
+
+fn handle_window_server_info_appeared(
+    reactor: &mut Reactor,
+    window_server_info: WindowServerInfo,
+    sid: SpaceId,
+    request_app_refresh: bool,
+) {
+    let wsid = window_server_info.id;
+    if window_server_info.layer != 0 {
+        trace!(
+            ?wsid,
+            layer = window_server_info.layer,
+            "Ignoring non-normal window"
+        );
+        return;
+    }
+
+    // Filter out very small windows (likely tooltips or similar UI elements)
+    // that shouldn't be managed by the window manager.
+    const MIN_MANAGEABLE_WINDOW_SIZE: f64 = 50.0;
+    if window_server_info.frame.size.width < MIN_MANAGEABLE_WINDOW_SIZE
+        || window_server_info.frame.size.height < MIN_MANAGEABLE_WINDOW_SIZE
+    {
+        trace!(
+            ?wsid,
+            "Ignoring tiny window ({}x{}) - likely tooltip",
+            window_server_info.frame.size.width,
+            window_server_info.frame.size.height
+        );
+        return;
+    }
+
+    if crate::sys::window_server::space_is_fullscreen(sid.get()) {
+        let window_id = reactor.window_manager.tracked_window_id(wsid);
+        let last_known_user_space = resolve_last_known_user_space(reactor, window_id);
+        record_fullscreen_window(
+            reactor,
+            sid,
+            window_server_info.pid,
+            window_id,
+            last_known_user_space,
+        );
+        if request_app_refresh {
+            request_visible_windows(
+                reactor,
+                window_server_info.pid,
+                "refresh after fullscreen appearance",
+            );
+        }
+        return;
+    }
+
+    reactor.update_partial_window_server_info(vec![window_server_info]);
+
+    // TODO: figure out why this is happening; we should normally know about
+    // the owning app from its launch notification.
+    if !reactor.app_manager.apps.contains_key(&window_server_info.pid) {
+        if let Some(app) =
+            NSRunningApplication::runningApplicationWithProcessIdentifier(window_server_info.pid)
+        {
+            debug!(
+                ?app,
+                "Received WindowServerAppeared for unknown app - synthesizing AppLaunch"
+            );
+            reactor.communication_manager.wm_sender.as_ref().map(|wm| {
+                wm.send(WmEvent::AppLaunch(window_server_info.pid, AppInfo::from(&*app)))
+            });
+        }
+    } else if request_app_refresh
+        && let Some(app) = reactor.app_manager.apps.get(&window_server_info.pid)
+    {
+        if let Err(err) = app.handle.send(Request::GetVisibleWindows) {
+            warn!(
+                pid = window_server_info.pid,
+                ?wsid,
+                ?err,
+                "Failed to refresh windows after WindowServerAppeared"
+            );
+        }
+    }
+}
+
 fn complete_pending_display_migrations_if_ready(reactor: &mut Reactor) -> bool {
     if reactor
         .pending_space_change_manager
@@ -529,24 +563,6 @@ fn complete_pending_display_migrations_if_ready(reactor: &mut Reactor) -> bool {
         return false;
     };
 
-    // A receiver already present in the layout model must absorb all removed
-    // workspaces on its retained old SpaceId before any whole-space remap. That
-    // vacates departing SpaceIds, so a retained display can safely be remapped
-    // onto one of them without `remap_space` deleting preserved state. A truly
-    // new receiver has no old mapping to target, so register only that mapping
-    // first; this is non-destructive and gives rebind a live destination.
-    let receiver_is_mapped = reactor
-        .layout_manager
-        .layout_engine
-        .space_for_display_uuid(&receiver.display_uuid)
-        .is_some();
-    if !receiver_is_mapped {
-        reactor.layout_manager.layout_engine.update_space_display(
-            receiver.space,
-            Some(receiver.display_uuid.clone()),
-        );
-    }
-
     let mut queued_dead_uuids: Vec<String> = reactor
         .pending_space_change_manager
         .pending_removed_display_uuids
@@ -554,17 +570,22 @@ fn complete_pending_display_migrations_if_ready(reactor: &mut Reactor) -> bool {
         .cloned()
         .collect();
     queued_dead_uuids.sort();
-    for dead_uuid in &queued_dead_uuids {
-        reactor.layout_manager.layout_engine.rebind_workspaces_to_display(
-            dead_uuid,
-            &receiver.display_uuid,
-            receiver.size,
-        );
-    }
+    let live_displays: Vec<(String, SpaceId, CGSize)> = reactor
+        .space_manager
+        .screens
+        .iter()
+        .filter_map(|screen| {
+            screen
+                .space
+                .map(|space| (screen.display_uuid.clone(), space, screen.frame.size))
+        })
+        .collect();
+    reactor.layout_manager.layout_engine.reconcile_display_topology(
+        &live_displays,
+        &queued_dead_uuids,
+        &receiver.display_uuid,
+    );
 
-    let spaces: Vec<Option<SpaceId>> =
-        reactor.space_manager.screens.iter().map(|screen| screen.space).collect();
-    reactor.reconcile_spaces_with_display_history(&spaces, true);
     let active_display_uuids: Vec<String> = reactor
         .space_manager
         .screens
@@ -621,8 +642,6 @@ fn finish_pending_topology_relayout_if_ready(
 #[derive(Debug, Clone, PartialEq)]
 struct MigrationReceiver {
     display_uuid: String,
-    space: SpaceId,
-    size: CGSize,
 }
 
 fn select_display_migration_receiver(
@@ -660,8 +679,6 @@ fn select_display_migration_receiver_with_user_space(
         {
             return Some(MigrationReceiver {
                 display_uuid: screen.display_uuid.clone(),
-                space: screen.space.unwrap(),
-                size: screen.frame.size,
             });
         }
     }
@@ -676,8 +693,6 @@ fn select_display_migration_receiver_with_user_space(
         })?;
     Some(MigrationReceiver {
         display_uuid: screen.display_uuid.clone(),
-        space: screen.space.unwrap(),
-        size: screen.frame.size,
     })
 }
 
