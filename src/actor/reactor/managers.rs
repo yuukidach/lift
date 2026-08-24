@@ -1,4 +1,4 @@
-use objc2_core_foundation::CGRect;
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use std::time::{Duration, Instant};
 use tracing::trace;
 
@@ -10,16 +10,14 @@ use super::{
 use crate::actor;
 use crate::actor::app::{WindowId, pid_t};
 use crate::actor::broadcast::BroadcastSender;
-use crate::actor::drag_swap::DragManager as DragSwapManager;
 use crate::actor::reactor::Reactor;
 use crate::actor::reactor::animation::AnimationManager;
 use crate::actor::{
     event_tap, gesture_tap, menu_bar, raise_manager, stack_line, window_notify, wm_controller,
 };
 use crate::common::collections::{HashMap, HashSet};
-use crate::common::config::WindowSnappingSettings;
-use crate::layout_engine::LayoutEngine;
-use crate::model::{VirtualWorkspaceId, WindowRegistry};
+use crate::core::ids::WorkspaceId;
+use crate::model::WindowRegistry;
 use crate::sys::screen::SpaceId;
 
 /// Manages window state and lifecycle
@@ -28,7 +26,7 @@ pub type WindowManager = Box<WindowRegistry>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecentWorkspaceTarget {
     pub space: SpaceId,
-    pub workspace_id: VirtualWorkspaceId,
+    pub workspace_id: WorkspaceId,
     pub expires_at: Instant,
 }
 
@@ -67,30 +65,7 @@ impl SpaceManager {
 /// Manages drag operations and window swapping
 pub struct DragManager {
     pub drag_state: super::DragState,
-    pub drag_swap_manager: DragSwapManager,
     pub skip_layout_for_window: Option<WindowId>,
-}
-
-impl DragManager {
-    pub fn reset(&mut self) {
-        self.drag_swap_manager.reset();
-    }
-
-    pub fn last_target(&self) -> Option<WindowId> {
-        self.drag_swap_manager.last_target()
-    }
-
-    pub fn dragged(&self) -> Option<WindowId> {
-        self.drag_swap_manager.dragged()
-    }
-
-    pub fn origin_frame(&self) -> Option<CGRect> {
-        self.drag_swap_manager.origin_frame()
-    }
-
-    pub fn update_config(&mut self, config: WindowSnappingSettings) {
-        self.drag_swap_manager.update_config(config);
-    }
 }
 
 /// Manages window notifications
@@ -105,9 +80,8 @@ pub struct MenuManager {
     pub menu_tx: Option<menu_bar::Sender>,
 }
 
-/// Manages Mission Control state
+/// Tracks platform refreshes requested after Mission Control.
 pub struct MissionControlManager {
-    pub mission_control_state: super::MissionControlState,
     pub pending_mission_control_refresh: HashSet<pid_t>,
 }
 
@@ -159,7 +133,7 @@ impl WorkspaceSwitchManager {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FocusNextWindowTarget {
     pub space: SpaceId,
-    pub workspace_id: VirtualWorkspaceId,
+    pub workspace_id: WorkspaceId,
 }
 
 pub struct RefocusManager {
@@ -186,33 +160,32 @@ pub struct RecordingManager {
     pub record: Record,
 }
 
-/// Manages layout engine state
-pub struct LayoutManager {
-    pub layout_engine: LayoutEngine,
-}
-
 pub type LayoutResult = Vec<(SpaceId, Vec<(WindowId, CGRect)>)>;
 
-impl LayoutManager {
-    pub fn update_layout(
+pub fn update_layout(
         reactor: &mut Reactor,
         is_resize: bool,
         is_workspace_switch: bool,
     ) -> Result<bool, crate::model::reactor::ReactorError> {
-        let layout_result = Self::calculate_layout(reactor);
-        Self::apply_layout(reactor, layout_result, is_resize, is_workspace_switch)
+        let layout_result = calculate_layout(reactor);
+        apply_layout(reactor, layout_result, is_resize, is_workspace_switch)
     }
 
-    fn calculate_layout(reactor: &mut Reactor) -> LayoutResult {
+fn calculate_layout(reactor: &mut Reactor) -> LayoutResult {
+        let core_snapshot = reactor
+            .advance_core_state()
+            .map_err(|error| {
+                tracing::warn!(?error, "Core layout planning deferred");
+                error
+            })
+            .ok();
         let live_windows: HashSet<WindowId> =
             reactor.window_manager.iter_windows().map(|(wid, _)| wid).collect();
-        reactor.layout_manager.layout_engine.prune_layout_windows_not_in(&live_windows);
         if live_windows.is_empty() {
             return LayoutResult::new();
         }
 
         let screens = reactor.space_manager.screens.clone();
-        let all_screen_frames: Vec<CGRect> = screens.iter().map(|s| s.frame).collect();
         let mut layout_result = LayoutResult::new();
 
         for screen in screens {
@@ -222,35 +195,33 @@ impl LayoutManager {
             if !reactor.is_space_active(space) {
                 continue;
             }
-            let display_uuid_opt = screen.display_uuid_owned();
-            let gaps = reactor
-                .config
-                .settings
-                .layout
-                .gaps
-                .effective_for_display(display_uuid_opt.as_deref());
-            reactor
-                .layout_manager
-                .layout_engine
-                .update_space_display(space, display_uuid_opt.clone());
-            let layout =
-                reactor.layout_manager.layout_engine.calculate_layout_with_virtual_workspaces(
-                    space,
-                    screen.frame.clone(),
-                    &gaps,
-                    reactor.config.settings.ui.stack_line.thickness(),
-                    reactor.config.settings.ui.stack_line.horiz_placement,
-                    reactor.config.settings.ui.stack_line.vert_placement,
-                    |wid| reactor.window_manager.window(wid).map(|w| w.frame_monotonic),
-                    &all_screen_frames,
-                );
+            let layout: Vec<(WindowId, CGRect)> = core_snapshot
+                .as_ref()
+                .map(|snapshot| {
+                    crate::runtime::placement::frames_for_display(
+                        snapshot,
+                        &crate::core::ids::DisplayId(screen.display_uuid.clone()),
+                    )
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(window, frame)| {
+                    (
+                        WindowId::new(window.application.0, window.index.get()),
+                        CGRect::new(
+                            CGPoint::new(frame.origin.x, frame.origin.y),
+                            CGSize::new(frame.size.width, frame.size.height),
+                        ),
+                    )
+                })
+                .collect();
             layout_result.push((space, layout));
         }
 
         layout_result
     }
 
-    fn apply_layout(
+fn apply_layout(
         reactor: &mut Reactor,
         layout_result: LayoutResult,
         is_resize: bool,
@@ -262,7 +233,11 @@ impl LayoutManager {
             .drag_manager
             .skip_layout_for_window
             .take()
-            .or(reactor.drag_manager.drag_swap_manager.dragged());
+            .or_else(|| {
+                reactor.core_drag_snapshot().window.map(|window| {
+                    WindowId::new(window.application.0, window.index.get())
+                })
+            });
         let mut any_frame_changed = false;
 
         for (space, layout) in layout_result {
@@ -279,7 +254,6 @@ impl LayoutManager {
 
         reactor.maybe_send_menu_update();
         Ok(any_frame_changed)
-    }
 }
 
 /// Manages pending space changes

@@ -26,7 +26,101 @@ pub trait CliExecutor: Send + Sync + 'static {
 pub struct DefaultCliExecutor;
 
 impl DefaultCliExecutor {
-    pub fn new() -> Self { Self {} }
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+fn environment_for_event(
+    event: &BroadcastEvent,
+) -> Result<HashMap<String, String>, serde_json::Error> {
+    let mut env_vars = HashMap::default();
+    match event {
+        BroadcastEvent::WorkspaceChanged {
+            workspace_id,
+            workspace_name,
+            space_id,
+            display_uuid,
+        } => {
+            env_vars.insert("LIFT_EVENT_TYPE".into(), "workspace_changed".into());
+            env_vars.insert("LIFT_WORKSPACE_ID".into(), workspace_id.to_string());
+            env_vars.insert("LIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+            env_vars.insert("LIFT_SPACE_ID".into(), space_id.to_string());
+            if let Some(display_uuid) = display_uuid.as_ref() {
+                env_vars.insert("LIFT_DISPLAY_UUID".into(), display_uuid.clone());
+            }
+        }
+        BroadcastEvent::WindowsChanged {
+            workspace_id,
+            workspace_name,
+            windows,
+            space_id,
+            display_uuid,
+        } => {
+            env_vars.insert("LIFT_EVENT_TYPE".into(), "windows_changed".into());
+            env_vars.insert("LIFT_WORKSPACE_ID".into(), workspace_id.to_string());
+            env_vars.insert("LIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+            env_vars.insert("LIFT_WINDOW_COUNT".into(), windows.len().to_string());
+            env_vars.insert("LIFT_WINDOWS".into(), windows.join(","));
+            env_vars.insert("LIFT_SPACE_ID".into(), space_id.to_string());
+            if let Some(display_uuid) = display_uuid.as_ref() {
+                env_vars.insert("LIFT_DISPLAY_UUID".into(), display_uuid.clone());
+            }
+        }
+        BroadcastEvent::WindowTitleChanged {
+            window_id,
+            workspace_id,
+            workspace_index,
+            workspace_name,
+            previous_title,
+            new_title,
+            space_id,
+            display_uuid,
+        } => {
+            env_vars.insert("LIFT_EVENT_TYPE".into(), "window_title_changed".into());
+            env_vars.insert("LIFT_WINDOW_ID".into(), window_id.to_debug_string());
+            env_vars.insert("LIFT_WORKSPACE_ID".into(), workspace_id.to_string());
+            env_vars.insert("LIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+            if let Some(workspace_index) = workspace_index {
+                env_vars.insert("LIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
+            }
+            env_vars.insert("LIFT_PREVIOUS_WINDOW_TITLE".into(), previous_title.clone());
+            env_vars.insert("LIFT_WINDOW_TITLE".into(), new_title.clone());
+            env_vars.insert("LIFT_SPACE_ID".into(), space_id.to_string());
+            if let Some(display_uuid) = display_uuid.as_ref() {
+                env_vars.insert("LIFT_DISPLAY_UUID".into(), display_uuid.clone());
+            }
+        }
+        BroadcastEvent::StacksChanged {
+            workspace_id,
+            workspace_index,
+            workspace_name,
+            stacks,
+            active_workspace_has_fullscreen,
+            space_id,
+            display_uuid,
+        } => {
+            env_vars.insert("LIFT_EVENT_TYPE".into(), "stacks_changed".into());
+            env_vars.insert("LIFT_WORKSPACE_ID".into(), workspace_id.to_string());
+            env_vars.insert("LIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+            if let Some(workspace_index) = workspace_index {
+                env_vars.insert("LIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
+            }
+            env_vars.insert("LIFT_STACK_COUNT".into(), stacks.len().to_string());
+            env_vars.insert(
+                "LIFT_ACTIVE_WORKSPACE_HAS_FULLSCREEN".into(),
+                active_workspace_has_fullscreen.to_string(),
+            );
+            env_vars.insert("LIFT_SPACE_ID".into(), space_id.to_string());
+            if let Some(display_uuid) = display_uuid.as_ref() {
+                env_vars.insert("LIFT_DISPLAY_UUID".into(), display_uuid.clone());
+            }
+        }
+    }
+
+    let event_json = serde_json::to_string(event)?;
+    env_vars.insert("LIFT_EVENT_JSON".into(), event_json);
+    Ok(env_vars)
 }
 
 impl CliExecutor for DefaultCliExecutor {
@@ -35,92 +129,8 @@ impl CliExecutor for DefaultCliExecutor {
         event: &BroadcastEvent,
         subscription: &CliSubscription,
     ) -> Result<i32, std::io::Error> {
-        let mut env_vars: HashMap<String, String> = HashMap::default();
-        match event {
-            BroadcastEvent::WorkspaceChanged {
-                workspace_id,
-                workspace_name,
-                space_id,
-                display_uuid,
-            } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), "workspace_changed".into());
-                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
-                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
-                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
-                if let Some(display_uuid) = display_uuid.as_ref() {
-                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
-                }
-            }
-            BroadcastEvent::WindowsChanged {
-                workspace_id,
-                workspace_name,
-                windows,
-                space_id,
-                display_uuid,
-            } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), "windows_changed".into());
-                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
-                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
-                env_vars.insert("RIFT_WINDOW_COUNT".into(), windows.len().to_string());
-                env_vars.insert("RIFT_WINDOWS".into(), windows.join(","));
-                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
-                if let Some(display_uuid) = display_uuid.as_ref() {
-                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
-                }
-            }
-            BroadcastEvent::WindowTitleChanged {
-                window_id,
-                workspace_id,
-                workspace_index,
-                workspace_name,
-                previous_title,
-                new_title,
-                space_id,
-                display_uuid,
-            } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), "window_title_changed".into());
-                env_vars.insert("RIFT_WINDOW_ID".into(), window_id.to_debug_string());
-                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
-                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
-                if let Some(workspace_index) = workspace_index {
-                    env_vars.insert("RIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
-                }
-                env_vars.insert("RIFT_PREVIOUS_WINDOW_TITLE".into(), previous_title.clone());
-                env_vars.insert("RIFT_WINDOW_TITLE".into(), new_title.clone());
-                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
-                if let Some(display_uuid) = display_uuid.as_ref() {
-                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
-                }
-            }
-            BroadcastEvent::StacksChanged {
-                workspace_id,
-                workspace_index,
-                workspace_name,
-                stacks,
-                active_workspace_has_fullscreen,
-                space_id,
-                display_uuid,
-            } => {
-                env_vars.insert("RIFT_EVENT_TYPE".into(), "stacks_changed".into());
-                env_vars.insert("RIFT_WORKSPACE_ID".into(), workspace_id.to_string());
-                env_vars.insert("RIFT_WORKSPACE_NAME".into(), workspace_name.clone());
-                if let Some(workspace_index) = workspace_index {
-                    env_vars.insert("RIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
-                }
-                env_vars.insert("RIFT_STACK_COUNT".into(), stacks.len().to_string());
-                env_vars.insert(
-                    "RIFT_ACTIVE_WORKSPACE_HAS_FULLSCREEN".into(),
-                    active_workspace_has_fullscreen.to_string(),
-                );
-                env_vars.insert("RIFT_SPACE_ID".into(), space_id.to_string());
-                if let Some(display_uuid) = display_uuid.as_ref() {
-                    env_vars.insert("RIFT_DISPLAY_UUID".into(), display_uuid.clone());
-                }
-            }
-        }
-
-        let event_json = match serde_json::to_string(event) {
-            Ok(s) => s,
+        let env_vars = match environment_for_event(event) {
+            Ok(env) => env,
             Err(e) => {
                 error!("Failed to serialize event for CLI executor: {}", e);
                 return Err(std::io::Error::new(
@@ -129,7 +139,7 @@ impl CliExecutor for DefaultCliExecutor {
                 ));
             }
         };
-        env_vars.insert("RIFT_EVENT_JSON".to_string(), event_json.clone());
+        let event_json = env_vars["LIFT_EVENT_JSON"].clone();
 
         let command = subscription.command.clone();
         let mut args = subscription.args.clone();
@@ -236,4 +246,32 @@ impl CliExecutor for DefaultCliExecutor {
 pub fn execute_cli_subscription(event: &BroadcastEvent, subscription: &CliSubscription) {
     let exec = DefaultCliExecutor::new();
     let _ = exec.execute(event, subscription);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ids::WorkspaceId;
+    use crate::sys::screen::SpaceId;
+
+    #[test]
+    fn event_environment_uses_lift_namespace() {
+        let workspace_id = WorkspaceId(1);
+        let event = BroadcastEvent::WorkspaceChanged {
+            space_id: SpaceId::new(91),
+            workspace_id,
+            workspace_name: "code".into(),
+            display_uuid: Some("display-a".into()),
+        };
+        let env = environment_for_event(&event).unwrap();
+
+        assert_eq!(env["LIFT_EVENT_TYPE"], "workspace_changed");
+        assert_eq!(env["LIFT_WORKSPACE_ID"], workspace_id.to_string());
+        assert_eq!(env["LIFT_WORKSPACE_NAME"], "code");
+        assert_eq!(env["LIFT_SPACE_ID"], "91");
+        assert_eq!(env["LIFT_DISPLAY_UUID"], "display-a");
+        assert!(env.contains_key("LIFT_EVENT_JSON"));
+        let old_prefix = ["RIFT", "_"].concat();
+        assert!(!env.keys().any(|key| key.starts_with(&old_prefix)));
+    }
 }

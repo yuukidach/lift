@@ -4,27 +4,249 @@ use super::super::ScreenInfo;
 use crate::actor::app::{AppThreadHandle, Quiet, WindowId};
 use crate::actor::reactor::transaction_manager::TransactionId;
 use crate::actor::reactor::{
-    Command, DisplaySelector, Reactor, ReactorCommand, WorkspaceSwitchOrigin,
+    Command, DisplaySelector, LayoutEvent, Reactor, ReactorCommand, WorkspaceSwitchOrigin,
 };
 use crate::actor::stack_line::Event as StackLineEvent;
 use crate::actor::wm_controller::WmEvent;
 use crate::actor::{menu_bar, raise_manager};
 use crate::common::collections::HashMap;
-use crate::common::config::{self as config, Config};
+use crate::common::config::Config;
 use crate::common::log::{handle_command, MetricsCommand};
-use crate::layout_engine::{EventResponse, LayoutCommand, LayoutEvent};
+use crate::core::command::{
+    Command as CoreCommand, Direction as CoreDirection, DisplayCommand as CoreDisplayCommand,
+    MissionControlCommand as CoreMissionControlCommand,
+    WindowCommand as CoreWindowCommand, WorkspaceCommand as CoreWorkspaceCommand,
+};
+use crate::core::error::CoreError;
+use crate::core::effect::Effect as CoreEffect;
+use crate::core::ids::{DisplayId as CoreDisplayId, WorkspaceNumber as CoreWorkspaceNumber};
+use crate::model::layout::{EventResponse, LayoutCommand};
 use crate::sys::app::pid_t;
 use crate::sys::window_server::{self as window_server, WindowServerId};
 
 pub struct CommandEventHandler;
 
 impl CommandEventHandler {
+    fn core_window(window: WindowId) -> crate::core::ids::WindowId {
+        crate::core::ids::WindowId::new(
+            crate::core::ids::ApplicationId(window.pid),
+            window.idx,
+        )
+    }
+
+    fn core_direction(direction: crate::model::layout::Direction) -> CoreDirection {
+        match direction {
+            crate::model::layout::Direction::Left => CoreDirection::Left,
+            crate::model::layout::Direction::Right => CoreDirection::Right,
+            crate::model::layout::Direction::Up => CoreDirection::Up,
+            crate::model::layout::Direction::Down => CoreDirection::Down,
+        }
+    }
+
+    fn actor_window(window: crate::core::ids::WindowId) -> WindowId {
+        WindowId::new(window.application.0, window.index.get())
+    }
+
+    fn core_workspace_number(number: usize) -> Result<CoreWorkspaceNumber, CoreError> {
+        let one_based = number
+            .checked_add(1)
+            .and_then(|number| u8::try_from(number).ok())
+            .ok_or_else(|| {
+                CoreError::InvalidCommand(format!("workspace slot {number} is out of range"))
+            })?;
+        CoreWorkspaceNumber::try_from(one_based)
+            .map_err(|error| CoreError::InvalidCommand(error.to_string()))
+    }
+
+    fn transition_core_workspace_command(
+        reactor: &mut Reactor,
+        command_space: Option<crate::sys::screen::SpaceId>,
+        command: &LayoutCommand,
+    ) -> Result<EventResponse, CoreError> {
+        let display = || {
+            let space = command_space.ok_or_else(|| {
+                CoreError::IncompleteObservation(
+                    "workspace command has no active native Space".into(),
+                )
+            })?;
+            reactor
+                .display_uuid_for_space(space)
+                .map(CoreDisplayId)
+                .ok_or_else(|| {
+                    CoreError::IncompleteObservation(format!(
+                        "workspace command Space {space:?} has no display identity"
+                    ))
+                })
+        };
+
+        let command = match command {
+            LayoutCommand::NextWorkspace(skip_empty) => {
+                CoreWorkspaceCommand::Next {
+                    display: display()?,
+                    skip_empty: skip_empty.unwrap_or(false),
+                }
+            }
+            LayoutCommand::PrevWorkspace(skip_empty) => {
+                CoreWorkspaceCommand::Previous {
+                    display: display()?,
+                    skip_empty: skip_empty.unwrap_or(false),
+                }
+            }
+            LayoutCommand::SwitchToWorkspace(index) => {
+                let display = display()?;
+                let snapshot = reactor
+                    .core_state
+                    .as_ref()
+                    .map(|core| core.snapshot())
+                    .unwrap_or_else(|| reactor.snapshot_store.load());
+                let mut workspaces = snapshot
+                    .workspaces
+                    .iter()
+                    .filter(|workspace| workspace.display == display)
+                    .map(|workspace| workspace.number)
+                    .collect::<Vec<_>>();
+                workspaces.sort_unstable();
+                let number = workspaces.get(*index).copied().ok_or_else(|| {
+                    CoreError::InvalidCommand(format!(
+                        "display {display:?} has no workspace at index {index}"
+                    ))
+                })?;
+                CoreWorkspaceCommand::Activate(number)
+            }
+            LayoutCommand::CreateWorkspace => CoreWorkspaceCommand::Create {
+                display: display()?,
+            },
+            LayoutCommand::SwitchToLastWorkspace => CoreWorkspaceCommand::Last {
+                display: display()?,
+            },
+            unsupported => {
+                return Err(CoreError::UnsupportedCommand(format!(
+                    "{unsupported:?} is not a workspace reducer command"
+                )));
+            }
+        };
+
+        let transition = reactor.transition_core_command(CoreCommand::Workspace(command))?;
+        Ok(Self::response_from_core_transition(reactor, &transition))
+    }
+
+    fn transition_core_window_move(
+        reactor: &mut Reactor,
+        workspace: usize,
+        window: WindowId,
+    ) -> Result<(), CoreError> {
+        let workspace = Self::core_workspace_number(workspace)?;
+        let window = Self::core_window(window);
+        reactor.transition_core_command(CoreCommand::Workspace(
+            CoreWorkspaceCommand::MoveWindow {
+                workspace,
+                window: Some(window),
+            },
+        ))?;
+        Ok(())
+    }
+
+    fn transition_core_layout_command(
+        reactor: &mut Reactor,
+        command: &LayoutCommand,
+    ) -> Result<Option<EventResponse>, CoreError> {
+        let focused = reactor.focused_window_for_command().map(Self::core_window);
+        let boundary_hit = match command {
+            LayoutCommand::MoveFocus(direction) | LayoutCommand::MoveNode(direction) => {
+                Some(*direction)
+            }
+            _ => None,
+        };
+        let core_command = match command {
+            LayoutCommand::NextWindow => CoreWindowCommand::Next { window: focused },
+            LayoutCommand::PrevWindow => CoreWindowCommand::Previous { window: focused },
+            LayoutCommand::MoveFocus(direction) => CoreWindowCommand::Focus {
+                direction: Self::core_direction(*direction),
+                window: focused,
+            },
+            LayoutCommand::MoveNode(direction) => CoreWindowCommand::Move {
+                direction: Self::core_direction(*direction),
+                window: focused,
+            },
+            LayoutCommand::ResizeWindowGrow => {
+                CoreWindowCommand::Resize { amount: 0.05, window: focused }
+            }
+            LayoutCommand::ResizeWindowShrink => {
+                CoreWindowCommand::Resize { amount: -0.05, window: focused }
+            }
+            LayoutCommand::ResizeWindowBy { amount } => {
+                CoreWindowCommand::Resize { amount: *amount, window: focused }
+            }
+            LayoutCommand::ToggleFocusFloating => {
+                CoreWindowCommand::ToggleFocusLayer { window: focused }
+            }
+            LayoutCommand::ToggleFullscreen => CoreWindowCommand::ToggleFullscreen {
+                window: focused,
+                within_gaps: false,
+            },
+            LayoutCommand::ToggleFullscreenWithinGaps => {
+                CoreWindowCommand::ToggleFullscreen {
+                    window: focused,
+                    within_gaps: true,
+                }
+            }
+            LayoutCommand::JoinWindow(direction) => CoreWindowCommand::Join {
+                direction: Self::core_direction(*direction),
+                window: focused,
+            },
+            LayoutCommand::UnjoinWindows => CoreWindowCommand::Unjoin { window: focused },
+            LayoutCommand::ToggleOrientation => {
+                CoreWindowCommand::ToggleOrientation { window: focused }
+            }
+            LayoutCommand::SwapWindows(first, second) => CoreWindowCommand::Swap {
+                first: Self::core_window(*first),
+                second: Self::core_window(*second),
+            },
+            _ => return Ok(None),
+        };
+        match reactor.transition_core_command(CoreCommand::Window(core_command)) {
+            Ok(transition) => {
+                let mut response = EventResponse::default();
+                for effect in transition.effects {
+                    match effect {
+                        CoreEffect::FocusWindow(window) => {
+                            response.focus_window = Some(Self::actor_window(window));
+                        }
+                        CoreEffect::RaiseWindow(window) => {
+                            let window = Self::actor_window(window);
+                            if !response.raise_windows.contains(&window) {
+                                response.raise_windows.push(window);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Some(response))
+            }
+            Err(CoreError::InvalidCommand(message)) if message.ends_with("reached a boundary") => {
+                Ok(Some(EventResponse {
+                    boundary_hit,
+                    ..EventResponse::default()
+                }))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn response_from_core_transition(
+        reactor: &Reactor,
+        transition: &crate::core::state::Transition,
+    ) -> EventResponse {
+        reactor.layout_response_for_transition(transition)
+    }
+
     fn assigned_space_for_window(
         reactor: &Reactor,
         window_id: WindowId,
     ) -> Option<crate::sys::screen::SpaceId> {
-        let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
-        vwm.workspace_for_window(window_id).and_then(|ws_id| vwm.workspace_space(ws_id))
+        reactor
+            .workspace_for_window(window_id)
+            .and_then(|workspace| reactor.space_for_workspace(workspace))
     }
 
     fn resolve_current_window_for_command(
@@ -35,7 +257,7 @@ impl CommandEventHandler {
     ) -> Option<WindowId> {
         let main_window = reactor.main_window();
 
-        // AXMainWindow can lag behind Rift's own focus selection (in
+        // AXMainWindow can lag behind Lift's own focus selection (in
         // particular immediately after cycling between two windows owned by
         // the same application).  When both observations refer to the same
         // app, prefer the layout focus once both windows are known to the
@@ -44,9 +266,8 @@ impl CommandEventHandler {
         // priority so the pending workspace target can be recorded for it.
         let app_focus = match (main_window, layout_focus) {
             (Some(main), Some(layout)) if main.pid == layout.pid => {
-                let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
-                let main_is_assigned = vwm.workspace_for_window(main).is_some();
-                let layout_is_assigned = vwm.workspace_for_window(layout).is_some();
+                let main_is_assigned = reactor.workspace_for_window(main).is_some();
+                let layout_is_assigned = reactor.workspace_for_window(layout).is_some();
                 if main_is_assigned && layout_is_assigned {
                     Some(layout)
                 } else {
@@ -67,28 +288,18 @@ impl CommandEventHandler {
         preferred_window
             .or_else(|| {
                 command_space.and_then(|space| {
-                    reactor
-                        .layout_manager
-                        .layout_engine
-                        .windows_in_active_workspace(space)
-                        .into_iter()
-                        .next()
+                    reactor.windows_in_active_workspace(space).into_iter().next()
                 })
             })
             .or_else(|| {
                 reactor.iter_active_spaces().find_map(|space| {
-                    reactor
-                        .layout_manager
-                        .layout_engine
-                        .windows_in_active_workspace(space)
-                        .into_iter()
-                        .next()
+                    reactor.windows_in_active_workspace(space).into_iter().next()
                 })
             })
     }
 
     fn current_instance_pid_hint(reactor: &Reactor) -> Option<pid_t> {
-        let layout_focus = reactor.layout_manager.layout_engine.focused_window_for_command();
+        let layout_focus = reactor.focused_window_for_command();
         Self::resolve_current_window_for_command(
             reactor,
             reactor.workspace_command_space(),
@@ -96,6 +307,30 @@ impl CommandEventHandler {
             layout_focus,
         )
         .map(|wid| wid.pid)
+    }
+
+    fn resolve_window_index(
+        reactor: &Reactor,
+        index: u32,
+        command_space: Option<crate::sys::screen::SpaceId>,
+    ) -> Option<WindowId> {
+        let pid_hint = Self::current_instance_pid_hint(reactor);
+        let snapshot = reactor.core_snapshot();
+        let active_workspace = command_space
+            .and_then(|space| reactor.active_workspace_for_space(space));
+        let mut candidates = snapshot
+            .windows
+            .iter()
+            .filter(|window| window.id.index.get() == index)
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|window| {
+            (
+                window.workspace != active_workspace,
+                pid_hint.is_none_or(|pid| window.id.application.0 != pid),
+                window.id,
+            )
+        });
+        candidates.first().map(|window| Self::actor_window(window.id))
     }
 
     pub fn handle_command(reactor: &mut Reactor, cmd: Command) {
@@ -124,7 +359,6 @@ impl CommandEventHandler {
             LayoutCommand::NextWorkspace(_)
                 | LayoutCommand::PrevWorkspace(_)
                 | LayoutCommand::SwitchToWorkspace(_)
-                | LayoutCommand::SetWorkspaceLayout { .. }
                 | LayoutCommand::CreateWorkspace
                 | LayoutCommand::SwitchToLastWorkspace
         );
@@ -138,6 +372,25 @@ impl CommandEventHandler {
         } else {
             None
         };
+        let core_workspace_response = if matches!(
+            cmd,
+            LayoutCommand::NextWorkspace(_)
+                | LayoutCommand::PrevWorkspace(_)
+                | LayoutCommand::SwitchToWorkspace(_)
+                | LayoutCommand::CreateWorkspace
+                | LayoutCommand::SwitchToLastWorkspace
+        ) {
+            match Self::transition_core_workspace_command(reactor, workspace_space, &cmd) {
+                Ok(response) => Some(response),
+                Err(error) => {
+                    warn!(?error, ?cmd, "Core rejected workspace command");
+                    reactor.handle_layout_response(EventResponse::default(), workspace_space);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         if is_workspace_switch {
             reactor
                 .workspace_switch_manager
@@ -147,21 +400,15 @@ impl CommandEventHandler {
         }
 
         if let LayoutCommand::MoveWindowToWorkspace { workspace, window_id: None } = &cmd {
-            let layout_focus = reactor.layout_manager.layout_engine.focused_window_for_command();
+            let layout_focus = reactor.focused_window_for_command();
             let current_window = Self::resolve_current_window_for_command(
                 reactor,
                 command_space,
                 reactor.config.settings.focus_follows_mouse,
                 layout_focus,
             );
-            let current_window_without_workspace = current_window.filter(|wid| {
-                reactor
-                    .layout_manager
-                    .layout_engine
-                    .virtual_workspace_manager()
-                    .workspace_for_window(*wid)
-                    .is_none()
-            });
+            let current_window_without_workspace =
+                current_window.filter(|wid| reactor.workspace_for_window(*wid).is_none());
             if let Some(window_id) = current_window_without_workspace {
                 reactor.remember_recent_workspace_target_for_slot(window_id, *workspace);
                 reactor.handle_layout_response(EventResponse::default(), workspace_space);
@@ -169,23 +416,23 @@ impl CommandEventHandler {
             }
 
             if let Some(window_id) = current_window {
-                if layout_focus != Some(window_id)
-                    && let Some(space) = Self::assigned_space_for_window(reactor, window_id)
-                        .or_else(|| reactor.intended_space_for_window_id(window_id))
+                if let Err(error) =
+                    Self::transition_core_window_move(reactor, *workspace, window_id)
                 {
-                    reactor.send_layout_event(LayoutEvent::WindowFocused(space, window_id));
+                    warn!(?error, ?cmd, "Core rejected window move");
+                    reactor.handle_layout_response(EventResponse::default(), workspace_space);
+                    return;
+                }
+                if layout_focus != Some(window_id)
+                    && Self::assigned_space_for_window(reactor, window_id)
+                        .or_else(|| reactor.intended_space_for_window_id(window_id))
+                        .is_some()
+                {
+                    reactor.send_layout_event(LayoutEvent::WindowFocused(window_id));
                 }
 
-                let workspace_targets_before = reactor.snapshot_window_workspaces();
-                let response = if let Some(space) = command_space {
-                    reactor
-                        .layout_manager
-                        .layout_engine
-                        .move_window_to_workspace_number(space, *workspace, window_id)
-                } else {
-                    EventResponse::default()
-                };
-                reactor.remember_recent_workspace_targets_changed_since(&workspace_targets_before);
+                reactor.remember_recent_workspace_target(window_id);
+                let response = EventResponse::default();
                 reactor.handle_layout_response(response, workspace_space);
                 return;
             }
@@ -195,196 +442,168 @@ impl CommandEventHandler {
             }
         }
 
-        let track_workspace_targets = matches!(cmd, LayoutCommand::MoveWindowToWorkspace { .. });
-        let workspace_targets_before =
-            track_workspace_targets.then(|| reactor.snapshot_window_workspaces());
+        if matches!(cmd, LayoutCommand::ToggleWindowFloating) {
+            let Some(window) = reactor.focused_window_for_command()
+            else {
+                reactor.handle_layout_response(EventResponse::default(), workspace_space);
+                return;
+            };
+            let window = Self::core_window(window);
+            if let Err(error) = reactor.transition_core_command(CoreCommand::Window(
+                CoreWindowCommand::ToggleFloating {
+                    window: Some(window),
+                },
+            )) {
+                warn!(?error, ?cmd, "Core rejected floating-state command");
+                reactor.handle_layout_response(EventResponse::default(), workspace_space);
+                return;
+            }
+        }
 
         let response = match &cmd {
             LayoutCommand::NextWorkspace(_)
             | LayoutCommand::PrevWorkspace(_)
             | LayoutCommand::SwitchToWorkspace(_)
-            | LayoutCommand::SetWorkspaceLayout { .. }
             | LayoutCommand::CreateWorkspace
             | LayoutCommand::SwitchToLastWorkspace => {
-                if let Some(space) = workspace_space {
-                    reactor
-                        .layout_manager
-                        .layout_engine
-                        .handle_virtual_workspace_command(space, &cmd)
-                } else {
-                    EventResponse::default()
-                }
+                core_workspace_response.unwrap_or_default()
             }
             LayoutCommand::MoveWindowToWorkspace { .. } => {
-                if let Some(space) = command_space {
-                    match &cmd {
-                        LayoutCommand::MoveWindowToWorkspace {
-                            workspace,
-                            window_id: Some(window_idx),
-                        } => {
-                            let pid_hint = Self::current_instance_pid_hint(reactor);
-                            reactor
-                                .layout_manager
-                                .layout_engine
-                                .move_window_to_workspace_command(
-                                    space,
-                                    *workspace,
-                                    Some(*window_idx),
-                                    pid_hint,
-                                )
-                        }
-                        _ => reactor
-                            .layout_manager
-                            .layout_engine
-                            .handle_virtual_workspace_command(space, &cmd),
-                    }
-                } else {
-                    EventResponse::default()
-                }
-            }
-            _ => {
-                let (visible_spaces, visible_space_centers) =
-                    reactor.visible_spaces_for_layout(false);
-                if visible_spaces.is_empty() {
-                    warn!("Layout command ignored: no active spaces");
+                let LayoutCommand::MoveWindowToWorkspace {
+                    workspace,
+                    window_id: Some(window_idx),
+                } = &cmd
+                else {
+                    return;
+                };
+                let Some(window) = Self::resolve_window_index(reactor, *window_idx, command_space)
+                else {
+                    return;
+                };
+                if let Err(error) = Self::transition_core_window_move(reactor, *workspace, window) {
+                    warn!(?error, ?cmd, "Core rejected window move");
                     return;
                 }
-                reactor.layout_manager.layout_engine.handle_command(
-                    command_space,
-                    &visible_spaces,
-                    &visible_space_centers,
-                    cmd,
-                )
+                reactor.remember_recent_workspace_target(window);
+                EventResponse::default()
+            }
+            _ => {
+                match Self::transition_core_layout_command(reactor, &cmd) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        warn!(?error, ?cmd, "Core rejected BSP command");
+                        return;
+                    }
+                }
+                .unwrap_or_default()
             }
         };
-
-        if let Some(before) = workspace_targets_before.as_ref() {
-            reactor.remember_recent_workspace_targets_changed_since(before);
-        }
 
         reactor.handle_layout_response(response, workspace_space);
     }
 
-    /// Switch to whichever workspace owns global slot `slot`. The target may
-    /// live on a different display from the source; switch its owning space
-    /// first, then let the resulting target workspace drive focus.
-    ///
-    /// If no workspace owns slot `slot` yet, one is created on the focused
-    /// display (cursor display / first online as fallbacks) and the layout
-    /// tree is wired up before the switch proceeds.
-    ///
-    /// Fast path: if the target workspace is already active on its space,
-    /// just move focus to that display — skipping the SwitchToWorkspace flow
-    /// avoids the hide/show cycle that briefly empties the visible workspace.
     fn handle_command_switch_to_global_slot(reactor: &mut Reactor, slot: usize) {
-        let source_uuid = reactor
-            .workspace_command_space()
-            .and_then(|space| reactor.display_uuid_for_space(space));
-
-        let target = match reactor
-            .layout_manager
-            .layout_engine
-            .virtual_workspace_manager()
-            .resolve_workspace(slot)
-        {
-            Some(t) => t,
-            None => {
-                // Determine the display to create on: focused → cursor → first online.
-                let create_uuid = source_uuid
-                    .clone()
-                    .or_else(|| {
-                        reactor
-                            .space_for_cursor_screen()
-                            .and_then(|sp| reactor.display_uuid_for_space(sp))
-                    })
-                    .or_else(|| {
-                        reactor.space_manager.screens.first().map(|s| s.display_uuid.clone())
-                    });
-                let Some(uuid) = create_uuid else {
-                    warn!(slot, "SwitchToGlobalSlot: no display available to create on");
-                    return;
-                };
-                let space = reactor
-                    .layout_manager
-                    .layout_engine
-                    .virtual_workspace_manager()
-                    .space_for_display(&uuid);
-                let Some(space) = space else {
-                    warn!(slot, %uuid, "SwitchToGlobalSlot: no space mapped to display");
-                    return;
-                };
-                // Layout wiring needs the screen size — pull it from SpaceManager.
-                let size = match reactor.space_manager.screen_by_space(space) {
-                    Some(s) => s.frame.size,
-                    None => {
-                        warn!(
-                            slot,
-                            ?space,
-                            "SwitchToGlobalSlot: no screen for space; cannot wire layout"
-                        );
-                        return;
-                    }
-                };
-                reactor
-                    .layout_manager
-                    .layout_engine
-                    .create_workspace_on_display(slot, &uuid, space, size);
-                // Re-resolve — must succeed now.
-                reactor
-                    .layout_manager
-                    .layout_engine
-                    .virtual_workspace_manager()
-                    .resolve_workspace(slot)
-                    .expect("just created workspace must resolve")
-            }
-        };
-
-        if !reactor.is_space_active(target.space) {
-            warn!(slot, ?target.space, "SwitchToGlobalSlot: target space inactive");
-            return;
-        }
-
-        let already_active = reactor.layout_manager.layout_engine.active_workspace(target.space)
-            == Some(target.workspace_id);
-        if already_active {
-            let back_and_forth_enabled = reactor
-                .layout_manager
-                .layout_engine
-                .virtual_workspace_manager()
-                .workspace_auto_back_and_forth();
-            if source_uuid.as_deref() == Some(target.display_uuid.as_str())
-                && back_and_forth_enabled
-            {
-                reactor.store_current_floating_positions(target.space);
-                reactor
-                    .workspace_switch_manager
-                    .start_workspace_switch(WorkspaceSwitchOrigin::Manual);
-                let response =
-                    reactor.layout_manager.layout_engine.handle_virtual_workspace_command(
-                        target.space,
-                        &LayoutCommand::SwitchToLastWorkspace,
-                    );
-                reactor.handle_layout_response(response, Some(target.space));
+        let number = match Self::core_workspace_number(slot) {
+            Ok(number) => number,
+            Err(error) => {
+                warn!(?error, slot, "Core rejected global workspace slot");
                 return;
             }
+        };
+        let source_display = reactor
+            .workspace_command_space()
+            .and_then(|space| reactor.display_uuid_for_space(space));
+        let before = reactor.core_snapshot();
+        let existing = before
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.number == number)
+            .cloned();
+        let target_display = existing
+            .as_ref()
+            .map(|workspace| workspace.display.0.clone())
+            .or(source_display.clone())
+            .or_else(|| {
+                reactor
+                    .space_for_cursor_screen()
+                    .and_then(|space| reactor.display_uuid_for_space(space))
+            })
+            .or_else(|| {
+                reactor.space_manager.screens.first().map(|screen| screen.display_uuid.clone())
+            });
+        let Some(target_display) = target_display else {
+            warn!(slot, "SwitchToGlobalSlot: no display available");
+            return;
+        };
+        let target_space = reactor
+            .space_manager
+            .screens
+            .iter()
+            .find(|screen| screen.display_uuid == target_display)
+            .and_then(|screen| screen.space);
+        let Some(target_space) = target_space.filter(|space| reactor.is_space_active(*space)) else {
+            warn!(slot, %target_display, "SwitchToGlobalSlot: target display is inactive");
+            return;
+        };
 
-            if let Some(screen) = reactor.space_manager.screen_by_space(target.space).cloned() {
-                if !Self::focus_first_window_on_screen(reactor, &screen) {
-                    reactor.warp_mouse_to_space_center(target.space);
+        let already_active = reactor
+            .active_workspace_for_space(target_space)
+            .and_then(|workspace| reactor.workspace_number(workspace))
+            == Some(number);
+        let back_and_forth_enabled = reactor.config.virtual_workspaces.workspace_auto_back_and_forth;
+        if already_active
+            && source_display.as_deref() == Some(target_display.as_str())
+            && back_and_forth_enabled
+        {
+            reactor.store_current_floating_positions(target_space);
+            reactor
+                .workspace_switch_manager
+                .start_workspace_switch(WorkspaceSwitchOrigin::Manual);
+            let transition = reactor.transition_core_command(CoreCommand::Workspace(
+                CoreWorkspaceCommand::Last {
+                    display: CoreDisplayId(target_display.clone()),
+                },
+            ));
+            let response = match transition {
+                Ok(transition) => Self::response_from_core_transition(reactor, &transition),
+                Err(error) => {
+                    warn!(?error, slot, "Core rejected workspace back-and-forth");
+                    return;
                 }
+            };
+            reactor.handle_layout_response(response, Some(target_space));
+            return;
+        }
+
+        if already_active {
+            if let Some(screen) = reactor.space_manager.screen_by_space(target_space).cloned()
+                && !Self::focus_first_window_on_screen(reactor, &screen)
+            {
+                reactor.warp_mouse_to_space_center(target_space);
             }
             return;
         }
 
-        reactor.store_current_floating_positions(target.space);
+        reactor.store_current_floating_positions(target_space);
         reactor
             .workspace_switch_manager
             .start_workspace_switch(WorkspaceSwitchOrigin::Manual);
-        let response = reactor.layout_manager.layout_engine.handle_virtual_workspace_command(
-            target.space,
-            &LayoutCommand::SwitchToWorkspace(target.per_space_index),
-        );
-        reactor.handle_layout_response(response, Some(target.space));
+        let command = if existing.is_some() {
+            CoreWorkspaceCommand::Activate(number)
+        } else {
+            CoreWorkspaceCommand::ActivateOrCreate {
+                workspace: number,
+                display: CoreDisplayId(target_display),
+            }
+        };
+        let response = match reactor.transition_core_command(CoreCommand::Workspace(command)) {
+            Ok(transition) => Self::response_from_core_transition(reactor, &transition),
+            Err(error) => {
+                warn!(?error, slot, "Core rejected global workspace switch");
+                return;
+            }
+        };
+        reactor.handle_layout_response(response, Some(target_space));
     }
 
     pub fn handle_command_metrics(_reactor: &mut Reactor, cmd: MetricsCommand) {
@@ -392,21 +611,24 @@ impl CommandEventHandler {
     }
 
     pub fn handle_config_updated(reactor: &mut Reactor, new_cfg: Config) {
+        let core_config = match crate::interfaces::config::core_config(&new_cfg) {
+            Ok(config) => config,
+            Err(error) => {
+                warn!(?error, "Ignoring invalid Lift configuration update");
+                return;
+            }
+        };
+        let window_rules = match crate::core::rules::RuleSet::compile(core_config.window_rules) {
+            Ok(rules) => rules,
+            Err(error) => {
+                warn!(?error, "Ignoring invalid Lift window rules");
+                return;
+            }
+        };
         let old_keys = reactor.config.keys.clone();
 
         reactor.config = new_cfg;
-        reactor
-            .layout_manager
-            .layout_engine
-            .set_layout_settings(&reactor.config.settings.layout);
-
-        reactor
-            .layout_manager
-            .layout_engine
-            .update_virtual_workspace_settings(&reactor.config.virtual_workspaces);
-
-        reactor.drag_manager.update_config(reactor.config.settings.window_snapping);
-
+        reactor.window_rules = window_rules;
         if let Some(tx) = &reactor.communication_manager.stack_line_tx {
             if let Err(e) = tx.try_send(StackLineEvent::ConfigUpdated(reactor.config.clone())) {
                 warn!("Failed to send config update to stack line: {}", e);
@@ -429,10 +651,8 @@ impl CommandEventHandler {
     }
 
     pub fn handle_command_reactor_debug(reactor: &mut Reactor) {
-        for screen in &reactor.space_manager.screens {
-            if let Some(space) = screen.space {
-                reactor.layout_manager.layout_engine.debug_tree_desc(space, "", true);
-            }
+        if let Ok(state) = reactor.serialize_state() {
+            println!("{state}");
         }
     }
 
@@ -451,18 +671,36 @@ impl CommandEventHandler {
             ReactorCommand::FocusNextWindow => reactor.request_focus_next_window(),
             ReactorCommand::CancelFocusNextWindow => reactor.cancel_focus_next_window(),
             ReactorCommand::ShowMissionControlAll => {
+                if let Err(error) = reactor.transition_core_command(CoreCommand::MissionControl(
+                    CoreMissionControlCommand::ShowAll,
+                )) {
+                    warn!(?error, "Core rejected Mission Control request");
+                    return;
+                }
                 send_wm_cmd(
                     reactor,
                     crate::actor::wm_controller::WmCmd::ShowMissionControlAll,
                 );
             }
             ReactorCommand::ShowMissionControlCurrent => {
+                if let Err(error) = reactor.transition_core_command(CoreCommand::MissionControl(
+                    CoreMissionControlCommand::ShowCurrent,
+                )) {
+                    warn!(?error, "Core rejected Mission Control request");
+                    return;
+                }
                 send_wm_cmd(
                     reactor,
                     crate::actor::wm_controller::WmCmd::ShowMissionControlCurrent,
                 );
             }
             ReactorCommand::DismissMissionControl => {
+                if let Err(error) = reactor.transition_core_command(CoreCommand::MissionControl(
+                    CoreMissionControlCommand::Dismiss,
+                )) {
+                    warn!(?error, "Core rejected Mission Control dismiss request");
+                    return;
+                }
                 if !send_wm_cmd(
                     reactor,
                     crate::actor::wm_controller::WmCmd::DismissMissionControl,
@@ -492,11 +730,26 @@ impl CommandEventHandler {
     }
 
     pub fn handle_command_reactor_save_and_exit(reactor: &mut Reactor) {
-        match reactor.layout_manager.layout_engine.save(config::restore_file()) {
-            Ok(()) => std::process::exit(0),
-            Err(e) => {
-                error!("Could not save layout: {e}");
-                std::process::exit(3);
+        let transition = match reactor.transition_core_command(CoreCommand::SaveAndExit) {
+            Ok(transition) => transition,
+            Err(error) => {
+                error!(?error, "Core rejected save-and-exit");
+                return;
+            }
+        };
+        for effect in transition.effects {
+            match effect {
+                CoreEffect::Save(state) => {
+                    if let Err(error) = crate::runtime::persistence::save(
+                        &crate::common::config::restore_file(),
+                        &state,
+                    ) {
+                        error!(?error, "Could not save Lift state");
+                        std::process::exit(3);
+                    }
+                }
+                CoreEffect::Shutdown(_) => std::process::exit(0),
+                _ => {}
             }
         }
     }
@@ -541,7 +794,15 @@ impl CommandEventHandler {
                 warn!(?window_id, ?space, "Focus window ignored: space is inactive");
                 return;
             }
-            reactor.send_layout_event(LayoutEvent::WindowFocused(space, window_id));
+            if let Err(error) = reactor.transition_core_command(CoreCommand::Window(
+                CoreWindowCommand::Activate {
+                    window: Self::core_window(window_id),
+                },
+            )) {
+                warn!(?error, ?window_id, "Core rejected focus request");
+                return;
+            }
+            reactor.send_layout_event(LayoutEvent::WindowFocused(window_id));
 
             let mut app_handles: HashMap<i32, AppThreadHandle> = HashMap::default();
             if let Some(app) = reactor.app_manager.apps.get(&window_id.pid) {
@@ -567,15 +828,10 @@ impl CommandEventHandler {
     fn focus_first_window_on_screen(reactor: &mut Reactor, screen: &ScreenInfo) -> bool {
         if let Some(space) = screen.space {
             let focus_target = reactor.last_focused_window_in_space(space).or_else(|| {
-                reactor
-                    .layout_manager
-                    .layout_engine
-                    .windows_in_active_workspace(space)
-                    .into_iter()
-                    .next()
+                reactor.windows_in_active_workspace(space).into_iter().next()
             });
             if let Some(window_id) = focus_target {
-                reactor.send_layout_event(LayoutEvent::WindowFocused(space, window_id));
+                reactor.send_layout_event(LayoutEvent::WindowFocused(window_id));
 
                 // Update layout state, then issue an OS-level raise — without
                 // it, system focus stays on the previously-focused display
@@ -660,56 +916,16 @@ impl CommandEventHandler {
             return;
         }
 
-        let resolved_window = {
-            let vwm = reactor.layout_manager.layout_engine.virtual_workspace_manager();
-            match window_idx {
-                Some(idx) => {
-                    let pid_hint = Self::current_instance_pid_hint(reactor);
-                    let scoped = if let Some(pid) = pid_hint {
-                        if let Some(space) = reactor.workspace_command_space() {
-                            vwm.find_window_by_pid_idx(space, pid, idx).or_else(|| {
-                                reactor
-                                    .iter_active_spaces()
-                                    .find_map(|sp| vwm.find_window_by_pid_idx(sp, pid, idx))
-                            })
-                        } else {
-                            reactor
-                                .iter_active_spaces()
-                                .find_map(|sp| vwm.find_window_by_pid_idx(sp, pid, idx))
-                        }
-                    } else {
-                        None
-                    };
-                    let legacy_scoped = || {
-                        if let Some(space) = reactor.workspace_command_space() {
-                            vwm.find_window_by_idx(space, idx).or_else(|| {
-                                reactor
-                                    .iter_active_spaces()
-                                    .find_map(|sp| vwm.find_window_by_idx(sp, idx))
-                            })
-                        } else {
-                            reactor
-                                .iter_active_spaces()
-                                .find_map(|sp| vwm.find_window_by_idx(sp, idx))
-                        }
-                    };
-                    scoped
-                        .or_else(|| {
-                            pid_hint
-                                .and_then(|pid| vwm.find_window_anywhere_by_pid_idx(pid, idx))
-                                .map(|(_, wid)| wid)
-                        })
-                        .or_else(legacy_scoped)
-                        .or_else(|| vwm.find_window_anywhere_by_idx(idx).map(|(_, wid)| wid))
-                }
-                None => reactor.main_window().or_else(|| reactor.window_id_under_cursor()).or_else(
-                    || {
-                        reactor
-                            .workspace_command_space()
-                            .and_then(|space| vwm.find_window_by_idx(space, 0))
-                    },
-                ),
+        let resolved_window = match window_idx {
+            Some(index) => {
+                Self::resolve_window_index(reactor, index, reactor.workspace_command_space())
             }
+            None => Self::resolve_current_window_for_command(
+                reactor,
+                reactor.workspace_command_space(),
+                reactor.config.settings.focus_follows_mouse,
+                reactor.focused_window_for_command(),
+            ),
         };
 
         let Some(window_id) = resolved_window else {
@@ -813,12 +1029,17 @@ impl CommandEventHandler {
             state.frame_monotonic = target_frame;
         }
 
-        let response = reactor.layout_manager.layout_engine.move_window_to_space(
-            source_space,
-            target_space,
-            target_screen.frame.size,
-            window_id,
-        );
+        let core_command = CoreDisplayCommand::MoveWindowTo {
+            display: CoreDisplayId(target_screen.display_uuid.clone()),
+            window: Some(Self::core_window(window_id)),
+        };
+        let response = match reactor.transition_core_command(CoreCommand::Display(core_command)) {
+            Ok(transition) => Self::response_from_core_transition(reactor, &transition),
+            Err(error) => {
+                warn!(?error, ?window_id, "Core rejected cross-display window move");
+                return;
+            }
+        };
 
         reactor.remember_recent_workspace_target(window_id);
         reactor.handle_layout_response(response, None);
@@ -840,6 +1061,21 @@ impl CommandEventHandler {
                 None,
             ));
         if let Some(wid) = target {
+            let transition = match reactor.transition_core_command(CoreCommand::Window(
+                CoreWindowCommand::Close(Some(Self::core_window(wid))),
+            )) {
+                Ok(transition) => transition,
+                Err(error) => {
+                    warn!(?error, ?wid, "Core rejected close request");
+                    return;
+                }
+            };
+            if !transition.effects.iter().any(
+                |effect| matches!(effect, CoreEffect::CloseWindow(window) if *window == Self::core_window(wid)),
+            ) {
+                warn!(?wid, "Core close transaction did not emit a platform effect");
+                return;
+            }
             reactor.request_close_window(wid);
         } else {
             warn!("Close window command ignored because no window is tracked");

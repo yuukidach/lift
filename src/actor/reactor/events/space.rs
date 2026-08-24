@@ -190,9 +190,6 @@ impl SpaceEventHandler {
             .pending_space_change_manager
             .pending_removed_display_uuids
             .is_empty();
-        let active_display_uuids: Vec<String> =
-            screens.iter().map(|screen| screen.display_uuid.clone()).collect();
-
         if should_trigger_topology || migration_pending {
             reactor.pending_space_change_manager.topology_relayout_pending = true;
         }
@@ -207,9 +204,6 @@ impl SpaceEventHandler {
                 reactor.expose_all_spaces();
             }
 
-            if displays_changed && !migration_pending {
-                reactor.layout_manager.layout_engine.prune_display_state(&active_display_uuids);
-            }
             reactor.recompute_and_set_active_spaces(&[]);
             reactor.update_complete_window_server_info(Vec::new());
         } else {
@@ -272,10 +266,6 @@ impl SpaceEventHandler {
                 true
             };
 
-            if displays_changed && !migration_pending {
-                reactor.layout_manager.layout_engine.prune_display_state(&active_display_uuids);
-            }
-
             if migration_completed {
                 // Display UUIDs must be registered before recompute exposes newly
                 // activated spaces. Otherwise VWM lazy-init uses a synthetic
@@ -291,16 +281,11 @@ impl SpaceEventHandler {
                         .filter_map(|screen| screen.space.map(|s| (s, screen.frame.size)))
                         .collect();
 
-                    for (space, size) in resized_info {
+                    for (space, _size) in resized_info {
                         if !reactor.is_space_active(space) {
                             continue;
                         }
-                        reactor
-                            .layout_manager
-                            .layout_engine
-                            .virtual_workspace_manager_mut()
-                            .list_workspaces(space);
-                        reactor.send_layout_event(LayoutEvent::SpaceExposed(space, size));
+                        reactor.send_layout_event(LayoutEvent::Changed);
                     }
                 }
                 let ws_info = reactor.authoritative_window_snapshot_for_active_spaces();
@@ -556,43 +541,10 @@ fn complete_pending_display_migrations_if_ready(reactor: &mut Reactor) -> bool {
         return false;
     }
 
-    let Some(receiver) = select_display_migration_receiver(
-        &reactor.space_manager.screens,
-        &reactor.config.virtual_workspaces.display_migration_priority,
-    ) else {
+    if let Err(error) = reactor.prepare_core_topology_transition() {
+        warn!(?error, "Core rejected display topology snapshot");
         return false;
-    };
-
-    let mut queued_dead_uuids: Vec<String> = reactor
-        .pending_space_change_manager
-        .pending_removed_display_uuids
-        .iter()
-        .cloned()
-        .collect();
-    queued_dead_uuids.sort();
-    let live_displays: Vec<(String, SpaceId, CGSize)> = reactor
-        .space_manager
-        .screens
-        .iter()
-        .filter_map(|screen| {
-            screen
-                .space
-                .map(|space| (screen.display_uuid.clone(), space, screen.frame.size))
-        })
-        .collect();
-    reactor.layout_manager.layout_engine.reconcile_display_topology(
-        &live_displays,
-        &queued_dead_uuids,
-        &receiver.display_uuid,
-    );
-
-    let active_display_uuids: Vec<String> = reactor
-        .space_manager
-        .screens
-        .iter()
-        .map(|screen| screen.display_uuid.clone())
-        .collect();
-    reactor.layout_manager.layout_engine.prune_display_state(&active_display_uuids);
+    }
     reactor
         .pending_space_change_manager
         .pending_removed_display_uuids
@@ -637,63 +589,6 @@ fn finish_pending_topology_relayout_if_ready(
         );
     }
     true
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct MigrationReceiver {
-    display_uuid: String,
-}
-
-fn select_display_migration_receiver(
-    screens: &[ScreenInfo],
-    priority: &[String],
-) -> Option<MigrationReceiver> {
-    select_display_migration_receiver_with_user_space(
-        screens,
-        priority,
-        display_migration_space_is_user,
-    )
-}
-
-#[cfg(not(test))]
-fn display_migration_space_is_user(space: SpaceId) -> bool {
-    crate::sys::window_server::space_is_user(space.get())
-}
-
-#[cfg(test)]
-fn display_migration_space_is_user(_space: SpaceId) -> bool { true }
-
-fn select_display_migration_receiver_with_user_space(
-    screens: &[ScreenInfo],
-    priority: &[String],
-    is_user_space: impl Fn(SpaceId) -> bool,
-) -> Option<MigrationReceiver> {
-    let is_eligible = |screen: &ScreenInfo| {
-        screen.space.is_some_and(|space| is_user_space(space))
-    };
-    for uuid in priority {
-        if let Some(screen) = screens
-            .iter()
-            .filter(|screen| is_eligible(screen))
-            .find(|screen| &screen.display_uuid == uuid)
-        {
-            return Some(MigrationReceiver {
-                display_uuid: screen.display_uuid.clone(),
-            });
-        }
-    }
-    let screen = screens
-        .first()
-        .filter(|screen| is_eligible(screen))
-        .or_else(|| {
-            screens
-                .iter()
-                .filter(|screen| is_eligible(screen))
-                .min_by(|a, b| a.display_uuid.cmp(&b.display_uuid))
-        })?;
-    Some(MigrationReceiver {
-        display_uuid: screen.display_uuid.clone(),
-    })
 }
 
 fn resolve_last_known_user_space(
@@ -745,93 +640,4 @@ fn update_stale_cleanup_state(reactor: &mut Reactor, spaces_all_none: bool) {
     } else {
         StaleCleanupState::Enabled
     };
-}
-
-#[cfg(test)]
-mod tests {
-    use objc2_core_foundation::{CGPoint, CGRect};
-
-    use super::*;
-
-    fn test_screens(display_uuids: &[&str]) -> Vec<ScreenInfo> {
-        display_uuids
-            .iter()
-            .enumerate()
-            .map(|(index, display_uuid)| ScreenInfo {
-                id: ScreenId::new(index as u32),
-                frame: CGRect::new(
-                    CGPoint::new(index as f64 * 100.0, 0.0),
-                    CGSize::new(100.0, 100.0),
-                ),
-                display_uuid: (*display_uuid).to_string(),
-                name: Some(format!("Display {index}")),
-                space: Some(SpaceId::new(index as u64 + 1)),
-            })
-            .collect()
-    }
-
-    #[test]
-    fn configured_receiver_priority_overrides_main_display() {
-        let screens = test_screens(&["display-main", "display-b", "display-a"]);
-        let receiver = select_display_migration_receiver_with_user_space(
-            &screens,
-            &["offline".into(), "display-a".into(), "display-b".into()],
-            |_: SpaceId| true,
-        )
-        .unwrap();
-        assert_eq!(receiver.display_uuid, "display-a");
-    }
-
-    #[test]
-    fn receiver_skips_non_user_spaces() {
-        let screens = test_screens(&["display-main", "display-z", "display-a"]);
-        let is_user_space = |space: SpaceId| space != SpaceId::new(1);
-
-        assert_eq!(
-            select_display_migration_receiver_with_user_space(
-                &screens,
-                &["display-main".into(), "display-z".into()],
-                is_user_space,
-            )
-            .unwrap()
-            .display_uuid,
-            "display-z"
-        );
-        assert_eq!(
-            select_display_migration_receiver_with_user_space(&screens, &[], is_user_space)
-                .unwrap()
-                .display_uuid,
-            "display-a"
-        );
-    }
-
-    #[test]
-    fn receiver_defaults_to_main_then_uuid_order() {
-        let screens = test_screens(&["display-main", "display-z", "display-a"]);
-        assert_eq!(
-            select_display_migration_receiver_with_user_space(&screens, &[], |_: SpaceId| true)
-                .unwrap()
-                .display_uuid,
-            "display-main"
-        );
-
-        let incomplete_main = vec![
-            ScreenInfo {
-                space: None,
-                ..screens[0].clone()
-            },
-            screens[1].clone(),
-            screens[2].clone(),
-        ];
-        assert_eq!(
-            select_display_migration_receiver_with_user_space(
-                &incomplete_main,
-                &[],
-                |_: SpaceId| true,
-            )
-                .unwrap()
-                .display_uuid,
-            "display-a"
-        );
-    }
 }

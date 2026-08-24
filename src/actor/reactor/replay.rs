@@ -11,7 +11,6 @@ use super::{Event, Reactor};
 use crate::actor::app::{AppThreadHandle, Request};
 use crate::actor::{self};
 use crate::common::config::Config;
-use crate::layout_engine::LayoutEngine;
 
 thread_local! {
     static DESERIALIZE_THREAD_HANDLE: RefCell<Option<AppThreadHandle>> = RefCell::new(None);
@@ -51,11 +50,11 @@ impl Record {
         self.file.as_mut()
     }
 
-    pub(super) fn start(&mut self, config: &Config, layout: &LayoutEngine) {
+    pub(super) fn start(&mut self, config: &Config) {
         let Some(file) = self.file() else { return };
         let config = ron::ser::to_string(&config).unwrap();
-        let layout = layout.serialize_to_string();
-        write!(file, "{config}\n{layout}\n").unwrap();
+        let snapshot = ron::ser::to_string(&crate::core::snapshot::CoreSnapshot::default()).unwrap();
+        write!(file, "{config}\n{snapshot}\n").unwrap();
     }
 
     pub(super) fn on_event(&mut self, event: &Event) {
@@ -75,9 +74,9 @@ pub fn replay(
     DESERIALIZE_THREAD_HANDLE.with(|h| h.borrow_mut().replace(handle));
     let mut lines = file.lines();
     let config = ron::de::from_str(&lines.next().expect("Empty restore file")?)?;
-    let layout = ron::de::from_str(&lines.next().expect("Expected layout line")?)?;
+    let _initial_state = lines.next().expect("Expected initial state line")?;
     let (broadcast_tx, _) = actor::channel();
-    let mut reactor = Reactor::new(config, layout, Record::new(None), broadcast_tx, None, false);
+    let mut reactor = Reactor::new(config, Record::new(None), broadcast_tx, None, false, None);
     std::thread::spawn(move || {
         while let Some((span, request)) = rx.blocking_recv() {
             let _ = span.enter();

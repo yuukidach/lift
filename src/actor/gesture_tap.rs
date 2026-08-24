@@ -19,7 +19,7 @@ use crate::actor;
 use crate::actor::reactor;
 use crate::actor::wm_controller::{self, WmCommand, WmEvent};
 use crate::common::config::{Config, HapticPattern};
-use crate::layout_engine::LayoutCommand as LC;
+use crate::model::layout::LayoutCommand as LC;
 use crate::sys::haptics;
 
 const K_CGS_EVENT_TYPE_FIELD: CGEventField = CGEventField(55);

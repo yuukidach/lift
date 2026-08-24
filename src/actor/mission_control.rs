@@ -18,6 +18,7 @@ pub enum Event {
     ShowCurrent,
     Dismiss,
     RefreshCurrentWorkspace,
+    OverlayAction(MissionControlAction),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub type Receiver = actor::Receiver<Event>;
 pub struct MissionControlActor {
     config: Config,
     rx: Receiver,
+    tx: Sender,
     reactor: reactor::ReactorHandle,
     overlay: Option<MissionControlOverlay>,
     mtm: MainThreadMarker,
@@ -42,12 +44,14 @@ pub struct MissionControlActor {
 impl MissionControlActor {
     pub fn new(
         config: Config,
+        tx: Sender,
         rx: Receiver,
         reactor: reactor::ReactorHandle,
         mtm: MainThreadMarker,
     ) -> Self {
         Self {
             config,
+            tx,
             rx,
             reactor,
             overlay: None,
@@ -70,10 +74,9 @@ impl MissionControlActor {
         if self.overlay.is_none() {
             let (frame, scale) = self.initial_overlay_geometry();
             let overlay = MissionControlOverlay::new(self.config.clone(), self.mtm, frame, scale);
-            let self_ptr: *mut MissionControlActor = self as *mut _;
-            overlay.set_action_handler(Rc::new(move |action| unsafe {
-                let this: &mut MissionControlActor = &mut *self_ptr;
-                this.handle_overlay_action(action);
+            let tx = self.tx.clone();
+            overlay.set_action_handler(Rc::new(move |action| {
+                tx.send(Event::OverlayAction(action));
             }));
             self.overlay = Some(overlay);
         }
@@ -133,7 +136,7 @@ impl MissionControlActor {
             }
             MissionControlAction::SwitchToWorkspace(index) => {
                 let _ = self.reactor.try_send(reactor::Event::Command(reactor::Command::Layout(
-                    crate::layout_engine::LayoutCommand::SwitchToWorkspace(index),
+                    crate::model::layout::LayoutCommand::SwitchToWorkspace(index),
                 )));
                 self.dispose_overlay();
             }
@@ -177,6 +180,7 @@ impl MissionControlActor {
                     }
                 }
             }
+            Event::OverlayAction(action) => self.handle_overlay_action(action),
         }
     }
 
@@ -188,7 +192,8 @@ impl MissionControlActor {
             overlay.update(MissionControlMode::AllWorkspaces(Vec::new()));
         }
 
-        let resp = self.reactor.query_workspaces(None, None);
+        let snapshot = self.reactor.snapshot();
+        let resp = crate::interfaces::ui::workspace_data(&snapshot);
         let overlay = self.ensure_overlay();
         overlay.update(MissionControlMode::AllWorkspaces(resp));
     }
@@ -201,16 +206,20 @@ impl MissionControlActor {
             overlay.update(MissionControlMode::CurrentWorkspace(Vec::new()));
         }
 
-        let windows = self.reactor.query_windows(None);
+        let snapshot = self.reactor.snapshot();
+        let windows = crate::interfaces::ui::active_workspace_windows(&snapshot);
 
         let overlay = self.ensure_overlay();
         overlay.update(MissionControlMode::CurrentWorkspace(windows));
     }
 
     fn refresh_all_workspaces_highlight(&mut self) {
-        let active_workspace = self.reactor.query_active_workspace(None);
+        let snapshot = self.reactor.snapshot();
+        let active_workspace = crate::interfaces::ui::active_workspace(&snapshot)
+            .map(|workspace| workspace.id);
         if let Some(overlay) = self.overlay.as_ref() {
             overlay.refresh_active_workspace(active_workspace);
         }
     }
+
 }

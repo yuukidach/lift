@@ -26,7 +26,7 @@ use crate::actor::app::WindowId;
 use crate::common::collections::{HashMap, HashSet, hash_map};
 use crate::common::config::Config;
 use crate::model::server::{WindowData, WorkspaceData};
-use crate::model::virtual_workspace::VirtualWorkspaceId;
+use crate::core::ids::WorkspaceId;
 use crate::sys::cgs_window::CgsWindow;
 use crate::sys::dispatch::DispatchExt;
 use crate::sys::event::current_cursor_location;
@@ -1929,8 +1929,8 @@ impl MissionControlOverlay {
         }
     }
 
-    pub fn refresh_active_workspace(&self, active_workspace: Option<VirtualWorkspaceId>) {
-        let active_id = active_workspace.map(|ws| format!("{:?}", ws));
+    pub fn refresh_active_workspace(&self, active_workspace: Option<WorkspaceId>) {
+        let active_id = active_workspace.map(|workspace| workspace.0.to_string());
         let mut state = match self.state.try_borrow_mut() {
             Ok(state) => state,
             Err(_) => return,

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor::app::{AppInfo, AppThreadHandle, WindowId, pid_t};
 use crate::common::log::MetricsCommand;
-use crate::layout_engine::{Direction, LayoutCommand};
+use crate::model::layout::{Direction, LayoutCommand};
 use crate::sys::app::WindowInfo;
 use crate::sys::screen::SpaceId;
 use crate::sys::window_server::WindowServerId;
@@ -87,17 +87,6 @@ pub enum DragState {
     Active {
         session: DragSession,
     },
-    PendingSwap {
-        session: DragSession,
-        target: WindowId,
-    },
-}
-
-#[derive(Debug, Clone)]
-pub enum MissionControlState {
-    Inactive,
-    Active,
-    Transitioning,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

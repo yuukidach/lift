@@ -25,11 +25,11 @@ use tracing::debug;
 use crate::actor::reactor::{Command as ReactorTopCommand, ReactorCommand};
 use crate::actor::wm_controller::{WmCmd, WmCommand};
 use crate::common::config::{
-    ActiveWorkspaceLabel, LayoutMode, MenuBarDisplayMode, MenuBarSettings, WorkspaceDisplayStyle,
+    ActiveWorkspaceLabel, MenuBarDisplayMode, MenuBarSettings, WorkspaceDisplayStyle,
     WorkspaceSelector,
 };
-use crate::layout_engine::LayoutCommand;
-use crate::model::VirtualWorkspaceId;
+use crate::model::layout::LayoutCommand;
+use crate::core::ids::WorkspaceId;
 use crate::model::server::{WindowData, WorkspaceData};
 use crate::sys::hotkey::{Hotkey, KeyCode, Modifiers};
 use crate::sys::screen::SpaceId;
@@ -45,7 +45,6 @@ const FONT_SIZE: f64 = 12.0;
 
 #[derive(Debug, Clone, Copy)]
 pub enum MenuAction {
-    SetLayout(LayoutMode),
     ToggleSpaceActivated,
     NextWorkspace,
     PrevWorkspace,
@@ -55,7 +54,7 @@ pub enum MenuAction {
     OpenMatrix,
     OpenConfig,
     ReloadConfig,
-    QuitRift,
+    QuitLift,
 }
 
 pub struct MenuIcon {
@@ -76,7 +75,6 @@ impl MenuIcon {
         let menu = build_status_menu(
             mtm,
             &menu_handler,
-            None,
             SpaceId::new(0),
             true,
             &[],
@@ -104,20 +102,15 @@ impl MenuIcon {
         active_space: SpaceId,
         active_space_is_activated: bool,
         workspaces: &[WorkspaceData],
-        _active_workspace: Option<VirtualWorkspaceId>,
+        _active_workspace: Option<WorkspaceId>,
         _windows: &[WindowData],
         settings: &MenuBarSettings,
         hotkeys: &[(Hotkey, WmCommand)],
     ) {
-        let active_layout = workspaces
-            .iter()
-            .find(|w| w.is_active)
-            .and_then(|w| parse_layout_mode(&w.layout_mode));
         let shortcuts = MenuShortcuts::from_hotkeys(hotkeys);
         let menu = build_status_menu(
             self.mtm,
             &self.menu_handler,
-            active_layout,
             active_space,
             active_space_is_activated,
             workspaces,
@@ -291,23 +284,6 @@ fn as_any_object<T: Message>(obj: &T) -> &AnyObject {
     unsafe { &*(obj as *const T as *const AnyObject) }
 }
 
-fn parse_layout_mode(layout_mode: &str) -> Option<LayoutMode> {
-    match layout_mode {
-        "bsp" => Some(LayoutMode::Bsp),
-        _ => None,
-    }
-}
-
-fn layout_title(mode: LayoutMode) -> &'static str {
-    match mode {
-        LayoutMode::Bsp => "BSP",
-        LayoutMode::Traditional
-        | LayoutMode::Stack
-        | LayoutMode::MasterStack
-        | LayoutMode::Scrolling => "BSP",
-    }
-}
-
 fn make_menu_item(
     mtm: MainThreadMarker,
     title: &str,
@@ -355,41 +331,13 @@ fn add_separator(menu: &NSMenu) {
 fn build_status_menu(
     mtm: MainThreadMarker,
     handler: &MenuActionHandler,
-    active_layout: Option<LayoutMode>,
     _active_space: SpaceId,
     active_space_is_activated: bool,
     workspaces: &[WorkspaceData],
     shortcuts: &MenuShortcuts,
 ) -> Retained<NSMenu> {
-    let title = NSString::from_str("Rift");
+    let title = NSString::from_str("Lift");
     let menu: Retained<NSMenu> = unsafe { msg_send![NSMenu::alloc(mtm), initWithTitle: &*title] };
-
-    let layout_item = make_menu_item(mtm, "Layout", None, None, None, None, None);
-    let layout_submenu_title = NSString::from_str("Layout");
-    let layout_submenu: Retained<NSMenu> =
-        unsafe { msg_send![NSMenu::alloc(mtm), initWithTitle: &*layout_submenu_title] };
-
-    for mode in [LayoutMode::Bsp] {
-        let action = match mode {
-            LayoutMode::Bsp => sel!(onSetLayoutBsp:),
-            LayoutMode::Traditional
-            | LayoutMode::Stack
-            | LayoutMode::MasterStack
-            | LayoutMode::Scrolling => sel!(onSetLayoutBsp:),
-        };
-        let item = make_menu_item(
-            mtm,
-            layout_title(mode),
-            Some(action),
-            Some(handler),
-            Some(active_layout == Some(mode)),
-            None,
-            None,
-        );
-        layout_submenu.addItem(&item);
-    }
-    layout_item.setSubmenu(Some(&layout_submenu));
-    menu.addItem(&layout_item);
 
     let workspace_item = make_menu_item(mtm, "Workspaces", None, None, None, None, None);
     let ws_submenu_title = NSString::from_str("Workspace");
@@ -511,11 +459,11 @@ fn build_status_menu(
     add_separator(&menu);
     menu.addItem(&make_menu_item(
         mtm,
-        "Quit Rift",
-        Some(sel!(onQuitRift:)),
+        "Quit Lift",
+        Some(sel!(onQuitLift:)),
         Some(handler),
         None,
-        shortcuts.quit_rift.as_ref(),
+        shortcuts.quit_lift.as_ref(),
         None,
     ));
 
@@ -527,7 +475,7 @@ struct MenuShortcuts {
     toggle_space_activation: Option<Hotkey>,
     next_workspace: Option<Hotkey>,
     prev_workspace: Option<Hotkey>,
-    quit_rift: Option<Hotkey>,
+    quit_lift: Option<Hotkey>,
     switch_workspace_by_index: HashMap<usize, Hotkey>,
     switch_workspace_by_name: HashMap<String, Hotkey>,
 }
@@ -578,7 +526,7 @@ impl MenuShortcuts {
                 WmCommand::ReactorCommand(ReactorTopCommand::Reactor(
                     ReactorCommand::SaveAndExit,
                 )) => {
-                    out.quit_rift.get_or_insert_with(|| hotkey.clone());
+                    out.quit_lift.get_or_insert_with(|| hotkey.clone());
                 }
                 _ => {}
             }
@@ -675,36 +623,11 @@ impl MenuActionHandler {
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "RiftMenuBarActionHandler"]
+    #[name = "LiftMenuBarActionHandler"]
     #[ivars = MenuActionHandlerIvars]
     struct MenuActionHandler;
 
     impl MenuActionHandler {
-        #[unsafe(method(onSetLayoutTraditional:))]
-        fn on_set_layout_traditional(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::SetLayout(LayoutMode::Bsp));
-        }
-
-        #[unsafe(method(onSetLayoutBsp:))]
-        fn on_set_layout_bsp(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::SetLayout(LayoutMode::Bsp));
-        }
-
-        #[unsafe(method(onSetLayoutStack:))]
-        fn on_set_layout_stack(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::SetLayout(LayoutMode::Bsp));
-        }
-
-        #[unsafe(method(onSetLayoutMasterStack:))]
-        fn on_set_layout_master_stack(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::SetLayout(LayoutMode::Bsp));
-        }
-
-        #[unsafe(method(onSetLayoutScrolling:))]
-        fn on_set_layout_scrolling(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::SetLayout(LayoutMode::Bsp));
-        }
-
         #[unsafe(method(onToggleSpaceActivation:))]
         fn on_toggle_space_activation(&self, _sender: Option<&AnyObject>) {
             self.emit(MenuAction::ToggleSpaceActivated);
@@ -755,9 +678,9 @@ define_class!(
             self.emit(MenuAction::ReloadConfig);
         }
 
-        #[unsafe(method(onQuitRift:))]
-        fn on_quit_rift(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::QuitRift);
+        #[unsafe(method(onQuitLift:))]
+        fn on_quit_lift(&self, _sender: Option<&AnyObject>) {
+            self.emit(MenuAction::QuitLift);
         }
     }
 );
@@ -933,7 +856,7 @@ fn add_rounded_rect(ctx: &CGContext, x: f64, y: f64, w: f64, h: f64, r: f64) {
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
-    #[name = "RiftMenuBarIconView"]
+    #[name = "LiftMenuBarIconView"]
     #[ivars = MenuIconViewIvars]
     struct MenuIconView;
 

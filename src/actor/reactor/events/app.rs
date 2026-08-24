@@ -1,8 +1,7 @@
 use tracing::{debug, warn};
 
 use crate::actor::app::{AppInfo, AppThreadHandle, Quiet, WindowId};
-use crate::actor::reactor::{AppState, Reactor};
-use crate::layout_engine::LayoutEvent;
+use crate::actor::reactor::{AppState, LayoutEvent, Reactor};
 use crate::sys::app::WindowInfo;
 use crate::sys::window_server::{self as window_server, WindowServerId, WindowServerInfo};
 
@@ -34,7 +33,7 @@ impl AppEventHandler {
 
     pub fn handle_application_thread_terminated(reactor: &mut Reactor, pid: i32) {
         reactor.app_manager.apps.remove(&pid);
-        reactor.send_layout_event(LayoutEvent::AppClosed(pid));
+        reactor.send_layout_event(LayoutEvent::Changed);
     }
 
     pub fn handle_resync_app_for_window(reactor: &mut Reactor, wsid: WindowServerId) {
@@ -53,7 +52,7 @@ impl AppEventHandler {
         if quiet == Quiet::Yes {
             debug!(
                 pid,
-                "Skipping auto workspace switch for quiet app activation (initiated by Rift)"
+                "Skipping auto workspace switch for quiet app activation (initiated by Lift)"
             );
             return;
         }

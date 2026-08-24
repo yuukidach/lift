@@ -1,7 +1,8 @@
 use tracing::trace;
 
 use crate::actor::reactor::{DragState, Reactor};
-use crate::layout_engine::LayoutCommand;
+use crate::core::input::{Input, Observation};
+use crate::core::interaction::DragObservation;
 
 pub struct DragEventHandler;
 
@@ -9,7 +10,17 @@ impl DragEventHandler {
     pub fn handle_mouse_up(reactor: &mut Reactor) {
         let mut need_layout_refresh = false;
 
-        let pending_swap = reactor.get_pending_drag_swap();
+        let drag_snapshot = reactor.core_drag_snapshot();
+        let mut pending_swap = reactor.get_pending_drag_swap();
+
+        if let Some(dragged) = drag_snapshot.window {
+            if let Err(error) = reactor.transition_core_input(Input::Observation(
+                Observation::Drag(DragObservation::Committed { window: dragged }),
+            )) {
+                trace!(?error, "Core rejected drag completion");
+                pending_swap = None;
+            }
+        }
 
         if let Some((dragged_wid, target_wid)) = pending_swap {
             trace!(?dragged_wid, ?target_wid, "Performing deferred swap on MouseUp");
@@ -27,36 +38,12 @@ impl DragEventHandler {
                     "Skipping deferred swap; one of the windows no longer exists"
                 );
             } else {
-                let (visible_spaces, visible_space_centers) =
-                    reactor.visible_spaces_for_layout(true);
-
-                let swap_space = reactor
-                    .window_manager
-                    .window(dragged_wid)
-                    .and_then(|w| reactor.best_space_for_window(&w.frame_monotonic, w.info.sys_id))
-                    .or_else(|| {
-                        reactor
-                            .drag_manager
-                            .drag_swap_manager
-                            .origin_frame()
-                            .and_then(|f| reactor.best_space_for_frame(&f))
-                    })
-                    .or_else(|| reactor.space_manager.screens.iter().find_map(|s| s.space));
-                let response = reactor.layout_manager.layout_engine.handle_command(
-                    swap_space,
-                    &visible_spaces,
-                    &visible_space_centers,
-                    LayoutCommand::SwapWindows(dragged_wid, target_wid),
-                );
-                reactor.handle_layout_response(response, None);
-
                 need_layout_refresh = true;
             }
         }
 
         let finalize_needs_layout = reactor.finalize_active_drag();
 
-        reactor.drag_manager.reset();
         reactor.drag_manager.drag_state = DragState::Inactive;
 
         if finalize_needs_layout || reactor.drag_manager.skip_layout_for_window.is_some() {

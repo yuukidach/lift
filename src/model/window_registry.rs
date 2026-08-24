@@ -1,21 +1,13 @@
-use std::ptr::NonNull;
 use std::time::Instant;
-
-use serde::{Deserialize, Serialize};
 
 use crate::actor::app::WindowId;
 use crate::common::collections::HashMap;
-use crate::model::VirtualWorkspaceId;
 use crate::model::reactor::WindowState;
-use crate::sys::screen::SpaceId;
 use crate::sys::window_server::{WindowServerId, WindowServerInfo};
 
 #[derive(Debug, Default)]
 struct WindowRecord {
     state: Option<WindowState>,
-    workspace: Option<WindowWorkspaceInfo>,
-    rule_floating: bool,
-    last_rule_decision: bool,
 }
 
 #[derive(Debug, Default)]
@@ -25,12 +17,6 @@ struct WindowServerRecord {
     observed: bool,
     info: Option<WindowServerInfo>,
     recent_at: Option<Instant>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WindowWorkspaceInfo {
-    pub space: SpaceId,
-    pub workspace_id: VirtualWorkspaceId,
 }
 
 #[derive(Debug, Default)]
@@ -96,18 +82,6 @@ impl WindowRegistry {
 
     fn server_record_mut(&mut self, wsid: WindowServerId) -> &mut WindowServerRecord {
         self.window_servers.entry(wsid).or_default()
-    }
-
-    fn prune_window_record(&mut self, window_id: WindowId) {
-        let should_remove = self.windows.get(&window_id).is_some_and(|record| {
-            record.state.is_none()
-                && record.workspace.is_none()
-                && !record.rule_floating
-                && !record.last_rule_decision
-        });
-        if should_remove {
-            self.windows.remove(&window_id);
-        }
     }
 
     fn prune_window_server_record(&mut self, wsid: WindowServerId) {
@@ -223,75 +197,6 @@ impl WindowRegistry {
         wid
     }
 
-    pub fn assign_window_to_workspace(
-        &mut self,
-        window_id: WindowId,
-        assignment: WindowWorkspaceInfo,
-    ) -> Option<WindowWorkspaceInfo> {
-        let record = self.windows.entry(window_id).or_default();
-        let old = record.workspace;
-        record.workspace = Some(assignment);
-        old
-    }
-
-    pub fn workspace_info_for_window(&self, window_id: WindowId) -> Option<WindowWorkspaceInfo> {
-        self.windows.get(&window_id).and_then(|record| record.workspace)
-    }
-
-    pub fn workspace_for_window(
-        &self,
-        space: SpaceId,
-        window_id: WindowId,
-    ) -> Option<VirtualWorkspaceId> {
-        self.workspace_info_for_window(window_id)
-            .filter(|assignment| assignment.space == space)
-            .map(|assignment| assignment.workspace_id)
-    }
-
-    pub fn workspaces_for_window(&self, window_id: WindowId) -> Vec<VirtualWorkspaceId> {
-        self.workspace_info_for_window(window_id)
-            .map(|assignment| vec![assignment.workspace_id])
-            .unwrap_or_default()
-    }
-
-    pub fn remove_window_assignment(&mut self, window_id: WindowId) -> Option<WindowWorkspaceInfo> {
-        let old = self.windows.get_mut(&window_id).and_then(|record| record.workspace.take());
-        self.prune_window_record(window_id);
-        old
-    }
-
-    pub fn set_rule_floating(&mut self, window_id: WindowId, value: bool) {
-        self.windows.entry(window_id).or_default().rule_floating = value;
-        self.prune_window_record(window_id);
-    }
-
-    pub fn clear_rule_floating(&mut self, window_id: WindowId) {
-        if let Some(record) = self.windows.get_mut(&window_id) {
-            record.rule_floating = false;
-        }
-        self.prune_window_record(window_id);
-    }
-
-    pub fn rule_floating(&self, window_id: WindowId) -> bool {
-        self.windows.get(&window_id).is_some_and(|record| record.rule_floating)
-    }
-
-    pub fn set_last_rule_decision(&mut self, window_id: WindowId, value: bool) {
-        self.windows.entry(window_id).or_default().last_rule_decision = value;
-    }
-
-    pub fn last_rule_decision(&self, window_id: WindowId) -> bool {
-        self.windows.get(&window_id).is_some_and(|record| record.last_rule_decision)
-    }
-
-    pub fn clear_rule_metadata(&mut self, window_id: WindowId) {
-        if let Some(record) = self.windows.get_mut(&window_id) {
-            record.rule_floating = false;
-            record.last_rule_decision = false;
-        }
-        self.prune_window_record(window_id);
-    }
-
     pub fn remove_window(&mut self, window_id: WindowId) {
         self.windows.remove(&window_id);
         let server_ids: Vec<_> = self
@@ -309,32 +214,6 @@ impl WindowRegistry {
             self.windows.keys().copied().filter(|window_id| window_id.pid == pid).collect();
         for window_id in window_ids {
             self.remove_window(window_id);
-        }
-    }
-
-    pub fn iter_workspace_assignments(
-        &self,
-    ) -> impl Iterator<Item = (WindowId, WindowWorkspaceInfo)> + '_ {
-        self.windows.iter().filter_map(|(&window_id, record)| {
-            record.workspace.map(|workspace| (window_id, workspace))
-        })
-    }
-
-    pub fn workspace_assignment_count(&self) -> usize {
-        self.windows.values().filter(|record| record.workspace.is_some()).count()
-    }
-
-    pub fn remap_space(&mut self, old_space: SpaceId, new_space: SpaceId) {
-        if old_space == new_space {
-            return;
-        }
-
-        for record in self.windows.values_mut() {
-            if let Some(assignment) = record.workspace.as_mut()
-                && assignment.space == old_space
-            {
-                assignment.space = new_space;
-            }
         }
     }
 
@@ -366,30 +245,5 @@ impl WindowRegistry {
             }
             self.prune_window_server_record(wsid);
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct WindowRegistryHandle(Option<NonNull<WindowRegistry>>);
-
-// SAFETY: The handle is only attached to the boxed registry owned by Reactor and
-// is used from the reactor thread after construction. It does not provide
-// independent ownership or synchronization.
-unsafe impl Send for WindowRegistryHandle {}
-unsafe impl Sync for WindowRegistryHandle {}
-
-impl WindowRegistryHandle {
-    pub fn new() -> Self { Self::default() }
-
-    pub fn attach(&mut self, registry: &mut WindowRegistry) {
-        self.0 = Some(NonNull::from(registry));
-    }
-
-    pub fn get(&self) -> &WindowRegistry {
-        unsafe { self.0.expect("window registry was not attached").as_ref() }
-    }
-
-    pub fn get_mut(&mut self) -> &mut WindowRegistry {
-        unsafe { self.0.expect("window registry was not attached").as_mut() }
     }
 }

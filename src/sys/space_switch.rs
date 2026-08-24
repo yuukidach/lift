@@ -12,7 +12,7 @@ use objc2_foundation::NSProcessInfo;
 use once_cell::sync::Lazy;
 
 use crate::common::collections::BTreeMap;
-use crate::layout_engine::Direction;
+use crate::model::layout::Direction;
 use crate::sys::dispatch::DispatchExt;
 use crate::sys::skylight::{CGEventPost, CGEventTapLocation};
 

@@ -7,11 +7,12 @@ use serde_json::Value;
 
 use super::collections::HashMap;
 use crate::actor::wm_controller::WmCommand;
+use crate::core::ids::WORKSPACE_SLOTS;
 use crate::sys::hotkey::{Hotkey, HotkeySpec};
 
-const MAX_WORKSPACES: usize = 32;
+const MAX_WORKSPACES: usize = WORKSPACE_SLOTS;
 
-// TODO: when to remove these?
+// Used only to make unknown-command errors point to the current spelling.
 const DEPRECATED_MAP: &[(&str, &str)] = &[
     ("stack_windows", "toggle_stack"),
     ("unstack_windows", "toggle_stack"),
@@ -30,7 +31,6 @@ pub enum ConfigCommand {
     SetMouseHidesOnFocus(bool),
     SetFocusFollowsMouse(bool),
 
-    SetStackOffset(f64),
     SetOuterGaps {
         top: f64,
         left: f64,
@@ -57,13 +57,19 @@ pub enum ConfigCommand {
 }
 
 pub fn data_dir() -> PathBuf {
-    dirs::home_dir().unwrap().join(".rift")
+    data_dir_for(&dirs::home_dir().unwrap())
+}
+fn data_dir_for(home: &Path) -> PathBuf {
+    home.join(".lift")
 }
 pub fn restore_file() -> PathBuf {
     data_dir().join("layout.ron")
 }
 pub fn config_file() -> PathBuf {
-    dirs::home_dir().unwrap().join(".config").join("rift").join("config.toml")
+    config_file_for(&dirs::home_dir().unwrap())
+}
+fn config_file_for(home: &Path) -> PathBuf {
+    home.join(".config").join("lift").join("config.toml")
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -81,8 +87,6 @@ pub struct VirtualWorkspaceSettings {
     pub reapply_app_rules_on_title_change: bool,
     #[serde(default)]
     pub app_rules: Vec<AppWorkspaceRule>,
-    #[serde(default)]
-    pub workspace_rules: Vec<WorkspaceLayoutRule>,
     /// Per-display default workspace number assigned at lazy init. Example:
     ///   display_default_workspaces = { "30999A24-..." = 1 }
     /// Means "when this display's space gets its first workspace, give it
@@ -92,15 +96,6 @@ pub struct VirtualWorkspaceSettings {
     /// Ordered display UUIDs used as receivers when another display is removed.
     #[serde(default)]
     pub display_migration_priority: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct WorkspaceLayoutRule {
-    /// Target workspace by index or name
-    pub workspace: WorkspaceSelector,
-    /// Layout mode to use for this workspace
-    pub layout: LayoutMode,
 }
 
 // Allow specifying a workspace by numeric index or by name in the config.
@@ -122,8 +117,8 @@ pub struct AppWorkspaceRule {
     /// Whether windows should be floating in this workspace
     #[serde(default)]
     pub floating: bool,
-    /// Whether Rift should manage matching windows (defaults to true). `false` makes the
-    /// window invisible to Rift (no tiling, floating, or assignments).
+    /// Whether Lift should manage matching windows (defaults to true). `false` makes the
+    /// window invisible to Lift (no tiling, floating, or assignments).
     #[serde(default = "yes")]
     pub manage: bool,
     /// Optional: Application name pattern (alternative to app_id)
@@ -135,7 +130,7 @@ pub struct AppWorkspaceRule {
     pub title_regex: Option<String>,
     /// Optional: Substring to search for in window title (applies to window.title)
     ///
-    /// If present, rift will internally treat this as a substring match and will
+    /// If present, Lift will internally treat this as a substring match and will
     /// construct a regex to match titles containing this substring. This allows
     /// people who don't want to write full regexes to match by a simple substring.
     pub title_substring: Option<String>,
@@ -160,7 +155,6 @@ impl Default for VirtualWorkspaceSettings {
             workspace_auto_back_and_forth: false,
             reapply_app_rules_on_title_change: false,
             app_rules: Vec::new(),
-            workspace_rules: Vec::new(),
             display_default_workspaces: HashMap::default(),
             display_migration_priority: Vec::new(),
         }
@@ -369,9 +363,6 @@ impl<'de> Deserialize<'de> for Config {
         })
     }
 }
-
-unsafe impl Send for Config {}
-unsafe impl Sync for Config {}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(deny_unknown_fields)]
@@ -592,26 +583,6 @@ fn default_drag_swap_fraction() -> f64 {
     0.3
 }
 
-fn default_master_stack_ratio() -> f64 {
-    0.6
-}
-
-fn default_master_stack_count() -> usize {
-    1
-}
-
-fn default_scrolling_column_width_ratio() -> f64 {
-    0.7
-}
-
-fn default_scrolling_min_column_width_ratio() -> f64 {
-    0.3
-}
-
-fn default_scrolling_max_column_width_ratio() -> f64 {
-    0.9
-}
-
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum HorizontalPlacement {
@@ -637,228 +608,9 @@ impl StackLineSettings {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct LayoutSettings {
-    /// Layout mode. Rift runs BSP only; legacy names deserialize for compatibility.
-    #[serde(default)]
-    pub mode: LayoutMode,
-    /// Legacy stack configuration retained for older config files.
-    #[serde(default)]
-    pub stack: StackSettings,
-    /// Legacy master/stack configuration retained for older config files.
-    #[serde(default)]
-    pub master_stack: MasterStackSettings,
     /// Gap configuration for window spacing
     #[serde(default)]
     pub gaps: GapSettings,
-    /// Legacy scrolling layout configuration retained for older config files.
-    #[serde(default)]
-    pub scrolling: ScrollingLayoutSettings,
-}
-
-/// Layout mode enum.
-///
-/// Rift currently runs BSP only. Non-BSP variants remain deserializable for
-/// compatibility with older config files, CLI input, and IPC payloads; runtime
-/// layout creation normalizes them to BSP.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum LayoutMode {
-    /// Traditional container-based tiling (i3/sway style)
-    Traditional,
-    /// Binary space partitioning tiling
-    #[default]
-    Bsp,
-    /// Dedicated stacked layout (single stack container)
-    Stack,
-    /// Master/stack layout (master area + stack area)
-    MasterStack,
-    /// Scrolling column layout (niri-style)
-    Scrolling,
-}
-
-impl ToString for LayoutMode {
-    fn to_string(&self) -> String {
-        match self {
-            LayoutMode::Traditional => "traditional".to_string(),
-            LayoutMode::Bsp => "bsp".to_string(),
-            LayoutMode::Stack => "stack".to_string(),
-            LayoutMode::MasterStack => "master_stack".to_string(),
-            LayoutMode::Scrolling => "scrolling".to_string(),
-        }
-    }
-}
-
-impl LayoutMode {
-    pub fn runtime(self) -> Self {
-        LayoutMode::Bsp
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct ScrollingLayoutSettings {
-    /// Whether to animate window transitions in this layout.
-    #[serde(default)]
-    pub animate: Option<bool>,
-    /// Default width of the active column, as a fraction of the screen width.
-    #[serde(default = "default_scrolling_column_width_ratio")]
-    pub column_width_ratio: f64,
-    /// Minimum column width ratio allowed by resize commands.
-    #[serde(default = "default_scrolling_min_column_width_ratio")]
-    pub min_column_width_ratio: f64,
-    /// Maximum column width ratio allowed by resize commands.
-    #[serde(default = "default_scrolling_max_column_width_ratio")]
-    pub max_column_width_ratio: f64,
-    /// Alignment for the focused column (left, center, right).
-    #[serde(default)]
-    pub alignment: ScrollingAlignment,
-    /// Horizontal focus navigation behavior:
-    /// - niri: reveal only as needed based on navigation direction.
-    /// - anchored: always align focused column to `alignment`.
-    #[serde(default)]
-    pub focus_navigation_style: ScrollingFocusNavigationStyle,
-    /// Legacy scrolling gesture settings retained for older config files.
-    #[serde(default)]
-    pub gestures: ScrollingGestureSettings,
-}
-
-impl Default for ScrollingLayoutSettings {
-    fn default() -> Self {
-        Self {
-            animate: None,
-            column_width_ratio: default_scrolling_column_width_ratio(),
-            min_column_width_ratio: default_scrolling_min_column_width_ratio(),
-            max_column_width_ratio: default_scrolling_max_column_width_ratio(),
-            alignment: ScrollingAlignment::default(),
-            focus_navigation_style: ScrollingFocusNavigationStyle::default(),
-            gestures: ScrollingGestureSettings::default(),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum MasterStackSide {
-    #[default]
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ScrollingAlignment {
-    Left,
-    #[default]
-    Center,
-    Right,
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ScrollingFocusNavigationStyle {
-    #[default]
-    Niri,
-    Anchored,
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct MasterStackSettings {
-    /// Fraction of space reserved for the master area (0.05..0.95)
-    #[serde(default = "default_master_stack_ratio")]
-    pub master_ratio: f64,
-    /// Number of windows kept in the master area (>= 1)
-    #[serde(default = "default_master_stack_count")]
-    pub master_count: usize,
-    /// Which side the master area occupies
-    #[serde(default)]
-    pub master_side: MasterStackSide,
-    /// Where new windows are inserted when the master area is already full
-    #[serde(default = "default_master_stack_new_window_placement")]
-    pub new_window_placement: MasterStackNewWindowPlacement,
-    /// Orientation arrangement for the master area (override default derived from master_side)
-    #[serde(default)]
-    pub master_arrangement: Option<crate::layout_engine::Orientation>,
-    /// Orientation arrangement for the stack area (override default derived from master_side)
-    #[serde(default)]
-    pub stack_arrangement: Option<crate::layout_engine::Orientation>,
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
-pub enum MasterStackNewWindowPlacement {
-    Master,
-    Stack,
-    Focused,
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
-pub struct ScrollingGestureSettings {
-    /// Enable horizontal scroll gestures to switch columns
-    #[serde(default = "no")]
-    pub enabled: bool,
-    /// Invert horizontal direction (swap left/right)
-    #[serde(default)]
-    pub invert_horizontal: bool,
-    /// Maximum absolute Y delta allowed for the gesture to count as horizontal
-    #[serde(default = "default_swipe_vertical_tolerance")]
-    pub vertical_tolerance: f64,
-    /// Number of fingers required for scroll gesture
-    #[serde(default = "default_swipe_fingers")]
-    pub fingers: usize,
-    /// Normalized horizontal distance (0..1) required to fire a scroll step
-    #[serde(default = "default_distance_pct")]
-    pub distance_pct: f64,
-    /// If true, scrolling past the end of the strip will trigger a workspace switch
-    #[serde(default = "no")]
-    pub propagate_to_workspace_swipe: bool,
-    /// Amount of overscroll (in steps) required to trigger a workspace switch
-    #[serde(default = "default_overscroll_threshold")]
-    pub workspace_switch_threshold: f64,
-}
-
-impl Default for ScrollingGestureSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            invert_horizontal: false,
-            vertical_tolerance: default_swipe_vertical_tolerance(),
-            fingers: default_swipe_fingers(),
-            distance_pct: default_distance_pct(),
-            propagate_to_workspace_swipe: false,
-            workspace_switch_threshold: default_overscroll_threshold(),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
-pub enum StackDefaultOrientation {
-    Perpendicular,
-    Same,
-    Horizontal,
-    Vertical,
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct StackSettings {
-    /// Stack offset - how much each stacked window is offset (in pixels)
-    /// With the enhanced stacking system, this creates meaningful visible edges
-    /// for each window in the stack while the focused window remains fully visible.
-    /// Recommended values: 30-50 pixels for good visibility.
-    #[serde(default = "default_stack_offset")]
-    pub stack_offset: f64,
-
-    /// Default orientation behavior when stacking windows.
-    /// Options:
-    /// - "perpendicular" (default): choose the perpendicular orientation to the parent layout
-    /// - "same": use the same orientation as the parent layout
-    /// - "horizontal"/"vertical": explicitly use a specific orientation
-    #[serde(default = "default_stack_orientation")]
-    pub default_orientation: StackDefaultOrientation,
 }
 
 /// Gap configuration for window spacing
@@ -918,28 +670,6 @@ pub struct GapOverride {
     pub inner: Option<InnerGaps>,
 }
 
-impl Default for StackSettings {
-    fn default() -> Self {
-        Self {
-            stack_offset: default_stack_offset(),
-            default_orientation: default_stack_orientation(),
-        }
-    }
-}
-
-impl Default for MasterStackSettings {
-    fn default() -> Self {
-        Self {
-            master_ratio: default_master_stack_ratio(),
-            master_count: default_master_stack_count(),
-            master_side: MasterStackSide::Left,
-            new_window_placement: default_master_stack_new_window_placement(),
-            master_arrangement: None,
-            stack_arrangement: None,
-        }
-    }
-}
-
 impl Settings {
     pub fn validate(&self) -> Vec<String> {
         let mut issues = Vec::new();
@@ -973,103 +703,7 @@ impl Settings {
 
 impl LayoutSettings {
     pub fn validate(&self) -> Vec<String> {
-        let mut issues = Vec::new();
-
-        issues.extend(self.stack.validate());
-
-        issues.extend(self.master_stack.validate());
-
-        issues.extend(self.gaps.validate());
-
-        issues.extend(self.scrolling.validate());
-
-        issues
-    }
-}
-
-impl ScrollingLayoutSettings {
-    pub fn validate(&self) -> Vec<String> {
-        let mut issues = Vec::new();
-
-        if !(0.0..=1.0).contains(&self.column_width_ratio) {
-            issues.push(format!(
-                "layout.scrolling.column_width_ratio must be between 0.0 and 1.0, got {}",
-                self.column_width_ratio
-            ));
-        }
-
-        if !(0.0..=1.0).contains(&self.min_column_width_ratio) {
-            issues.push(format!(
-                "layout.scrolling.min_column_width_ratio must be between 0.0 and 1.0, got {}",
-                self.min_column_width_ratio
-            ));
-        }
-
-        if !(0.0..=1.0).contains(&self.max_column_width_ratio) {
-            issues.push(format!(
-                "layout.scrolling.max_column_width_ratio must be between 0.0 and 1.0, got {}",
-                self.max_column_width_ratio
-            ));
-        }
-
-        if self.min_column_width_ratio > self.max_column_width_ratio {
-            issues.push(format!(
-                "layout.scrolling.min_column_width_ratio ({}) must be <= max_column_width_ratio ({})",
-                self.min_column_width_ratio, self.max_column_width_ratio
-            ));
-        }
-
-        if !(self.min_column_width_ratio..=self.max_column_width_ratio)
-            .contains(&self.column_width_ratio)
-        {
-            issues.push(format!(
-                "layout.scrolling.column_width_ratio ({}) must be within min/max bounds",
-                self.column_width_ratio
-            ));
-        }
-
-        if self.gestures.vertical_tolerance < 0.0 {
-            issues.push(format!(
-                "layout.scrolling.gestures.vertical_tolerance must be non-negative, got {}",
-                self.gestures.vertical_tolerance
-            ));
-        }
-
-        issues
-    }
-}
-
-impl StackSettings {
-    pub fn validate(&self) -> Vec<String> {
-        let mut issues = Vec::new();
-
-        if self.stack_offset < 0.0 {
-            issues.push(format!(
-                "stack_offset must be non-negative, got {}",
-                self.stack_offset
-            ));
-        }
-
-        issues
-    }
-}
-
-impl MasterStackSettings {
-    pub fn validate(&self) -> Vec<String> {
-        let mut issues = Vec::new();
-
-        if !(0.05..=0.95).contains(&self.master_ratio) {
-            issues.push(format!(
-                "master_stack.master_ratio must be between 0.05 and 0.95, got {}",
-                self.master_ratio
-            ));
-        }
-
-        if self.master_count == 0 {
-            issues.push("master_stack.master_count must be at least 1".to_string());
-        }
-
-        issues
+        self.gaps.validate()
     }
 }
 
@@ -1177,18 +811,6 @@ fn yes() -> bool {
     true
 }
 
-fn default_stack_offset() -> f64 {
-    40.0
-}
-
-pub fn default_stack_orientation() -> StackDefaultOrientation {
-    StackDefaultOrientation::Perpendicular
-}
-
-fn default_master_stack_new_window_placement() -> MasterStackNewWindowPlacement {
-    MasterStackNewWindowPlacement::Master
-}
-
 fn default_animation_duration() -> f64 {
     0.3
 }
@@ -1213,10 +835,6 @@ fn default_swipe_fingers() -> usize {
 fn default_distance_pct() -> f64 {
     0.08
 }
-fn default_overscroll_threshold() -> f64 {
-    0.625
-}
-
 fn default_stack_line_spacing() -> f64 {
     1.0
 }
@@ -1240,7 +858,7 @@ impl Config {
     }
 
     pub fn default() -> Config {
-        Self::parse(include_str!("../../rift.default.toml")).unwrap()
+        Self::parse(include_str!("../../lift.default.toml")).unwrap()
     }
 
     /// Save the current config to a file
@@ -1548,6 +1166,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lift_paths_use_lift_directories() {
+        let home = Path::new("/Users/example");
+        assert_eq!(data_dir_for(home), PathBuf::from("/Users/example/.lift"));
+        assert_eq!(
+            config_file_for(home),
+            PathBuf::from("/Users/example/.config/lift/config.toml")
+        );
+    }
+
+    #[test]
     fn display_migration_priority_defaults_to_empty() {
         assert!(VirtualWorkspaceSettings::default()
             .display_migration_priority
@@ -1577,6 +1205,14 @@ mod tests {
         let issues = settings.validate();
         assert!(issues.iter().any(|issue| issue.contains("empty display UUID")));
         assert!(issues.iter().any(|issue| issue.contains("duplicate display UUID")));
+    }
+
+    #[test]
+    fn layout_config_rejects_removed_modes_and_fields() {
+        assert!(toml::from_str::<LayoutSettings>("mode = \"bsp\"").is_err());
+        assert!(toml::from_str::<LayoutSettings>("stack = {}").is_err());
+        assert!(toml::from_str::<LayoutSettings>("scrolling = {}").is_err());
+        assert!(toml::from_str::<LayoutSettings>("master_stack = {}").is_err());
     }
 
     #[test]

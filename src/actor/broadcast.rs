@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::actor::app::WindowId;
-use crate::layout_engine::{LayoutKind, VirtualWorkspaceId};
+use crate::core::ids::WorkspaceId as VirtualWorkspaceId;
+use crate::model::layout::LayoutKind;
 use crate::sys::screen::SpaceId;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

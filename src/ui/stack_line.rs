@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2_app_kit::NSNormalWindowLevel;
@@ -98,15 +97,12 @@ pub struct GroupDisplayData {
     pub window_ids: Vec<WindowId>,
 }
 
-pub type SegmentClickCallback = Rc<dyn Fn(usize)>;
-
 struct IndicatorState {
     config: IndicatorConfig,
     group_data: Option<GroupDisplayData>,
     background_layer: Option<Retained<CALayer>>,
     separator_layers: Vec<Retained<CALayer>>,
     selected_layer: Option<Retained<CALayer>>,
-    click_callback: Option<SegmentClickCallback>,
     space_id: Option<SpaceId>,
     is_visible: bool,
 }
@@ -119,7 +115,6 @@ impl IndicatorState {
             background_layer: None,
             separator_layers: Vec::new(),
             selected_layer: None,
-            click_callback: None,
             space_id: None,
             is_visible: false,
         }
@@ -231,10 +226,6 @@ impl GroupIndicatorWindow {
     pub fn is_visible(&self) -> bool { self.state.borrow().is_visible }
 
     pub fn frame(&self) -> CGRect { *self.frame.borrow() }
-
-    pub fn set_click_callback(&self, callback: SegmentClickCallback) {
-        self.state.borrow_mut().click_callback = Some(callback);
-    }
 
     pub fn group_data(&self) -> Option<GroupDisplayData> { self.state.borrow().group_data.clone() }
 

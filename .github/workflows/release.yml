@@ -12,9 +12,9 @@ jobs:
     runs-on: macos-14
     env:
       CARGO_TERM_COLOR: always
-      ASSET_BASENAME: rift-universal-macos
+      ASSET_BASENAME: lift-universal-macos
       TAP_REPO: acsandmann/homebrew-tap
-      TAP_FILE_PATH: Formula/rift.rb
+      TAP_FILE_PATH: Formula/lift.rb
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -46,20 +46,20 @@ jobs:
           set -euxo pipefail
           mkdir -p dist
 
-          # Combine rift
+          # Combine lift
           lipo -create \
-            target/aarch64-apple-darwin/release/rift \
-            target/x86_64-apple-darwin/release/rift \
-            -output dist/rift
+            target/aarch64-apple-darwin/release/lift \
+            target/x86_64-apple-darwin/release/lift \
+            -output dist/lift
 
-          # Combine rift-cli
+          # Combine lift-cli
           lipo -create \
-            target/aarch64-apple-darwin/release/rift-cli \
-            target/x86_64-apple-darwin/release/rift-cli \
-            -output dist/rift-cli
+            target/aarch64-apple-darwin/release/lift-cli \
+            target/x86_64-apple-darwin/release/lift-cli \
+            -output dist/lift-cli
 
           # Optional: strip symbols to reduce size
-          strip -x dist/rift dist/rift-cli
+          strip -x dist/lift dist/lift-cli
 
       - name: Package tarball
         id: pkg
@@ -69,7 +69,7 @@ jobs:
           VERSION="${TAG#v}"            # strip leading 'v' if present
           ASSET="${ASSET_BASENAME}-${VERSION}.tar.gz"
 
-          tar -C dist -czf "${ASSET}" rift rift-cli
+          tar -C dist -czf "${ASSET}" lift lift-cli
           sha256=$(shasum -a 256 "${ASSET}" | awk '{print $1}')
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -117,5 +117,5 @@ jobs:
           git -C tap config user.name "github-actions[bot]"
           git -C tap config user.email "github-actions[bot]@users.noreply.github.com"
           git -C tap add "${TAP_FILE_PATH}"
-          git -C tap commit -m "chore(formula): rift ${{ steps.pkg.outputs.version }} (universal) - sha256 ${{ steps.pkg.outputs.sha256 }}"
+          git -C tap commit -m "chore(formula): lift ${{ steps.pkg.outputs.version }} (universal) - sha256 ${{ steps.pkg.outputs.sha256 }}"
           git -C tap push origin HEAD

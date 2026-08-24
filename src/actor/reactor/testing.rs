@@ -6,20 +6,29 @@ use crate::actor;
 use crate::actor::app::{AppThreadHandle, Request, WindowId};
 use crate::common::collections::BTreeMap;
 use crate::common::config::Config;
-use crate::layout_engine::LayoutEngine;
 use crate::sys::app::{AppInfo, WindowInfo, pid_t};
 use crate::sys::geometry::SameAs;
 use crate::sys::screen::SpaceId;
 use crate::sys::window_server::{WindowServerId, WindowServerInfo};
 
 impl Reactor {
-    pub fn new_for_test(layout: LayoutEngine) -> Reactor {
+    pub fn new_for_test() -> Reactor {
+        Self::new_for_test_with_broadcast().0
+    }
+
+    pub fn new_for_test_with_broadcast() -> (
+        Reactor,
+        crate::actor::broadcast::BroadcastReceiver,
+    ) {
         let mut config = Config::default();
         config.settings.default_disable = false;
         config.settings.animate = false;
         let record = Record::new_for_test(tempfile::NamedTempFile::new().unwrap());
-        let (broadcast_tx, _) = actor::channel();
-        Reactor::new(config, layout, record, broadcast_tx, None, false)
+        let (broadcast_tx, broadcast_rx) = actor::channel();
+        (
+            Reactor::new(config, record, broadcast_tx, None, false, None),
+            broadcast_rx,
+        )
     }
 
     pub fn handle_events(&mut self, events: Vec<Event>) {
@@ -219,11 +228,6 @@ impl Apps {
             }
             requests = self.requests();
         }
-    }
-
-    pub fn simulate_events(&mut self) -> Vec<Event> {
-        let requests = self.requests();
-        self.simulate_events_for_requests(requests)
     }
 
     pub fn simulate_events_for_requests(&mut self, requests: Vec<Request>) -> Vec<Event> {

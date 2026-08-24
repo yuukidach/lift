@@ -1,3 +1,28 @@
+use serde::{Deserialize, Serialize};
+
+use super::geometry::Size;
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowConstraints {
+    pub resizable: bool,
+    pub preferred_size: Size,
+    pub min_size: Option<Size>,
+    pub max_size: Option<Size>,
+}
+
+impl WindowConstraints {
+    pub(crate) fn for_axis(self, horizontal: bool) -> AxisConstraints {
+        let component = |size: Size| if horizontal { size.width } else { size.height };
+        AxisConstraints {
+            min: self.min_size.map(component).unwrap_or(0.0),
+            fixed: (!self.resizable).then(|| component(self.preferred_size)),
+            max: self.max_size.map(component).filter(|value| *value > 0.0),
+            weight: 1.0,
+            can_grow: self.resizable,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct AxisConstraints {
     pub min: f64,
@@ -39,10 +64,10 @@ pub(crate) fn solve_axis_lengths(items: &[AxisConstraints], usable: f64) -> Vec<
             if *v < mins[idx] {
                 *v = mins[idx];
             }
-            if let Some(max) = maxs[idx] {
-                if *v > max {
-                    *v = max;
-                }
+            if let Some(max) = maxs[idx]
+                && *v > max
+            {
+                *v = max;
             }
         }
     }
@@ -127,10 +152,10 @@ pub(crate) fn solve_axis_lengths(items: &[AxisConstraints], usable: f64) -> Vec<
     if remaining <= f64::EPSILON {
         let used: f64 = lengths.iter().sum();
         let drift = usable - used;
-        if drift.abs() > f64::EPSILON {
-            if let Some(idx) = (0..n).rfind(|&idx| lengths[idx] > 0.0) {
-                lengths[idx] = (lengths[idx] + drift).max(0.0);
-            }
+        if drift.abs() > f64::EPSILON
+            && let Some(idx) = (0..n).rfind(|&idx| lengths[idx] > 0.0)
+        {
+            lengths[idx] = (lengths[idx] + drift).max(0.0);
         }
     }
 

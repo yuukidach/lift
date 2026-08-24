@@ -1,5 +1,4 @@
 use std::collections::hash_map::Entry;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -13,8 +12,10 @@ use crate::actor::reactor::{Command, ReactorCommand};
 use crate::actor::{self, reactor};
 use crate::common::collections::HashMap;
 use crate::common::config::{Config, HorizontalPlacement, VerticalPlacement};
-use crate::layout_engine::LayoutKind;
-use crate::model::tree::NodeId;
+use crate::core::bsp::Axis;
+use crate::core::ids::GroupId;
+use crate::core::snapshot::CoreSnapshot;
+use crate::model::layout::LayoutKind;
 use crate::sys::screen::{CoordinateConverter, SpaceId};
 use crate::ui::stack_line::{
     GroupDisplayData, GroupIndicatorWindow, GroupKind, IndicatorConfig, point_hits_indicator_frame,
@@ -28,13 +29,75 @@ pub fn new_shared_hit_rects() -> SharedHitRects { Arc::new(ArcSwap::from_pointee
 
 #[derive(Debug, Clone)]
 pub struct GroupInfo {
-    pub node_id: NodeId,
+    pub group_id: GroupId,
     pub space_id: SpaceId,
     pub container_kind: LayoutKind,
     pub frame: CGRect,
     pub total_count: usize,
     pub selected_index: usize,
     pub window_ids: Vec<WindowId>,
+}
+
+fn project_display_groups(
+    snapshot: &CoreSnapshot,
+    display: &crate::core::snapshot::DisplaySnapshot,
+) -> Option<(SpaceId, Vec<GroupInfo>, bool)> {
+    let space = SpaceId::new(display.space?.0);
+    let workspace_id = display.active_workspace?;
+    let workspace = snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)?;
+    let workspace_has_fullscreen = workspace
+        .groups
+        .iter()
+        .flat_map(|group| group.windows.iter())
+        .chain(workspace.floating_windows.iter())
+        .any(|window| {
+            snapshot
+                .windows
+                .iter()
+                .find(|candidate| candidate.id == *window)
+                .is_some_and(|candidate| candidate.fullscreen)
+        });
+    let groups = workspace
+        .groups
+        .iter()
+        .filter(|group| group.windows.len() > 1)
+        .filter_map(|group| {
+            let selected = group.windows.get(group.selected).copied()?;
+            let frame = workspace.layout_frames.get(&selected).copied().or_else(|| {
+                snapshot
+                    .windows
+                    .iter()
+                    .find(|window| window.id == selected)
+                    .map(|window| window.frame)
+            })?;
+            Some(GroupInfo {
+                group_id: group.id,
+                space_id: space,
+                container_kind: match group.axis {
+                    Axis::Horizontal => LayoutKind::HorizontalStack,
+                    Axis::Vertical => LayoutKind::VerticalStack,
+                },
+                frame: CGRect::new(
+                    CGPoint::new(frame.origin.x, frame.origin.y),
+                    CGSize::new(frame.size.width, frame.size.height),
+                ),
+                total_count: group.windows.len(),
+                selected_index: group.selected,
+                window_ids: group
+                    .windows
+                    .iter()
+                    .map(|window| WindowId {
+                        pid: window.application.0,
+                        idx: window.index,
+                    })
+                    .collect(),
+            })
+        })
+        .collect();
+    Some((space, groups, workspace_has_fullscreen))
 }
 
 #[derive(Debug)]
@@ -47,6 +110,7 @@ pub enum Event {
     },
     ScreenParametersChanged(CoordinateConverter),
     ConfigUpdated(Config),
+    SnapshotUpdated(Arc<CoreSnapshot>),
     /// A click that the event tap already confirmed lands on a visible,
     /// non-occluded stack-line indicator.
     MouseDown(CGPoint),
@@ -64,7 +128,7 @@ pub struct StackLine {
     rx: Receiver,
     #[allow(dead_code)]
     mtm: MainThreadMarker,
-    indicators: HashMap<NodeId, GroupIndicatorWindow>,
+    indicators: HashMap<GroupId, GroupIndicatorWindow>,
     #[allow(dead_code)]
     reactor_tx: reactor::Sender,
     coordinate_converter: CoordinateConverter,
@@ -130,6 +194,7 @@ impl StackLine {
                 event,
                 Event::ConfigUpdated(_)
                     | Event::ScreenParametersChanged(_)
+                    | Event::SnapshotUpdated(_)
                     | Event::MouseDown(_)
                     | Event::MouseMoved { .. }
             )
@@ -158,12 +223,46 @@ impl StackLine {
                 self.handle_config_updated(config);
                 self.sync_shared_hit_rects();
             }
+            Event::SnapshotUpdated(snapshot) => {
+                self.handle_snapshot_updated(&snapshot);
+                self.sync_shared_hit_rects();
+            }
             Event::MouseDown(point) => {
                 self.handle_mouse_down(point);
             }
             Event::MouseMoved { point, hits_indicator } => {
                 self.handle_mouse_moved(point, hits_indicator);
             }
+        }
+    }
+
+    fn handle_snapshot_updated(&mut self, snapshot: &CoreSnapshot) {
+        let active_space_ids = snapshot
+            .displays
+            .iter()
+            .filter_map(|display| display.space.map(|space| SpaceId::new(space.0)))
+            .collect::<Vec<_>>();
+        if active_space_ids.is_empty() {
+            for indicator in self.indicators.values() {
+                let _ = indicator.clear();
+            }
+            self.indicators.clear();
+            self.group_sigs_by_space.clear();
+            return;
+        }
+
+        for display in &snapshot.displays {
+            let Some((space, groups, workspace_has_fullscreen)) =
+                project_display_groups(snapshot, display)
+            else {
+                continue;
+            };
+            self.handle_groups_updated(
+                active_space_ids.clone(),
+                space,
+                groups,
+                workspace_has_fullscreen,
+            );
         }
     }
 
@@ -177,7 +276,7 @@ impl StackLine {
         let active: crate::common::collections::HashSet<SpaceId> =
             active_space_ids.iter().copied().collect();
 
-        self.indicators.retain(|_node_id, indicator| match indicator.space_id() {
+        self.indicators.retain(|_group_id, indicator| match indicator.space_id() {
             Some(indicator_space_id) if !active.contains(&indicator_space_id) => {
                 if let Err(err) = indicator.clear() {
                     tracing::warn!(?err, "failed to clear stack line indicator for inactive space");
@@ -198,11 +297,11 @@ impl StackLine {
         if !groups_unchanged {
             let _ = self.group_sigs_by_space.insert(space_id, sigs);
 
-            let group_nodes: std::collections::HashSet<NodeId> =
-                groups.iter().map(|g| g.node_id).collect();
-            self.indicators.retain(|&node_id, indicator| match indicator.space_id() {
+            let group_ids: std::collections::HashSet<GroupId> =
+                groups.iter().map(|g| g.group_id).collect();
+            self.indicators.retain(|&group_id, indicator| match indicator.space_id() {
                 Some(indicator_space_id) if indicator_space_id == space_id => {
-                    if group_nodes.contains(&node_id) {
+                    if group_ids.contains(&group_id) {
                         true
                     } else {
                         if let Err(err) = indicator.clear() {
@@ -253,12 +352,12 @@ impl StackLine {
             self.group_sigs_by_space.clear();
         } else if new_enabled {
             let new_config = self.indicator_config();
-            for (node_id, indicator) in &self.indicators {
+            for (group_id, indicator) in &self.indicators {
                 if let Some(group_data) = indicator.group_data() {
                     if let Err(err) = indicator.update(new_config, group_data) {
                         tracing::warn!(
                             ?err,
-                            ?node_id,
+                            ?group_id,
                             "failed to update stack line indicator with new config"
                         );
                     }
@@ -276,7 +375,7 @@ impl StackLine {
 
         // The event tap already verified that this click lands on a visible,
         // non-occluded indicator. We only need to find the matching segment.
-        for (&node_id, indicator) in &self.indicators {
+        for (&group_id, indicator) in &self.indicators {
             if !indicator.is_visible() {
                 continue;
             }
@@ -290,11 +389,11 @@ impl StackLine {
                 CGPoint::new(screen_point.x - frame.origin.x, screen_point.y - frame.origin.y);
             if let Some(segment_index) = indicator.check_click(local_point) {
                 tracing::debug!(
-                    ?node_id,
+                    ?group_id,
                     segment_index,
                     "Detected click on stack line indicator segment"
                 );
-                self.handle_indicator_clicked(node_id, segment_index);
+                self.handle_indicator_clicked(group_id, segment_index);
                 return;
             }
         }
@@ -316,12 +415,12 @@ impl StackLine {
         }
     }
 
-    fn handle_indicator_clicked(&mut self, node_id: NodeId, segment_index: usize) {
-        if let Some(indicator) = self.indicators.get(&node_id) {
+    fn handle_indicator_clicked(&mut self, group_id: GroupId, segment_index: usize) {
+        if let Some(indicator) = self.indicators.get(&group_id) {
             let window_ids = indicator.window_ids();
             if let Some(window_id) = window_ids.get(segment_index) {
                 tracing::debug!(
-                    ?node_id,
+                    ?group_id,
                     segment_index,
                     ?window_id,
                     "Group indicator clicked - focusing window"
@@ -334,14 +433,14 @@ impl StackLine {
                 )));
             } else {
                 tracing::debug!(
-                    ?node_id,
+                    ?group_id,
                     segment_index,
                     "Group indicator clicked with invalid segment index"
                 );
             }
         } else {
             tracing::debug!(
-                ?node_id,
+                ?group_id,
                 segment_index,
                 "Group indicator clicked but not found in map"
             );
@@ -375,9 +474,9 @@ impl StackLine {
             config.spacing,
         );
 
-        let node_id = group.node_id;
+        let group_id = group.group_id;
 
-        if let Some(indicator) = self.indicators.get_mut(&node_id) {
+        if let Some(indicator) = self.indicators.get_mut(&group_id) {
             if let Err(err) = indicator.set_frame(indicator_frame) {
                 tracing::warn!(?err, "failed to set stack line indicator frame");
             }
@@ -389,9 +488,10 @@ impl StackLine {
             match GroupIndicatorWindow::new(indicator_frame, config) {
                 Ok(indicator) => {
                     indicator.set_space_id(group.space_id);
-                    let indicator =
-                        self.attach_indicator(node_id, indicator, config, group_data.clone());
-                    self.indicators.insert(node_id, indicator);
+                    if let Err(err) = indicator.update(config, group_data.clone()) {
+                        tracing::warn!(?err, "failed to initialize stack line indicator");
+                    }
+                    self.indicators.insert(group_id, indicator);
                 }
                 Err(err) => {
                     tracing::warn!(?err, "failed to create stack line indicator window");
@@ -405,29 +505,6 @@ impl StackLine {
             ?indicator_frame,
             "Positioned indicator"
         );
-    }
-
-    fn attach_indicator(
-        &mut self,
-        node_id: NodeId,
-        indicator: GroupIndicatorWindow,
-        config: IndicatorConfig,
-        group_data: GroupDisplayData,
-    ) -> GroupIndicatorWindow {
-        let self_ptr: *mut StackLine = self as *mut _;
-        indicator.set_click_callback(Rc::new(move |segment_index| {
-            unsafe {
-                // safety: `self_ptr` remains valid while the actor lives.
-                let this: &mut StackLine = &mut *self_ptr;
-                this.handle_indicator_clicked(node_id, segment_index);
-            }
-        }));
-
-        if let Err(err) = indicator.update(config, group_data.clone()) {
-            tracing::warn!(?err, "failed to initialize stack line indicator");
-        }
-
-        indicator
     }
 
     // TODO: We should just pass in the coordinates from the layout calculation.
@@ -462,7 +539,7 @@ impl StackLine {
 
 #[derive(Debug, Clone, PartialEq)]
 struct GroupSig {
-    node_id: NodeId,
+    group_id: GroupId,
     kind: LayoutKind,
     x_q2: i64,
     y_q2: i64,
@@ -477,7 +554,7 @@ impl GroupSig {
     fn from_group_info(g: &GroupInfo) -> GroupSig {
         let quant = |v: f64| -> i64 { (v * 2.0).round() as i64 };
         GroupSig {
-            node_id: g.node_id,
+            group_id: g.group_id,
             kind: g.container_kind,
             x_q2: quant(g.frame.origin.x),
             y_q2: quant(g.frame.origin.y),
@@ -492,13 +569,84 @@ impl GroupSig {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::num::NonZeroU32;
+
     use super::*;
+    use crate::core::geometry::Rect;
+    use crate::core::ids::{ApplicationId, DisplayId, SpaceId as CoreSpaceId, WorkspaceId, WorkspaceNumber};
+    use crate::core::snapshot::{DisplaySnapshot, GroupSnapshot, WindowSnapshot, WorkspaceSnapshot};
 
     #[test]
     fn test_group_info_fields() {
         assert_eq!(LayoutKind::VerticalStack.is_group(), true);
         assert_eq!(LayoutKind::HorizontalStack.is_group(), true);
         assert_eq!(LayoutKind::Horizontal.is_group(), false);
+    }
+
+    #[test]
+    fn snapshot_groups_project_stable_ids_orientation_and_preview_frames() {
+        let first = crate::core::ids::WindowId::new(
+            ApplicationId(12),
+            NonZeroU32::new(1).unwrap(),
+        );
+        let second = crate::core::ids::WindowId::new(
+            ApplicationId(12),
+            NonZeroU32::new(2).unwrap(),
+        );
+        let group_id = GroupId(55);
+        let workspace_id = WorkspaceId(7);
+        let display_id = DisplayId("main".into());
+        let frame = Rect::new(10.0, 20.0, 600.0, 400.0).unwrap();
+        let snapshot = CoreSnapshot {
+            displays: vec![DisplaySnapshot {
+                id: display_id.clone(),
+                frame,
+                space: Some(CoreSpaceId(9)),
+                is_active_context: true,
+                active_workspace: Some(workspace_id),
+                last_workspace: None,
+            }],
+            workspaces: vec![WorkspaceSnapshot {
+                id: workspace_id,
+                number: WorkspaceNumber::try_from(1).unwrap(),
+                name: "Main".into(),
+                display: display_id,
+                groups: vec![GroupSnapshot {
+                    id: group_id,
+                    axis: Axis::Vertical,
+                    windows: vec![first, second],
+                    selected: 1,
+                }],
+                floating_windows: Vec::new(),
+                last_tiled_window: None,
+                last_floating_window: None,
+                layout_frames: BTreeMap::from([(second, frame)]),
+            }],
+            windows: vec![WindowSnapshot {
+                id: second,
+                workspace: Some(workspace_id),
+                frame,
+                title: "Second".into(),
+                application_name: None,
+                platform_id: None,
+                floating: false,
+                minimized: false,
+                fullscreen: true,
+            }],
+            ..CoreSnapshot::default()
+        };
+
+        let (space, groups, fullscreen) =
+            project_display_groups(&snapshot, &snapshot.displays[0]).unwrap();
+
+        assert_eq!(space, SpaceId::new(9));
+        assert!(fullscreen);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].group_id, group_id);
+        assert_eq!(groups[0].container_kind, LayoutKind::VerticalStack);
+        assert_eq!(groups[0].selected_index, 1);
+        assert_eq!(groups[0].frame.size.width, 600.0);
     }
 
     #[test]

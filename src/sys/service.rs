@@ -11,7 +11,8 @@ use clap::Subcommand;
 use nix::unistd::getuid;
 
 const LAUNCHCTL_PATH: &str = "/bin/launchctl";
-const RIFT_PLIST: &str = "git.acsandmann.rift";
+// Keep the original identifier so existing macOS Accessibility grants remain valid.
+const SERVICE_LABEL: &str = "git.acsandmann.rift";
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {
@@ -51,13 +52,16 @@ fn plist_path() -> io::Result<PathBuf> {
     let home = env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "HOME not set"))?;
-    Ok(home.join("Library").join("LaunchAgents").join(format!("{RIFT_PLIST}.plist")))
+    Ok(home
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{SERVICE_LABEL}.plist")))
 }
 
-fn find_rift_executable_in_path(path_env: &std::ffi::OsStr) -> io::Result<Option<PathBuf>> {
+fn find_lift_executable_in_path(path_env: &std::ffi::OsStr) -> io::Result<Option<PathBuf>> {
     let mut current_dir: Option<PathBuf> = None;
     for dir in env::split_paths(path_env) {
-        let candidate = dir.join("rift");
+        let candidate = dir.join("lift");
         if candidate.is_file() {
             if candidate.is_absolute() {
                 return Ok(Some(candidate));
@@ -76,9 +80,9 @@ fn find_rift_executable_in_path(path_env: &std::ffi::OsStr) -> io::Result<Option
     Ok(None)
 }
 
-fn find_rift_executable() -> io::Result<PathBuf> {
+fn find_lift_executable() -> io::Result<PathBuf> {
     if let Some(path_env) = env::var_os("PATH") {
-        if let Some(candidate) = find_rift_executable_in_path(&path_env)? {
+        if let Some(candidate) = find_lift_executable_in_path(&path_env)? {
             return Ok(candidate);
         }
     }
@@ -89,7 +93,7 @@ fn find_rift_executable() -> io::Result<PathBuf> {
             "unable to retrieve path of current executable",
         )
     })?;
-    let sibling = exe_path.with_file_name("rift");
+    let sibling = exe_path.with_file_name("lift");
     if sibling.is_file() {
         return Ok(sibling);
     }
@@ -97,7 +101,7 @@ fn find_rift_executable() -> io::Result<PathBuf> {
     Err(io::Error::new(
         io::ErrorKind::NotFound,
         format!(
-            "rift agent executable not found: not present in $PATH and no sibling 'rift' next to current executable ('{}')",
+            "Lift agent executable not found: not present in $PATH and no sibling 'lift' next to current executable ('{}')",
             exe_path.display()
         ),
     ))
@@ -109,7 +113,7 @@ fn plist_contents() -> io::Result<String> {
     let path_env =
         env::var("PATH").map_err(|_| io::Error::new(io::ErrorKind::Other, "env PATH not set"))?;
 
-    let agent_exe = find_rift_executable()?;
+    let agent_exe = find_lift_executable()?;
     let exe_str = agent_exe
         .to_str()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "non-UTF8 executable path"))?;
@@ -142,9 +146,9 @@ fn plist_contents() -> io::Result<String> {
         <true/>
     </dict>
     <key>StandardOutPath</key>
-    <string>/tmp/rift_{user}.out.log</string>
+    <string>/tmp/lift_{user}.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/rift_{user}.err.log</string>
+    <string>/tmp/lift_{user}.err.log</string>
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>LimitLoadToSessionType</key>
@@ -154,7 +158,7 @@ fn plist_contents() -> io::Result<String> {
 </dict>
 </plist>
 "#,
-        name = RIFT_PLIST,
+        name = SERVICE_LABEL,
         exe = exe_str,
         path_env = path_env,
         user = user
@@ -211,7 +215,7 @@ fn spawn_launchctl(args: &[&str]) -> io::Result<()> {
 
 fn service_is_running() -> io::Result<bool> {
     let uid = getuid();
-    let service_target = format!("gui/{}/{}", uid, RIFT_PLIST);
+    let service_target = format!("gui/{}/{}", uid, SERVICE_LABEL);
     match run_launchctl(&["print", &service_target], true) {
         Ok(code) => Ok(code == 0),
         Err(_) => Ok(false),
@@ -262,7 +266,7 @@ pub fn service_uninstall() -> io::Result<()> {
     if service_is_running()? {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            "service is still running; stop it first with `rift service stop` before uninstalling",
+            "service is still running; stop it first with `lift service stop` before uninstalling",
         ));
     }
     fs::remove_file(plist_path)?;
@@ -285,7 +289,7 @@ pub fn service_start() -> io::Result<()> {
     }
 
     let uid = getuid();
-    let service_target = format!("gui/{}/{}", uid, RIFT_PLIST);
+    let service_target = format!("gui/{}/{}", uid, SERVICE_LABEL);
     let domain_target = format!("gui/{}", uid);
 
     let plist_changed = if env::var_os("USER").is_some() && env::var_os("PATH").is_some() {
@@ -350,7 +354,7 @@ pub fn service_restart() -> io::Result<()> {
     }
 
     let uid = getuid();
-    let service_target = format!("gui/{}/{}", uid, RIFT_PLIST);
+    let service_target = format!("gui/{}/{}", uid, SERVICE_LABEL);
     let code = run_launchctl(&["kickstart", "-k", &service_target], false)?;
     if code == 0 {
         Ok(())
@@ -372,7 +376,7 @@ pub fn service_stop() -> io::Result<()> {
     }
 
     let uid = getuid();
-    let service_target = format!("gui/{}/{}", uid, RIFT_PLIST);
+    let service_target = format!("gui/{}/{}", uid, SERVICE_LABEL);
     let domain_target = format!("gui/{}", uid);
 
     let is_bootstrapped = run_launchctl(&["print", &service_target], true).unwrap_or(1);
@@ -410,11 +414,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn find_rift_executable_prefers_stable_symlink_path() {
+    fn find_lift_executable_prefers_stable_symlink_path() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
 
-        let real = dir.join("rift-real");
+        let real = dir.join("lift-real");
         fs::write(&real, b"#!/bin/sh\nexit 0\n").unwrap();
         let mut perms = fs::metadata(&real).unwrap().permissions();
         #[cfg(unix)]
@@ -424,12 +428,12 @@ mod tests {
             fs::set_permissions(&real, perms).unwrap();
         }
 
-        let link = dir.join("rift");
+        let link = dir.join("lift");
         unix_fs::symlink(&real, &link).unwrap();
 
-        let found = find_rift_executable_in_path(dir.as_os_str())
+        let found = find_lift_executable_in_path(dir.as_os_str())
             .unwrap()
-            .expect("expected to find rift in PATH");
+            .expect("expected to find lift in PATH");
         assert_eq!(found, link);
     }
 }

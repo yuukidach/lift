@@ -3,7 +3,6 @@
 //! controls hotkey registration.
 
 use std::borrow::Cow;
-use std::path::PathBuf;
 
 use dispatchr::queue;
 use dispatchr::time::Time;
@@ -16,7 +15,7 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::actor::gesture_tap;
 use crate::common::config::WorkspaceSelector;
-use crate::model::virtual_workspace::GLOBAL_WORKSPACE_SLOTS;
+use crate::core::ids::WORKSPACE_SLOTS;
 use crate::sys::app::{NSRunningApplicationExt, pid_t};
 
 pub type Sender = actor::Sender<WmEvent>;
@@ -29,7 +28,7 @@ use crate::actor::{self, event_tap, mission_control, reactor};
 use crate::model::tx_store::WindowTxStore;
 use crate::sys::dispatch::DispatchExt;
 use crate::sys::screen::{CoordinateConverter, ScreenInfo, SpaceId};
-use crate::{layout_engine as layout, sys};
+use crate::{model::layout, sys};
 
 #[derive(Debug)]
 pub enum WmEvent {
@@ -117,7 +116,6 @@ impl WmCommand {
 }
 
 pub struct Config {
-    pub restore_file: PathBuf,
     pub config: crate::common::config::Config,
 }
 
@@ -336,7 +334,7 @@ impl WmController {
                     // SwitchToGlobalSlot so the focus jumps to whichever
                     // display owns the slot, falling back to per-space switch
                     // semantics if the slot has not been allocated yet.
-                    let cmd = if workspace_index < GLOBAL_WORKSPACE_SLOTS {
+                    let cmd = if workspace_index < WORKSPACE_SLOTS {
                         layout::LayoutCommand::SwitchToGlobalSlot(workspace_index)
                     } else {
                         layout::LayoutCommand::SwitchToWorkspace(workspace_index)

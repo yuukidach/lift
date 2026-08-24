@@ -92,12 +92,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ascii_tree"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca6c635b3aa665c649ad1415f1573c85957dfa47690ec27aebe7ec17efe3c643"
-
-[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -446,18 +440,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ef6b89e5b37196644d8796de5268852ff179b44e96276cf4290264843743bb7"
 
 [[package]]
-name = "enum_dispatch"
-version = "0.3.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
-dependencies = [
- "once_cell",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -767,6 +749,60 @@ checksum = "3d0b95e02c851351f877147b7deea7b1afb1df71b63aa5f8270716e0c5720616"
 dependencies = [
  "bitflags 2.11.0",
  "libc",
+]
+
+[[package]]
+name = "lift"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "bitflags 2.11.0",
+ "clap",
+ "continue",
+ "crossbeam-channel",
+ "dashmap",
+ "dirs",
+ "dispatchr",
+ "embed_plist",
+ "futures-task",
+ "nix",
+ "notify",
+ "notify-debouncer-mini",
+ "num_enum",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-application-services",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-text",
+ "objc2-foundation",
+ "objc2-quartz-core",
+ "once_cell",
+ "parking_lot",
+ "pretty_assertions",
+ "regex",
+ "ron",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "sigpipe",
+ "static_assertions",
+ "strum",
+ "strum_macros",
+ "tempfile",
+ "test-log",
+ "test_bin",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-timing",
+ "tracing-tree",
 ]
 
 [[package]]
@@ -1288,63 +1324,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 
 [[package]]
-name = "rift-wm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arc-swap",
- "ascii_tree",
- "bitflags 2.11.0",
- "clap",
- "continue",
- "crossbeam-channel",
- "dashmap",
- "dirs",
- "dispatchr",
- "embed_plist",
- "enum_dispatch",
- "futures-task",
- "nix",
- "notify",
- "notify-debouncer-mini",
- "num_enum",
- "objc2",
- "objc2-app-kit",
- "objc2-application-services",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-text",
- "objc2-foundation",
- "objc2-quartz-core",
- "once_cell",
- "parking_lot",
- "pretty_assertions",
- "regex",
- "ron",
- "rustc-hash",
- "serde",
- "serde_json",
- "serde_with",
- "sigpipe",
- "slotmap",
- "static_assertions",
- "strum",
- "strum_macros",
- "tempfile",
- "test-log",
- "test_bin",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "toml",
- "tracing",
- "tracing-subscriber",
- "tracing-timing",
- "tracing-tree",
-]
-
-[[package]]
 name = "ron"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1545,16 +1524,6 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
-
-[[package]]
-name = "slotmap"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
-dependencies = [
- "serde",
- "version_check",
-]
 
 [[package]]
 name = "smallvec"
@@ -1916,12 +1885,6 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
-name = "version_check"
-version = "0.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "walkdir"

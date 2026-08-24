@@ -20,7 +20,7 @@ const MACH_BS_NAME_FMT_PREFIX: &str = "git.";
 static G_NAME: &str = "acsandmann.rift";
 
 fn bs_name() -> CString {
-    if let Ok(name) = std::env::var("RIFT_BS_NAME") {
+    if let Ok(name) = std::env::var("LIFT_BS_NAME") {
         return CString::new(name).unwrap();
     }
     CString::new(format!("{}{}", MACH_BS_NAME_FMT_PREFIX, G_NAME)).unwrap()

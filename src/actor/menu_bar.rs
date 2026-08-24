@@ -8,8 +8,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::actor::{config, reactor};
 use crate::common::config::{Config, ConfigCommand};
-use crate::layout_engine::LayoutCommand;
-use crate::model::VirtualWorkspaceId;
+use crate::model::layout::LayoutCommand;
 use crate::model::server::{WindowData, WorkspaceData};
 use crate::sys::screen::SpaceId;
 use crate::ui::menu_bar::{MenuAction, MenuIcon};
@@ -21,7 +20,7 @@ pub struct Update {
     pub active_space_is_activated: bool,
     pub workspaces: Vec<WorkspaceData>,
     pub active_workspace_idx: Option<u64>,
-    pub active_workspace: Option<VirtualWorkspaceId>,
+    pub active_workspace: Option<crate::core::ids::WorkspaceId>,
     pub windows: Vec<WindowData>,
 }
 
@@ -190,12 +189,6 @@ impl Menu {
 
     fn handle_action(&mut self, action: MenuAction) {
         match action {
-            MenuAction::SetLayout(mode) => {
-                self.send_layout_command(LayoutCommand::SetWorkspaceLayout {
-                    workspace: None,
-                    mode: mode.runtime(),
-                })
-            }
             MenuAction::NextWorkspace => {
                 self.send_layout_command(LayoutCommand::NextWorkspace(None));
             }
@@ -211,10 +204,10 @@ impl Menu {
                 )));
             }
             MenuAction::OpenGitHub => {
-                Self::open_path_or_url("https://github.com/acsandmann/rift");
+                Self::open_path_or_url("https://github.com/yuukidach/rift");
             }
             MenuAction::OpenDocumentation => {
-                Self::open_path_or_url("https://github.com/acsandmann/rift#readme");
+                Self::open_path_or_url("https://github.com/yuukidach/rift#readme");
             }
             MenuAction::OpenMatrix => {
                 Self::open_path_or_url("https://matrix.to/#/#rift:matrix.org");
@@ -223,7 +216,7 @@ impl Menu {
                 Self::open_path_or_url(common::config::config_file());
             }
             MenuAction::ReloadConfig => self.reload_config(),
-            MenuAction::QuitRift => {
+            MenuAction::QuitLift => {
                 self.reactor_tx.send(reactor::Event::Command(reactor::Command::Reactor(
                     reactor::ReactorCommand::SaveAndExit,
                 )));
@@ -332,8 +325,7 @@ fn workspace_sig(ws: &WorkspaceData) -> u64 {
     let mut x = (ws.index as u64).rotate_left(3)
         ^ (ws.window_count as u64).rotate_left(19)
         ^ hash_str(&ws.id).rotate_left(11)
-        ^ hash_str(&ws.name).rotate_left(17)
-        ^ hash_str(&ws.layout_mode).rotate_left(23);
+        ^ hash_str(&ws.name).rotate_left(17);
     if ws.is_active {
         x ^= 0xD6E8_FEB8_6659_FD93u64;
     }
@@ -370,13 +362,12 @@ mod tests {
     use super::sig;
     use crate::model::server::WorkspaceData;
 
-    fn workspace(layout_mode: &str) -> WorkspaceData {
+    fn workspace(name: &str) -> WorkspaceData {
         WorkspaceData {
-            id: "VirtualWorkspaceId(1v1)".to_string(),
+            id: "00000001".to_string(),
             index: 0,
             number: 0,
-            name: "main".to_string(),
-            layout_mode: layout_mode.to_string(),
+            name: name.to_string(),
             is_active: true,
             window_count: 1,
             windows: Vec::new(),
@@ -384,9 +375,9 @@ mod tests {
     }
 
     #[test]
-    fn signature_changes_when_workspace_layout_mode_changes() {
-        let base = vec![workspace("bsp")];
-        let changed = vec![workspace("bsp-alt")];
+    fn signature_changes_when_workspace_name_changes() {
+        let base = vec![workspace("main")];
+        let changed = vec![workspace("coding")];
 
         let before = sig(1, true, Some(0), &base, &[]);
         let after = sig(1, true, Some(0), &changed, &[]);

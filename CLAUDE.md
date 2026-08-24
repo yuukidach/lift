@@ -1,6 +1,7 @@
-# rift — Claude Code Working Notes
+# Lift — repository working notes
 
-This repo is a Rust macOS tiling window manager (personal fork of `acsandmann/rift`).
+This repo is Lift, a focused Rust/macOS tiling window manager derived from
+`acsandmann/rift`.
 `main` is trunk; the `upstream` remote is reference-only.
 
 ## Build and reload
@@ -9,15 +10,19 @@ Changes don't take effect in the running WM until you rebuild AND kickstart the
 launchd service:
 
 ```bash
-/Users/dash/bin/rift-build                                    # cargo build --release + install + codesign
-launchctl kickstart -k gui/$(id -u)/git.acsandmann.rift       # reload service
-launchctl list | grep -i rift                                 # confirm PID changed
+cargo build --release --bin lift --bin lift-cli
+install -m 0755 target/release/lift /Users/dash/bin/lift
+install -m 0755 target/release/lift-cli /Users/dash/bin/lift-cli
+codesign --force --sign - --identifier git.acsandmann.rift /Users/dash/bin/lift
+/Users/dash/bin/lift service install
+/Users/dash/bin/lift service restart
+launchctl print gui/$(id -u)/git.acsandmann.rift
 ```
 
-`rift-build` may print `Bootstrap failed: 5: Input/output error` when the
-service was already loaded — benign. The codesign identifier
-`git.acsandmann.rift` is intentional (macOS TCC accessibility permissions
-persist across rebuilds); do not rename it.
+The old `/Users/dash/bin/rift-build` helper targets the removed `rift` binary
+and must not be used for Lift. The codesign and launchd identifier
+`git.acsandmann.rift` is intentional so macOS TCC Accessibility permission
+survives the rename; do not rename it.
 
 ## Tests and checks
 
@@ -26,7 +31,9 @@ cargo test --lib -- --test-threads=1                          # serial; some tes
 cargo check                                                   # type/borrow check
 ```
 
-Baseline as of Phase 4 completion: `240 passed; 0 failed; 1 ignored`.
+Phase 2 baseline (2026-08-25): the all-targets serial test run passes 240
+library tests and 2 integration tests. Record a fresh count after each migration
+phase; do not assume this baseline still applies after adding or removing tests.
 
 ## Workspace data model (post-Phase-4 redesign — 2026-05)
 

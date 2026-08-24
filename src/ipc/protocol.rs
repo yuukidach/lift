@@ -4,7 +4,7 @@ use serde_json::Value;
 #[non_exhaustive]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
-pub enum RiftRequest {
+pub enum LiftRequest {
     GetWorkspaces {
         space_id: Option<u64>,
         display_uuid: Option<String>,
@@ -21,7 +21,7 @@ pub enum RiftRequest {
     },
     GetWorkspaceLayouts {
         space_id: Option<u64>,
-        workspace_id: Option<usize>,
+        workspace_id: Option<u64>,
     },
     GetApplications,
     GetMetrics,
@@ -50,13 +50,13 @@ pub enum RiftRequest {
 #[non_exhaustive]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
-pub enum RiftResponse {
+pub enum LiftResponse {
     Success { data: Value },
     Error { error: Value },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum RiftCommand {
+pub enum LiftCommand {
     Reactor(crate::actor::reactor::Command),
     Config(crate::common::config::ConfigCommand),
 }

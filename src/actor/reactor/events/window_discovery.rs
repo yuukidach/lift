@@ -1,11 +1,9 @@
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 use super::window::WindowEventHandler;
 use crate::actor::app::{AppInfo, WindowId, WindowInfo, pid_t};
 use crate::actor::reactor::{Event, LayoutEvent, Reactor, WindowFilter, WindowState, utils};
-use crate::common::collections::{BTreeMap, HashSet};
-use crate::model::virtual_workspace::{AppRuleAssignment, AppRuleResult, WorkspaceError};
-use crate::sys::screen::SpaceId;
+use crate::common::collections::HashSet;
 use crate::sys::window_server::{self, WindowServerId};
 
 /// Handler for window discovery events, responsible for processing newly discovered windows
@@ -70,28 +68,6 @@ impl WindowDiscoveryHandler {
                 is_minimized = info.is_minimized,
                 "Window minimize state reconciled from discovery"
             );
-        }
-    }
-
-    fn should_emit_window_for_space(reactor: &Reactor, space: SpaceId, wid: WindowId) -> bool {
-        let engine = &reactor.layout_manager.layout_engine;
-        let vwm = engine.virtual_workspace_manager();
-        let Some(assigned_workspace) = vwm.workspace_for_window(wid) else {
-            // No workspace assigned yet — emit on any space (lazy assignment).
-            return true;
-        };
-        // If the window's workspace lives on a different space, this is a
-        // cross-space move and we should re-emit it on the new space so the
-        // assignment pre-pass can migrate it. (Pre-Task-4.3 this matched the
-        // implicit (None, _) arm of the old per-space-keyed lookup.)
-        if vwm.workspace_space(assigned_workspace) != Some(space) {
-            return true;
-        }
-        // The window's workspace is on this space — only emit if it's the
-        // active workspace.
-        match engine.active_workspace(space) {
-            Some(active) => assigned_workspace == active,
-            None => true,
         }
     }
 
@@ -361,222 +337,34 @@ impl WindowDiscoveryHandler {
     }
 
     /// Send layout events for discovered windows.
-    fn assign_discovered_window_to_space(
-        reactor: &mut Reactor,
-        wid: WindowId,
-        space: SpaceId,
-        app_info: &Option<AppInfo>,
-    ) -> Result<AppRuleResult, WorkspaceError> {
-        if let Some(target) = reactor.recent_workspace_target_for(wid) {
-            let was_floating = reactor.layout_manager.layout_engine.is_window_floating(wid);
-            let (assigned, destroyed) = reactor
-                .layout_manager
-                .layout_engine
-                .virtual_workspace_manager_mut()
-                .assign_window_to_workspace(target.space, wid, target.workspace_id);
-            reactor
-                .layout_manager
-                .layout_engine
-                .drain_destroyed_workspace_layouts(destroyed);
-            if assigned {
-                return Ok(AppRuleResult::Managed(AppRuleAssignment {
-                    workspace_id: target.workspace_id,
-                    floating: was_floating,
-                    prev_rule_decision: false,
-                }));
-            }
-        }
-
-        let Some(window) = reactor.window_manager.window(wid) else {
-            return Err(WorkspaceError::AssignmentFailed);
-        };
-        let title = window.info.title.clone();
-        let ax_role = window.info.ax_role.clone();
-        let ax_subrole = window.info.ax_subrole.clone();
-
-        let result = reactor.layout_manager.layout_engine.assign_window_with_app_info(
-            wid,
-            space,
-            app_info.as_ref().and_then(|a| a.bundle_id.as_deref()),
-            app_info.as_ref().and_then(|a| a.localized_name.as_deref()),
-            Some(title.as_str()),
-            ax_role.as_deref(),
-            ax_subrole.as_deref(),
-        );
-
-        // Drop layout-engine mirrors for any workspaces VWM destroyed
-        // during the assign.
-        match result {
-            Ok((rule_result, destroyed)) => {
-                reactor
-                    .layout_manager
-                    .layout_engine
-                    .drain_destroyed_workspace_layouts(destroyed);
-                Ok(rule_result)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    fn apply_assignment_result(
-        reactor: &mut Reactor,
-        wid: WindowId,
-        assign_result: Result<AppRuleResult, WorkspaceError>,
-    ) {
-        match assign_result {
-            Ok(AppRuleResult::Managed(_)) => {
-                if let Some(window) = reactor.window_manager.window_mut(wid) {
-                    window.ignore_app_rule = false;
-                }
-            }
-            Ok(AppRuleResult::Unmanaged) => {
-                if let Some(window) = reactor.window_manager.window_mut(wid) {
-                    window.ignore_app_rule = true;
-                }
-                let needs_removal = {
-                    let engine = &reactor.layout_manager.layout_engine;
-                    engine.virtual_workspace_manager().workspace_for_window(wid).is_some()
-                        || engine.is_window_floating(wid)
-                };
-                if needs_removal {
-                    reactor.send_layout_event(LayoutEvent::WindowRemoved(wid));
-                }
-            }
-            Err(e) => warn!("Failed to assign window {:?} to workspace: {:?}", wid, e),
-        }
-    }
-
     fn emit_layout_events(
         reactor: &mut Reactor,
         pid: pid_t,
-        known_visible: &[WindowId],
+        _known_visible: &[WindowId],
         app_info: &Option<AppInfo>,
     ) {
-        if !reactor.window_manager.iter_windows().any(|(wid, _)| wid.pid == pid) {
+        let Some(app_info) = app_info
+            .clone()
+            .or_else(|| reactor.app_manager.apps.get(&pid).map(|app| app.info.clone()))
+        else {
             return;
-        }
-
-        let mut app_windows: BTreeMap<SpaceId, Vec<WindowId>> = BTreeMap::new();
-        let mut included: HashSet<WindowId> = HashSet::default();
-
-        // Collect windows from visible window server IDs
-        for wid in reactor
+        };
+        let windows = reactor
             .window_manager
-            .iter_visible_window_server_ids()
-            .filter_map(|wsid| reactor.window_manager.tracked_window_id(wsid))
-            .filter(|wid| wid.pid == pid)
-            .filter(|wid| reactor.window_is_standard(*wid))
-        {
-            let Some(space) = reactor.intended_space_for_window_id(wid) else {
-                continue;
-            };
-            if !Self::should_emit_window_for_space(reactor, space, wid) {
-                continue;
-            }
-            included.insert(wid);
-            app_windows.entry(space).or_default().push(wid);
-        }
-
-        // If we have no visible WSIDs (e.g., SpaceChanged provided empty ws_info),
-        // fall back to the app-reported known_visible list for this pid.
-        for wid in known_visible.iter().copied().filter(|wid| wid.pid == pid) {
-            if included.contains(&wid) || !reactor.window_is_standard(wid) {
-                continue;
-            }
-            let Some(state) = reactor.window_manager.window(wid) else {
-                continue;
-            };
-            let Some(space) = reactor.intended_space_for_window_state(wid, state) else {
-                continue;
-            };
-            if !Self::should_emit_window_for_space(reactor, space, wid) {
-                continue;
-            }
-            included.insert(wid);
-            app_windows.entry(space).or_default().push(wid);
-        }
-
-        // Pre-pass: update the VWM for all windows definitively assigned to a space before
-        // processing any per-space layout events. Without this, the ordering of space events
-        // determines whether a window removed from one space's tree gets re-added by the
-        // loop in sync_tiled_windows_for_app (which reads the VWM state at event time).
-        // By updating the VWM upfront, the guard logic in sync_tiled_windows_for_app can
-        // correctly identify cross-space moves regardless of event ordering.
-        let mut assignment_results = BTreeMap::new();
-        for (&space, windows_for_space) in &app_windows {
-            if !reactor.is_space_active(space) {
-                continue;
-            }
-            for &wid in windows_for_space {
-                assignment_results.insert(
-                    (space, wid),
-                    Self::assign_discovered_window_to_space(reactor, wid, space, app_info),
-                );
-            }
-        }
-
-        let screens = reactor.space_manager.screens.clone();
-        for screen in screens {
-            let Some(space) = screen.space else {
-                continue;
-            };
-            if !reactor.is_space_active(space) {
-                continue;
-            }
-            let windows_for_space = app_windows.remove(&space).unwrap_or_default();
-
-            if !windows_for_space.is_empty() {
-                for &wid in &windows_for_space {
-                    let assign_result =
-                        assignment_results.remove(&(space, wid)).unwrap_or_else(|| {
-                            Self::assign_discovered_window_to_space(reactor, wid, space, app_info)
-                        });
-                    Self::apply_assignment_result(reactor, wid, assign_result);
-                }
-            }
-
-            let windows_with_titles: Vec<(
-                WindowId,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                bool,
-                objc2_core_foundation::CGSize,
-                Option<objc2_core_foundation::CGSize>,
-                Option<objc2_core_foundation::CGSize>,
-            )> = windows_for_space
-                .iter()
-                .filter_map(|&wid| {
-                    let window = reactor.window_manager.window(wid)?;
-                    if !window.matches_filter(WindowFilter::EffectivelyManageable) {
-                        return None;
-                    }
-                    Some((
-                        wid,
-                        Some(window.info.title.clone()),
-                        window.info.ax_role.clone(),
-                        window.info.ax_subrole.clone(),
-                        window.info.is_resizable,
-                        window.frame_monotonic.size,
-                        window.info.min_size,
-                        window.info.max_size,
-                    ))
-                })
-                .collect();
-
-            reactor.send_layout_event(LayoutEvent::WindowsOnScreenUpdated(
-                space,
-                pid,
-                windows_with_titles.clone(),
-                app_info.clone(),
-            ));
-        }
+            .iter_windows()
+            .filter(|(window, state)| {
+                window.pid == pid && state.matches_filter(WindowFilter::Manageable)
+            })
+            .map(|(window, _)| window)
+            .collect::<Vec<_>>();
+        reactor.process_windows_for_app_rules(pid, windows, app_info);
 
         if let Some(main_window) = reactor.main_window()
             && let Some(space) = reactor.main_window_space()
             && reactor.is_space_active(space)
         {
-            reactor.send_layout_event(LayoutEvent::WindowFocused(space, main_window));
+            reactor.send_layout_event(LayoutEvent::WindowFocused(main_window));
         }
     }
+
 }

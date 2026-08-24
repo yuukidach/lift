@@ -4,9 +4,9 @@ use tracing::{debug, trace, warn};
 use crate::actor::app::WindowId;
 use crate::actor::reactor::events::drag::DragEventHandler;
 use crate::actor::reactor::{
-    DragState, Quiet, Reactor, Requested, TransactionId, WindowFilter, WindowState, utils,
+    DragState, LayoutEvent, Quiet, Reactor, Requested, TransactionId, WindowFilter, WindowState,
+    utils,
 };
-use crate::layout_engine::LayoutEvent;
 use crate::sys::app::WindowInfo as Window;
 use crate::sys::event::{MouseState, get_mouse_state};
 use crate::sys::geometry::SameAs;
@@ -102,26 +102,21 @@ impl WindowEventHandler {
         } else {
             debug!(?wid, "Received WindowDestroyed for unknown window - ignoring");
         }
-        reactor.send_layout_event(LayoutEvent::WindowRemoved(wid));
+        reactor.send_layout_event(LayoutEvent::Changed);
         reactor.window_manager.remove_window(wid);
 
-        if let DragState::PendingSwap { session, target } = &reactor.drag_manager.drag_state {
-            if session.window == wid || *target == wid {
-                trace!(
-                    ?wid,
-                    "Clearing pending drag swap because a participant window was destroyed"
-                );
-                reactor.drag_manager.drag_state = DragState::Inactive;
-            }
-        }
-
-        let dragged_window = reactor.drag_manager.dragged();
-        let last_target = reactor.drag_manager.last_target();
-        if dragged_window == Some(wid) || last_target == Some(wid) {
-            reactor.drag_manager.reset();
-            if dragged_window == Some(wid) {
-                reactor.drag_manager.drag_state = DragState::Inactive;
-            }
+        let drag = reactor.core_drag_snapshot();
+        let to_actor = |window: crate::core::ids::WindowId| {
+            WindowId::new(window.application.0, window.index.get())
+        };
+        if drag.window.map(to_actor) == Some(wid) || drag.target.map(to_actor) == Some(wid) {
+            trace!(?wid, "Clearing drag swap because a participant window was destroyed");
+            let _ = reactor.transition_core_input(crate::core::input::Input::Observation(
+                crate::core::input::Observation::Drag(
+                    crate::core::interaction::DragObservation::Cancelled,
+                ),
+            ));
+            reactor.drag_manager.drag_state = DragState::Inactive;
         }
 
         if reactor.drag_manager.skip_layout_for_window == Some(wid) {
@@ -140,7 +135,7 @@ impl WindowEventHandler {
             if let Some(ws_id) = window.info.sys_id {
                 reactor.window_manager.mark_window_hidden(ws_id);
             }
-            reactor.send_layout_event(LayoutEvent::WindowRemoved(wid));
+            reactor.send_layout_event(LayoutEvent::Changed);
         } else {
             debug!(?wid, "Received WindowMinimized for unknown window - ignoring");
         }
@@ -229,14 +224,14 @@ impl WindowEventHandler {
                 .unwrap_or_default();
 
             let mut has_pending_request = pending_target.is_some();
-            let mut triggered_by_rift =
+            let mut triggered_by_lift =
                 has_pending_request && last_seen.is_some_and(|seen| seen == last_sent_txid);
 
-            if effective_mouse_state == Some(MouseState::Down) && triggered_by_rift {
+            if effective_mouse_state == Some(MouseState::Down) && triggered_by_lift {
                 if let Some((wsid, _)) = pending_target {
                     reactor.transaction_manager.clear_target_for_window(wsid);
                 }
-                triggered_by_rift = false;
+                triggered_by_lift = false;
                 has_pending_request = false;
             }
 
@@ -245,7 +240,7 @@ impl WindowEventHandler {
                 return false;
             }
 
-            if triggered_by_rift {
+            if triggered_by_lift {
                 let Some(window) = reactor.window_manager.window_mut(wid) else {
                     return false;
                 };
@@ -253,7 +248,7 @@ impl WindowEventHandler {
                 if let Some((wsid, target)) = pending_target {
                     if new_frame.same_as(target) {
                         if !window.frame_monotonic.same_as(new_frame) {
-                            debug!(?wid, ?new_frame, "Final frame matches Rift request");
+                            debug!(?wid, ?new_frame, "Final frame matches Lift request");
                             window.frame_monotonic = new_frame;
                         }
                         reactor.transaction_manager.clear_target_for_window(wsid);
@@ -262,14 +257,14 @@ impl WindowEventHandler {
                             ?wid,
                             ?new_frame,
                             ?target,
-                            "Skipping intermediate frame from Rift request"
+                            "Skipping intermediate frame from Lift request"
                         );
                     }
                 } else if !window.frame_monotonic.same_as(new_frame) {
                     debug!(
                         ?wid,
                         ?new_frame,
-                        "Rift frame event missing tx record; updating state"
+                        "Lift frame event missing tx record; updating state"
                     );
                     window.frame_monotonic = new_frame;
                     if let Some(wsid) = window.info.sys_id {
@@ -328,42 +323,19 @@ impl WindowEventHandler {
                 let is_resize = !old_frame.size.same_as(new_frame.size);
                 if is_resize {
                     if active_space_for_window(reactor, &new_frame, server_id).is_some() {
-                        let screens = reactor
-                            .space_manager
-                            .screens
-                            .iter()
-                            .filter_map(|screen| {
-                                let display_uuid = screen.display_uuid_owned();
-                                Some((screen.space?, screen.frame, display_uuid))
-                            })
-                            .collect::<Vec<_>>();
-                        reactor.send_layout_event(LayoutEvent::WindowResized {
-                            wid,
-                            old_frame,
-                            new_frame,
-                            screens,
-                        });
+                        reactor.send_layout_event(LayoutEvent::Changed);
                     }
                 } else {
                     reactor.maybe_swap_on_drag(wid, new_frame);
                 }
             } else {
                 if old_space != new_space {
-                    reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(wid));
+                    reactor.send_layout_event(LayoutEvent::Changed);
                     if let Some(space) = new_space {
                         if reactor.is_space_active(space) {
-                            if let Some(active_ws) =
-                                reactor.layout_manager.layout_engine.active_workspace(space)
+                            if let Some(active_ws) = reactor.active_workspace_for_space(space)
                             {
-                                let (assigned, destroyed) = reactor
-                                    .layout_manager
-                                    .layout_engine
-                                    .virtual_workspace_manager_mut()
-                                    .assign_window_to_workspace(space, wid, active_ws);
-                                reactor
-                                    .layout_manager
-                                    .layout_engine
-                                    .drain_destroyed_workspace_layouts(destroyed);
+                                let assigned = reactor.move_core_window_to_space(wid, space).is_ok();
                                 if !assigned {
                                     warn!(
                                         "Failed to assign window {:?} to workspace {:?}",
@@ -382,22 +354,7 @@ impl WindowEventHandler {
                 } else if !old_frame.size.same_as(new_frame.size) {
                     if let Some(space) = old_space {
                         if reactor.is_space_active(space) {
-                            let screens = reactor
-                                .space_manager
-                                .screens
-                                .iter()
-                                .filter_map(|screen| {
-                                    let space = screen.space?;
-                                    let display_uuid = screen.display_uuid_owned();
-                                    Some((space, screen.frame, display_uuid))
-                                })
-                                .collect::<Vec<_>>();
-                            reactor.send_layout_event(LayoutEvent::WindowResized {
-                                wid,
-                                old_frame,
-                                new_frame,
-                                screens,
-                            });
+                            reactor.send_layout_event(LayoutEvent::Changed);
                             return true;
                         }
                     }
@@ -428,7 +385,7 @@ impl WindowEventHandler {
         };
         let should_sync = reactor.should_raise_on_mouse_over(wid);
         let is_main = reactor.main_window() == Some(wid);
-        let needs_sync = reactor.layout_manager.layout_engine.focused_window() != Some(wid);
+        let needs_sync = reactor.focused_window_for_command() != Some(wid);
 
         if !should_sync || (is_main && !needs_sync) {
             return;
@@ -439,10 +396,10 @@ impl WindowEventHandler {
         }
 
         if let Some(window) = reactor.window_manager.window(wid) {
-            if let Some(space) =
-                active_space_for_window(reactor, &window.frame_monotonic, window.info.sys_id)
+            if active_space_for_window(reactor, &window.frame_monotonic, window.info.sys_id)
+                .is_some()
             {
-                reactor.send_layout_event(LayoutEvent::WindowFocused(space, wid));
+                reactor.send_layout_event(LayoutEvent::WindowFocused(wid));
             }
         }
     }
@@ -482,7 +439,7 @@ fn handle_mouse_up_if_needed(reactor: &mut Reactor, mouse_state: Option<MouseSta
     if mouse_state == Some(MouseState::Up)
         && (matches!(
             reactor.drag_manager.drag_state,
-            DragState::Active { .. } | DragState::PendingSwap { .. }
+            DragState::Active { .. }
         ) || reactor.drag_manager.skip_layout_for_window.is_some())
     {
         DragEventHandler::handle_mouse_up(reactor);

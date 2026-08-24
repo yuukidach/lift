@@ -147,7 +147,7 @@ impl AnimationManager {
         is_resize: bool,
         skip_wid: Option<WindowId>,
     ) -> bool {
-        let Some(active_ws) = reactor.layout_manager.layout_engine.active_workspace(space) else {
+        let Some(active_ws) = reactor.active_workspace_for_space(space) else {
             return false;
         };
         let mut anim = Animation::new();
@@ -202,12 +202,7 @@ impl AnimationManager {
                 continue;
             };
 
-            let is_active = reactor
-                .layout_manager
-                .layout_engine
-                .virtual_workspace_manager()
-                .workspace_for_window(wid)
-                .map_or(false, |ws| ws == active_ws);
+            let is_active = reactor.workspace_for_window(wid) == Some(active_ws);
 
             if is_active {
                 trace!(?wid, ?current_frame, ?target_frame, "Animating visible window");
@@ -242,11 +237,7 @@ impl AnimationManager {
 
         if animated_count > 0 {
             let low_power = power::is_low_power_mode_enabled();
-            let layout_animate = reactor
-                .layout_manager
-                .layout_engine
-                .layout_specific_animate_settings(space)
-                .unwrap_or(reactor.config.settings.animate);
+            let layout_animate = reactor.config.settings.animate;
             let skip_anim = is_resize || !layout_animate || low_power;
 
             if let Some(tx) = &reactor.animation_tx {
@@ -284,6 +275,7 @@ impl AnimationManager {
                 continue;
             }
 
+            let is_hidden = !reactor.is_window_in_active_workspace(space, wid);
             let registry = reactor.window_manager.as_mut();
             let Some(window) = registry.window_mut(wid) else {
                 debug!(?wid, "Skipping layout - window no longer exists");
@@ -305,8 +297,6 @@ impl AnimationManager {
                 }
             }
             any_frame_changed = true;
-            let is_hidden =
-                !reactor.layout_manager.layout_engine.is_window_in_active_workspace(space, wid);
             trace!(
                 ?wid,
                 ?current_frame,
