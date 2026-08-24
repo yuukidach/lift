@@ -1800,43 +1800,99 @@ impl VirtualWorkspaceManager {
             corner.opposite(),
             app_bundle_id,
         );
+        let mut candidates = vec![primary, fallback];
+        let bottom_y = primary.origin.y;
+        let mut breakpoints = Vec::new();
+        let initial_xs = [
+            screen_frame.origin.x,
+            screen_frame.max().x - original_size.width,
+            screen_frame.origin.x + (screen_frame.size.width - original_size.width) / 2.0,
+        ];
 
-        let primary_anchor = Self::intersection_area(screen_frame, primary);
-        let fallback_anchor = Self::intersection_area(screen_frame, fallback);
-        let primary_anchored = primary_anchor >= MIN_ANCHOR_AREA;
-        let fallback_anchored = fallback_anchor >= MIN_ANCHOR_AREA;
-
-        let mut primary_other_max: f64 = 0.0;
-        let mut fallback_other_max: f64 = 0.0;
-        for screen in other_screens {
-            primary_other_max = primary_other_max.max(Self::intersection_area(*screen, primary));
-            fallback_other_max = fallback_other_max.max(Self::intersection_area(*screen, fallback));
+        for screen in std::iter::once(&screen_frame).chain(other_screens) {
+            breakpoints.extend([
+                screen.origin.x - original_size.width,
+                screen.origin.x,
+                screen.max().x - original_size.width,
+                screen.max().x,
+            ]);
         }
+        breakpoints.sort_by(f64::total_cmp);
+        breakpoints.dedup_by(|a, b| (*a - *b).abs() <= f64::EPSILON);
 
-        match (primary_anchored, fallback_anchored) {
-            (true, false) => primary,
-            (false, true) => fallback,
-            (true, true) => {
-                if (primary_other_max - fallback_other_max).abs() > f64::EPSILON {
-                    if primary_other_max < fallback_other_max {
-                        primary
-                    } else {
-                        fallback
+        let rect_at = |x| CGRect::new(CGPoint::new(x, bottom_y), original_size);
+        let mut candidate_xs = initial_xs.to_vec();
+        candidate_xs.extend(breakpoints.iter().copied());
+
+        // Overlap areas are linear between these breakpoints. A minimax optimum can
+        // therefore only occur at an endpoint, the anchor threshold, or where two
+        // screens have equal overlap.
+        for interval in breakpoints.windows(2) {
+            let [x0, x1] = [interval[0], interval[1]];
+            if x1 - x0 <= f64::EPSILON {
+                continue;
+            }
+
+            let anchor0 = Self::intersection_area(screen_frame, rect_at(x0));
+            let anchor1 = Self::intersection_area(screen_frame, rect_at(x1));
+            let anchor_delta = anchor1 - anchor0;
+            if anchor_delta.abs() > f64::EPSILON {
+                let threshold_x = x0 + (MIN_ANCHOR_AREA - anchor0) * (x1 - x0) / anchor_delta;
+                if (x0..=x1).contains(&threshold_x) {
+                    candidate_xs.push(threshold_x);
+                }
+            }
+
+            for (index, first) in other_screens.iter().enumerate() {
+                let first0 = Self::intersection_area(*first, rect_at(x0));
+                let first1 = Self::intersection_area(*first, rect_at(x1));
+                for second in &other_screens[index + 1..] {
+                    let diff0 = first0 - Self::intersection_area(*second, rect_at(x0));
+                    let diff1 = first1 - Self::intersection_area(*second, rect_at(x1));
+                    let diff_delta = diff1 - diff0;
+                    if diff_delta.abs() <= f64::EPSILON {
+                        continue;
                     }
-                } else if primary_anchor <= fallback_anchor {
-                    primary
-                } else {
-                    fallback
-                }
-            }
-            (false, false) => {
-                if primary_other_max <= fallback_other_max {
-                    primary
-                } else {
-                    fallback
+                    let crossing_x = x0 - diff0 * (x1 - x0) / diff_delta;
+                    if (x0..=x1).contains(&crossing_x) {
+                        candidate_xs.push(crossing_x);
+                    }
                 }
             }
         }
+
+        candidates.extend(candidate_xs.into_iter().map(rect_at));
+
+        candidates
+            .into_iter()
+            .enumerate()
+            .map(|(preference, rect)| {
+                let anchor = Self::intersection_area(screen_frame, rect);
+                let (other_max, other_total) =
+                    other_screens.iter().fold((0.0_f64, 0.0_f64), |(max, total), screen| {
+                        let area = Self::intersection_area(*screen, rect);
+                        (max.max(area), total + area)
+                    });
+                (
+                    anchor < MIN_ANCHOR_AREA,
+                    other_max,
+                    other_total,
+                    preference >= 2,
+                    anchor,
+                    preference,
+                    rect,
+                )
+            })
+            .min_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| a.1.total_cmp(&b.1))
+                    .then_with(|| a.2.total_cmp(&b.2))
+                    .then_with(|| a.3.cmp(&b.3))
+                    .then_with(|| a.4.total_cmp(&b.4))
+                    .then_with(|| a.5.cmp(&b.5))
+            })
+            .map(|(_, _, _, _, _, _, rect)| rect)
+            .expect("hide corner candidates are never empty")
     }
 
     pub fn calculate_hidden_position(
@@ -2576,6 +2632,99 @@ mod tests {
             }
             manager.create_workspace_with_number(n, &uuid, space);
         }
+    }
+
+    #[test]
+    fn hidden_window_keeps_historical_bottom_right_on_single_display() {
+        let manager = VirtualWorkspaceManager::new();
+        let screen = CGRect::new(CGPoint::new(10.0, 20.0), CGSize::new(1000.0, 800.0));
+
+        assert_eq!(
+            manager.calculate_hidden_position(
+                screen,
+                CGSize::new(400.0, 300.0),
+                HideCorner::BottomRight,
+                None,
+            ),
+            CGRect::new(CGPoint::new(1008.0, 819.0), CGSize::new(400.0, 300.0))
+        );
+    }
+
+    #[test]
+    fn hidden_window_uses_exposed_bottom_gap_when_both_corners_are_blocked() {
+        let manager = VirtualWorkspaceManager::new();
+        let cases = [
+            (
+                CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1000.0, 800.0)),
+                CGRect::new(CGPoint::new(-1000.0, 800.0), CGSize::new(1000.0, 800.0)),
+                CGRect::new(CGPoint::new(1000.0, 800.0), CGSize::new(1000.0, 800.0)),
+                CGSize::new(400.0, 300.0),
+            ),
+            (
+                CGRect::new(CGPoint::new(100.0, 200.0), CGSize::new(1512.0, 950.0)),
+                CGRect::new(CGPoint::new(-1340.0, 850.0), CGSize::new(1440.0, 2560.0)),
+                CGRect::new(CGPoint::new(1612.0, 700.0), CGSize::new(2560.0, 1440.0)),
+                CGSize::new(1496.0, 936.0),
+            ),
+        ];
+
+        for (owner, lower_left, lower_right, window_size) in cases {
+            let hidden = manager.calculate_hidden_position_multi(
+                owner,
+                window_size,
+                HideCorner::BottomRight,
+                None,
+                &[owner, lower_left, lower_right],
+            );
+
+            let owner_anchor = VirtualWorkspaceManager::intersection_area(owner, hidden);
+            assert!(
+                (1.0..=hidden.size.width).contains(&owner_anchor),
+                "the hidden window must retain at most a one-pixel-high anchor on its owning display: {hidden:?}"
+            );
+            assert!(
+                hidden.origin.y >= owner.max().y - 1.0,
+                "macOS-compatible hiding must keep the window title bar at the bottom edge: {hidden:?}"
+            );
+            assert_eq!(
+                VirtualWorkspaceManager::intersection_area(lower_left, hidden),
+                0.0,
+                "the hidden window must not leak onto the lower-left display: {hidden:?}"
+            );
+            assert_eq!(
+                VirtualWorkspaceManager::intersection_area(lower_right, hidden),
+                0.0,
+                "the hidden window must not leak onto the lower-right display: {hidden:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_window_balances_leak_when_bottom_gap_is_too_narrow() {
+        let manager = VirtualWorkspaceManager::new();
+        let owner = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1000.0, 800.0));
+        let lower_left =
+            CGRect::new(CGPoint::new(-1000.0, 800.0), CGSize::new(1300.0, 800.0));
+        let lower_right =
+            CGRect::new(CGPoint::new(500.0, 800.0), CGSize::new(1000.0, 800.0));
+
+        let hidden = manager.calculate_hidden_position_multi(
+            owner,
+            CGSize::new(400.0, 300.0),
+            HideCorner::BottomRight,
+            None,
+            &[owner, lower_left, lower_right],
+        );
+
+        assert_eq!(hidden.origin, CGPoint::new(200.0, 799.0));
+        assert_eq!(
+            VirtualWorkspaceManager::intersection_area(lower_left, hidden),
+            29_900.0
+        );
+        assert_eq!(
+            VirtualWorkspaceManager::intersection_area(lower_right, hidden),
+            29_900.0
+        );
     }
 
     #[test]
