@@ -256,6 +256,18 @@ impl BspTree {
             windows[second_position] = first;
             self.window_nodes.insert(first, second_group);
             self.window_nodes.insert(second, first_group);
+
+            if let (Some(first_parent), Some(second_parent)) =
+                (self.parent_of(first_group), self.parent_of(second_group))
+                && first_parent == second_parent
+            {
+                let Some(BspNode::Split { ratio, .. }) = self.nodes.get_mut(&first_parent) else {
+                    return Err(BspError::InvariantViolation(
+                        "window parent is not a split".into(),
+                    ));
+                };
+                *ratio = Ratio::new(1.0 - ratio.get())?;
+            }
         }
         Ok(true)
     }
@@ -921,6 +933,26 @@ mod tests {
         let fullscreen = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
         assert_eq!(fullscreen.len(), 1);
         assert_eq!(fullscreen[&window(2)], frame);
+    }
+
+    #[test]
+    fn swapping_sibling_windows_keeps_each_windows_size() {
+        let mut tree = BspTree::default();
+        tree.insert_after(None, window(1)).unwrap();
+        tree.insert_after(Some(window(1)), window(2)).unwrap();
+        tree.resize(window(1), 0.15).unwrap();
+        let frame = Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap();
+        let gaps = Gaps::default();
+        let before = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+
+        assert!(tree.swap(window(1), window(2)).unwrap());
+        let after = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+
+        assert_eq!(after[&window(1)].size, before[&window(1)].size);
+        assert_eq!(after[&window(2)].size, before[&window(2)].size);
+        assert!(before[&window(1)].origin.x < before[&window(2)].origin.x);
+        assert!(after[&window(1)].origin.x > after[&window(2)].origin.x);
+        tree.validate().unwrap();
     }
 
     #[test]
