@@ -272,6 +272,7 @@ struct MenuIconLayout {
 struct WorkspaceRenderData {
     bg_rect: CGRect,
     fill_alpha: f64,
+    is_active: bool,
     windows: Vec<CGRect>,
     label_line: Option<CachedTextLine>,
     label_x: f64,
@@ -768,8 +769,8 @@ fn build_cached_text_line(
 impl MenuIconView {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let font = NSFont::menuBarFontOfSize(FONT_SIZE);
-        let active_color = NSColor::blackColor();
-        let inactive_color = NSColor::whiteColor();
+        let active_color = NSColor::selectedMenuItemTextColor();
+        let inactive_color = NSColor::labelColor();
         let active_attrs = build_text_attrs(font.as_ref(), active_color.as_ref());
         let inactive_attrs = build_text_attrs(font.as_ref(), inactive_color.as_ref());
 
@@ -815,7 +816,7 @@ fn build_layout(
         };
 
         let label_line = if !input.label.is_empty() {
-            let attrs = if fill_alpha > 0.0 {
+            let attrs = if workspace.is_active {
                 active_attrs
             } else {
                 inactive_attrs
@@ -887,6 +888,7 @@ fn build_layout(
         workspaces.push(WorkspaceRenderData {
             bg_rect,
             fill_alpha,
+            is_active: workspace.is_active,
             windows,
             label_line,
             label_x,
@@ -953,8 +955,11 @@ define_class!(
                 CGContext::clear_rect(Some(cg), bounds);
 
                 let y_offset = (bounds.size.height - layout.total_height) / 2.0;
+                let separator_color = NSColor::separatorColor().CGColor();
+                let active_background = NSColor::controlAccentColor().CGColor();
+                let inactive_background = NSColor::labelColor().CGColor();
 
-                CGContext::set_rgb_fill_color(Some(cg), 1.0, 1.0, 1.0, 0.4);
+                CGContext::set_fill_color_with_color(Some(cg), Some(separator_color.as_ref()));
                 for separator_x in &layout.separators {
                     let separator = CGRect::new(
                         CGPoint::new(*separator_x - 0.5, y_offset + 2.0),
@@ -976,14 +981,19 @@ define_class!(
                     );
 
                     if workspace.fill_alpha > 0.0 {
-                        CGContext::set_rgb_fill_color(
+                        CGContext::save_g_state(Some(cg));
+                        let background = if workspace.is_active {
+                            active_background.as_ref()
+                        } else {
+                            inactive_background.as_ref()
+                        };
+                        CGContext::set_fill_color_with_color(Some(cg), Some(background));
+                        CGContext::set_alpha(
                             Some(cg),
-                            1.0,
-                            1.0,
-                            1.0,
                             workspace.fill_alpha,
                         );
                         CGContext::fill_path(Some(cg));
+                        CGContext::restore_g_state(Some(cg));
                     }
 
                     add_rounded_rect(
@@ -994,7 +1004,10 @@ define_class!(
                         rect.size.height,
                         CORNER_RADIUS,
                     );
-                    CGContext::set_rgb_stroke_color(Some(cg), 1.0, 1.0, 1.0, 1.0);
+                    CGContext::set_stroke_color_with_color(
+                        Some(cg),
+                        Some(separator_color.as_ref()),
+                    );
                     CGContext::set_line_width(Some(cg), BORDER_WIDTH);
                     CGContext::stroke_path(Some(cg));
 
@@ -1040,11 +1053,6 @@ define_class!(
                         let baseline_y = text_center_y - (label_line.ascent - label_line.descent) / 2.0;
 
                         CGContext::save_g_state(Some(cg));
-                        if workspace.fill_alpha > 0.0 {
-                            CGContext::set_rgb_fill_color(Some(cg), 0.0, 0.0, 0.0, 1.0);
-                        } else {
-                            CGContext::set_rgb_fill_color(Some(cg), 1.0, 1.0, 1.0, 1.0);
-                        }
                         CGContext::set_text_position(
                             Some(cg),
                             workspace.label_x as CGFloat,
