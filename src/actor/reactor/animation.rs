@@ -8,6 +8,7 @@ use super::TransactionId;
 use crate::actor::app::{AppThreadHandle, Request, WindowId, pid_t};
 use crate::actor::reactor::Reactor;
 use crate::common::collections::HashMap;
+use crate::common::config::AnimationEasing;
 use crate::sys::geometry::{Round, SameAs};
 use crate::sys::power;
 use crate::sys::screen::SpaceId;
@@ -38,6 +39,8 @@ struct ActiveAnimation {
 pub struct Animation {
     interval: Duration,
     frames: u32,
+    easing: AnimationEasing,
+    size_frame_stride: u32,
     windows: Vec<AnimatedWindow>,
     handled_windows: Vec<WindowId>,
 }
@@ -53,7 +56,13 @@ struct AnimatedWindow {
 }
 
 impl AnimatedWindow {
-    fn frame_after(&self, frame: u32, total_frames: u32) -> CGRect {
+    fn frame_after(
+        &self,
+        frame: u32,
+        total_frames: u32,
+        easing: AnimationEasing,
+        size_frame_stride: u32,
+    ) -> CGRect {
         if frame == 0 {
             return if self.is_focus {
                 CGRect {
@@ -66,11 +75,13 @@ impl AnimatedWindow {
         }
 
         let t = f64::from(frame) / f64::from(total_frames);
-        let mut rect = get_frame(self.start, self.finish, t);
-        if self.is_focus || frame * 2 >= total_frames {
+        let mut rect = get_frame(self.start, self.finish, t, easing);
+        if self.is_focus {
             rect.size = self.finish.size;
-        } else {
-            rect.size = self.start.size;
+        } else if frame < total_frames {
+            let size_frame = frame / size_frame_stride * size_frame_stride;
+            let size_t = f64::from(size_frame) / f64::from(total_frames);
+            rect.size = get_frame(self.start, self.finish, size_t, easing).size;
         }
         rect
     }
@@ -148,7 +159,11 @@ impl AnimationManager {
         let Some(active_ws) = reactor.active_workspace_for_space(space) else {
             return false;
         };
-        let mut anim = Animation::new();
+        let mut anim = Animation::new(
+            reactor.config.settings.animation_duration,
+            reactor.config.settings.animation_fps,
+            reactor.config.settings.animation_easing,
+        );
         let mut animated_count = 0;
         let mut any_frame_changed = false;
 
@@ -236,7 +251,10 @@ impl AnimationManager {
         if animated_count > 0 {
             let low_power = power::is_low_power_mode_enabled();
             let layout_animate = reactor.config.settings.animate;
-            let skip_anim = is_resize || !layout_animate || low_power;
+            let skip_anim = is_resize
+                || !layout_animate
+                || reactor.config.settings.animation_duration <= 0.0
+                || low_power;
 
             if let Some(tx) = &reactor.animation_tx {
                 let message = if skip_anim {
@@ -387,19 +405,39 @@ impl ActiveAnimation {
         self.animation
             .windows
             .iter()
-            .map(|window| (window.wid, window.frame_after(frame, self.animation.frames)))
+            .map(|window| {
+                (
+                    window.wid,
+                    window.frame_after(
+                        frame,
+                        self.animation.frames,
+                        self.animation.easing,
+                        self.animation.size_frame_stride,
+                    ),
+                )
+            })
             .collect()
     }
 }
 
 impl Animation {
-    pub fn new() -> Self {
-        const FPS: f64 = 100.0;
-        const DURATION: f64 = 0.30;
-        let interval = Duration::from_secs_f64(1.0 / FPS);
+    pub fn new(duration: f64, fps: f64, easing: AnimationEasing) -> Self {
+        let fps = if fps.is_finite() && fps > 0.0 {
+            fps
+        } else {
+            60.0
+        };
+        let duration = if duration.is_finite() && duration >= 0.0 {
+            duration
+        } else {
+            0.0
+        };
+        let interval = Duration::from_secs_f64(1.0 / fps);
         Self {
             interval,
-            frames: (DURATION * FPS).round() as u32,
+            frames: ((duration * fps).round() as u32).max(1),
+            easing,
+            size_frame_stride: ((fps / 30.0).round() as u32).max(1),
             windows: vec![],
             handled_windows: vec![],
         }
@@ -482,10 +520,12 @@ impl Animation {
     fn send_frame(&self, frame: u32) {
         let t = f64::from(frame) / f64::from(self.frames);
         for window in &self.windows {
-            let mut rect = get_frame(window.start, window.finish, t);
-            let set_size = frame * 2 == self.frames || frame == self.frames;
+            let mut rect = get_frame(window.start, window.finish, t, self.easing);
+            let set_size = frame.is_multiple_of(self.size_frame_stride) || frame == self.frames;
             if set_size {
-                rect.size = window.finish.size;
+                if window.is_focus {
+                    rect.size = window.finish.size;
+                }
             }
             _ = window.handle.send(Request::AnimationFrame {
                 wid: window.wid,
@@ -534,8 +574,8 @@ impl Animation {
     fn skip_to_end_and_end(self) { self.finish_all(); }
 }
 
-fn get_frame(a: CGRect, b: CGRect, t: f64) -> CGRect {
-    let s = ease(t);
+fn get_frame(a: CGRect, b: CGRect, t: f64, easing: AnimationEasing) -> CGRect {
+    let s = ease(t, easing);
     CGRect {
         origin: CGPoint {
             x: blend(a.origin.x, b.origin.x, s),
@@ -548,11 +588,85 @@ fn get_frame(a: CGRect, b: CGRect, t: f64) -> CGRect {
     }
 }
 
-fn ease(t: f64) -> f64 {
-    if t < 0.5 {
-        (1.0 - f64::sqrt(1.0 - f64::powi(2.0 * t, 2))) / 2.0
-    } else {
-        (f64::sqrt(1.0 - f64::powi(-2.0 * t + 2.0, 2)) + 1.0) / 2.0
+fn ease(t: f64, easing: AnimationEasing) -> f64 {
+    use std::f64::consts::PI;
+
+    let t = t.clamp(0.0, 1.0);
+    match easing {
+        AnimationEasing::EaseInOut | AnimationEasing::EaseInOutCubic => {
+            if t < 0.5 {
+                4.0 * t.powi(3)
+            } else {
+                1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+            }
+        }
+        AnimationEasing::Linear => t,
+        AnimationEasing::EaseInSine => 1.0 - (t * PI / 2.0).cos(),
+        AnimationEasing::EaseOutSine => (t * PI / 2.0).sin(),
+        AnimationEasing::EaseInOutSine => -((PI * t).cos() - 1.0) / 2.0,
+        AnimationEasing::EaseInQuad => t.powi(2),
+        AnimationEasing::EaseOutQuad => 1.0 - (1.0 - t).powi(2),
+        AnimationEasing::EaseInOutQuad => {
+            if t < 0.5 {
+                2.0 * t.powi(2)
+            } else {
+                1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
+            }
+        }
+        AnimationEasing::EaseInCubic => t.powi(3),
+        AnimationEasing::EaseOutCubic => 1.0 - (1.0 - t).powi(3),
+        AnimationEasing::EaseInQuart => t.powi(4),
+        AnimationEasing::EaseOutQuart => 1.0 - (1.0 - t).powi(4),
+        AnimationEasing::EaseInOutQuart => {
+            if t < 0.5 {
+                8.0 * t.powi(4)
+            } else {
+                1.0 - (-2.0 * t + 2.0).powi(4) / 2.0
+            }
+        }
+        AnimationEasing::EaseInQuint => t.powi(5),
+        AnimationEasing::EaseOutQuint => 1.0 - (1.0 - t).powi(5),
+        AnimationEasing::EaseInOutQuint => {
+            if t < 0.5 {
+                16.0 * t.powi(5)
+            } else {
+                1.0 - (-2.0 * t + 2.0).powi(5) / 2.0
+            }
+        }
+        AnimationEasing::EaseInExpo => {
+            if t == 0.0 {
+                0.0
+            } else {
+                2.0_f64.powf(10.0 * t - 10.0)
+            }
+        }
+        AnimationEasing::EaseOutExpo => {
+            if t == 1.0 {
+                1.0
+            } else {
+                1.0 - 2.0_f64.powf(-10.0 * t)
+            }
+        }
+        AnimationEasing::EaseInOutExpo => {
+            if t == 0.0 {
+                0.0
+            } else if t == 1.0 {
+                1.0
+            } else if t < 0.5 {
+                2.0_f64.powf(20.0 * t - 10.0) / 2.0
+            } else {
+                (2.0 - 2.0_f64.powf(-20.0 * t + 10.0)) / 2.0
+            }
+        }
+        AnimationEasing::EaseInCirc => 1.0 - (1.0 - t.powi(2)).sqrt(),
+        AnimationEasing::EaseOutCirc => (1.0 - (t - 1.0).powi(2)).sqrt(),
+        AnimationEasing::EaseInOutCirc => {
+            if t < 0.5 {
+                (1.0 - (1.0 - (2.0 * t).powi(2)).sqrt()) / 2.0
+            } else {
+                ((1.0 - (-2.0 * t + 2.0).powi(2)).sqrt() + 1.0) / 2.0
+            }
+        }
     }
 }
 
@@ -568,8 +682,10 @@ mod tests {
         CGRect::new(CGPoint::new(origin_x, origin_y), CGSize::new(width, height))
     }
 
+    fn empty_animation() -> Animation { Animation::new(0.3, 100.0, AnimationEasing::EaseInOut) }
+
     fn animation(handle: &AppThreadHandle, wid: WindowId, from: CGRect, to: CGRect) -> Animation {
-        let mut animation = Animation::new();
+        let mut animation = empty_animation();
         animation.add_window(handle, wid, from, to, false, TransactionId::default());
         animation
     }
@@ -629,6 +745,76 @@ mod tests {
     }
 
     #[test]
+    fn animation_uses_configured_timing_and_smooth_size_cadence() {
+        let (tx, mut rx) = crate::actor::channel();
+        let handle = AppThreadHandle::new_for_test(tx);
+        let wid = WindowId::new(1, 1);
+        let mut animation = Animation::new(0.15, 60.0, AnimationEasing::EaseOutCubic);
+        assert_eq!(animation.interval, Duration::from_secs_f64(1.0 / 60.0));
+        assert_eq!(animation.frames, 9);
+        assert_eq!(animation.size_frame_stride, 2);
+        animation.add_window(
+            &handle,
+            wid,
+            rect(0.0, 0.0, 100.0, 100.0),
+            rect(50.0, 60.0, 200.0, 200.0),
+            false,
+            TransactionId::default(),
+        );
+
+        let mut manager = AnimationManager::new();
+        manager.handle_message(Message::Replace(animation));
+        let _ = collect_requests(&mut rx);
+        manager.tick();
+        assert!(matches!(collect_requests(&mut rx).as_slice(), [
+            Request::AnimationFrame { set_size: false, .. }
+        ]));
+        manager.tick();
+        let requests = collect_requests(&mut rx);
+        let Request::AnimationFrame { frame, set_size, .. } = &requests[0] else {
+            panic!("expected animation frame")
+        };
+        assert!(*set_size);
+        assert!(frame.size.width > 100.0 && frame.size.width < 200.0);
+    }
+
+    #[test]
+    fn all_easing_curves_preserve_endpoints_and_move_monotonically() {
+        use AnimationEasing::*;
+        for easing in [
+            EaseInOut,
+            Linear,
+            EaseInSine,
+            EaseOutSine,
+            EaseInOutSine,
+            EaseInQuad,
+            EaseOutQuad,
+            EaseInOutQuad,
+            EaseInCubic,
+            EaseOutCubic,
+            EaseInOutCubic,
+            EaseInQuart,
+            EaseOutQuart,
+            EaseInOutQuart,
+            EaseInQuint,
+            EaseOutQuint,
+            EaseInOutQuint,
+            EaseInExpo,
+            EaseOutExpo,
+            EaseInOutExpo,
+            EaseInCirc,
+            EaseOutCirc,
+            EaseInOutCirc,
+        ] {
+            assert!((ease(0.0, easing) - 0.0).abs() < 1e-9, "{easing:?}");
+            assert!((ease(1.0, easing) - 1.0).abs() < 1e-9, "{easing:?}");
+            let values =
+                (0..=20).map(|step| ease(f64::from(step) / 20.0, easing)).collect::<Vec<_>>();
+            assert!(values.windows(2).all(|pair| pair[0] <= pair[1]), "{easing:?}");
+        }
+    }
+
+    #[test]
     fn replacement_uses_last_animated_frame_for_continuing_windows() {
         let (tx, mut rx) = crate::actor::channel();
         let handle = AppThreadHandle::new_for_test(tx);
@@ -664,7 +850,12 @@ mod tests {
         assert_eq!(resumed_start, continuing_frame);
 
         manager.tick();
-        let expected_next = get_frame(resumed_start, rect(80.0, 90.0, 10.0, 10.0), 1.0 / 30.0);
+        let expected_next = get_frame(
+            resumed_start,
+            rect(80.0, 90.0, 10.0, 10.0),
+            1.0 / 30.0,
+            AnimationEasing::EaseInOut,
+        );
         assert_animation_pos(&collect_requests(&mut rx)[0], wid, expected_next.origin);
     }
 
@@ -682,7 +873,7 @@ mod tests {
         let wid1 = WindowId::new(1, 1);
         let wid2 = WindowId::new(1, 2);
         let wid3 = WindowId::new(1, 3);
-        let mut first = Animation::new();
+        let mut first = empty_animation();
         first.add_window(
             &handle,
             wid1,
@@ -699,7 +890,7 @@ mod tests {
             false,
             TransactionId::default(),
         );
-        let mut second = Animation::new();
+        let mut second = empty_animation();
         second.add_window(
             &handle,
             wid1,
@@ -745,7 +936,7 @@ mod tests {
         let handle = AppThreadHandle::new_for_test(tx);
         let wid1 = WindowId::new(1, 1);
         let wid2 = WindowId::new(1, 2);
-        let mut first = Animation::new();
+        let mut first = empty_animation();
         first.add_window(
             &handle,
             wid1,
@@ -762,7 +953,7 @@ mod tests {
             false,
             TransactionId::default(),
         );
-        let mut second = Animation::new();
+        let mut second = empty_animation();
         second.add_window(
             &handle,
             wid1,

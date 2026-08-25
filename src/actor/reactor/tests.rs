@@ -39,6 +39,23 @@ fn publishes_stable_immutable_core_snapshots() {
 }
 
 #[test]
+fn layout_resize_commands_are_classified_as_interactive() {
+    for command in [
+        LayoutCommand::ResizeWindowGrow,
+        LayoutCommand::ResizeWindowShrink,
+        LayoutCommand::ResizeWindowBy { amount: 0.05 },
+        LayoutCommand::ResizeWindowDirectional(Direction::Right),
+    ] {
+        assert!(Reactor::is_interactive_resize_event(&Event::Command(
+            Command::Layout(command)
+        )));
+    }
+    assert!(!Reactor::is_interactive_resize_event(&Event::Command(
+        Command::Layout(LayoutCommand::MoveNode(Direction::Right),)
+    )));
+}
+
+#[test]
 fn publishing_window_membership_changes_broadcasts_once_for_the_display() {
     let mut apps = Apps::new();
     let (mut reactor, mut broadcasts) = Reactor::new_for_test_with_broadcast();

@@ -1469,6 +1469,18 @@ impl Reactor {
         }
     }
 
+    fn is_interactive_resize_event(event: &Event) -> bool {
+        matches!(
+            event,
+            Event::Command(Command::Layout(
+                layout::LayoutCommand::ResizeWindowGrow
+                    | layout::LayoutCommand::ResizeWindowShrink
+                    | layout::LayoutCommand::ResizeWindowBy { .. }
+                    | layout::LayoutCommand::ResizeWindowDirectional(_)
+            ))
+        )
+    }
+
     fn should_update_notifications(event: &Event) -> bool {
         matches!(
             event,
@@ -1597,7 +1609,7 @@ impl Reactor {
         let should_update_notifications = Self::should_update_notifications(&event);
 
         let raised_window = self.main_window_tracker.handle_event(&event);
-        let mut is_resize = false;
+        let mut is_resize = Self::is_interactive_resize_event(&event);
         let mut window_was_destroyed = false;
 
         match event {

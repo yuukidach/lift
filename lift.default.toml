@@ -4,12 +4,13 @@
 [settings]
 # Animations
 # - animate: master switch for all window animations
-# - animation_duration: seconds per animation (>= 0.0, typical 0.15–0.35)
-# - animation_fps: frames per second (0.0 = display refresh rate). 60–120 recommended.
-#   ease_in_circ, ease_out_circ, ease_in_out_circ
+# - animation_duration: seconds per animation (>= 0.0; 0.12–0.20 recommended)
+# - animation_fps: frames per second (> 0.0; 60 recommended for AX performance)
+# - animation_easing: linear, ease_in/out/in_out_{sine,quad,cubic,quart,quint,expo,circ}
 animate = false
-animation_duration = 0.3
-animation_fps = 100.0
+animation_duration = 0.18
+animation_fps = 60.0
+animation_easing = "ease_out_cubic"
 
 # Space activation behavior
 # - If true, spaces start inactive (lift does not manage windows there)
