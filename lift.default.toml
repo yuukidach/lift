@@ -36,6 +36,11 @@ mouse_hides_on_focus = true
 #   "com.raycast.macos", "com.apple.Spotlight"
 auto_focus_blacklist = []
 
+# Bounded diagnostic history for reproducing interaction bugs. Records hotkey
+# commands, routing decisions, and compact before/after state without titles.
+# Total disk use is bounded by max_file_size_mb * retained_files (12 MiB here).
+diagnostics = { enabled = true, max_file_size_mb = 4, retained_files = 3 }
+
 # Run commands on start
 #
 # Tip: You can subscribe to lift events and trigger your own scripts. The command will

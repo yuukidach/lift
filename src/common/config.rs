@@ -65,6 +65,9 @@ fn data_dir_for(home: &Path) -> PathBuf {
 pub fn restore_file() -> PathBuf {
     data_dir().join("layout.ron")
 }
+pub fn diagnostics_file() -> PathBuf {
+    data_dir().join("diagnostics").join("operations.jsonl")
+}
 pub fn config_file() -> PathBuf {
     config_file_for(&dirs::home_dir().unwrap())
 }
@@ -383,6 +386,9 @@ pub struct Settings {
     pub mouse_hides_on_focus: bool,
     #[serde(default = "yes")]
     pub focus_follows_mouse: bool,
+    /// Bounded operation/state log used to reproduce interaction bugs.
+    #[serde(default)]
+    pub diagnostics: DiagnosticsSettings,
     /// Hotkey that disables focus-follows-mouse while held.
     /// Accepts either a full hotkey (e.g. "Ctrl + A") or a modifier-only spec (e.g. "Ctrl")
     #[serde(default)]
@@ -411,6 +417,27 @@ pub struct Settings {
     /// Enable hot-reloading of the config file when it changes
     #[serde(default = "yes")]
     pub hot_reload: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticsSettings {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default = "default_diagnostic_file_size_mb")]
+    pub max_file_size_mb: u64,
+    #[serde(default = "default_diagnostic_retained_files")]
+    pub retained_files: usize,
+}
+
+impl Default for DiagnosticsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_file_size_mb: default_diagnostic_file_size_mb(),
+            retained_files: default_diagnostic_retained_files(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default, Copy)]
@@ -688,6 +715,19 @@ impl Settings {
             ));
         }
 
+        if !(1..=100).contains(&self.diagnostics.max_file_size_mb) {
+            issues.push(format!(
+                "diagnostics.max_file_size_mb must be in 1..=100, got {}",
+                self.diagnostics.max_file_size_mb
+            ));
+        }
+        if !(1..=10).contains(&self.diagnostics.retained_files) {
+            issues.push(format!(
+                "diagnostics.retained_files must be in 1..=10, got {}",
+                self.diagnostics.retained_files
+            ));
+        }
+
         issues.extend(self.layout.validate());
 
         if self.gestures.swipe_vertical_tolerance < 0.0 {
@@ -817,6 +857,14 @@ fn default_animation_duration() -> f64 {
 
 fn default_animation_fps() -> f64 {
     100.0
+}
+
+fn default_diagnostic_file_size_mb() -> u64 {
+    4
+}
+
+fn default_diagnostic_retained_files() -> usize {
+    3
 }
 
 #[allow(dead_code)]
@@ -1173,6 +1221,22 @@ mod tests {
             config_file_for(home),
             PathBuf::from("/Users/example/.config/lift/config.toml")
         );
+        assert!(diagnostics_file().ends_with(".lift/diagnostics/operations.jsonl"));
+    }
+
+    #[test]
+    fn diagnostics_are_bounded_and_enabled_by_default() {
+        let settings = DiagnosticsSettings::default();
+        assert!(settings.enabled);
+        assert_eq!(settings.max_file_size_mb, 4);
+        assert_eq!(settings.retained_files, 3);
+
+        let mut config = Config::default();
+        config.settings.diagnostics.max_file_size_mb = 0;
+        config.settings.diagnostics.retained_files = 11;
+        let issues = config.validate();
+        assert!(issues.iter().any(|issue| issue.contains("max_file_size_mb")));
+        assert!(issues.iter().any(|issue| issue.contains("retained_files")));
     }
 
     #[test]

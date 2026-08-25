@@ -407,9 +407,45 @@ impl CommandEventHandler {
                 reactor.config.settings.focus_follows_mouse,
                 layout_focus,
             );
+            let target_number = u8::try_from(workspace.saturating_add(1)).ok();
+            let snapshot = reactor.core_snapshot();
+            let target_workspace = target_number.and_then(|number| {
+                snapshot
+                    .workspaces
+                    .iter()
+                    .find(|candidate| candidate.number.get() == number)
+                    .map(|candidate| {
+                        serde_json::json!({
+                            "id": candidate.id,
+                            "number": candidate.number.get(),
+                            "display": candidate.display,
+                        })
+                    })
+            });
+            reactor.recording_manager.diagnostics.record_decision(
+                "move_window_resolution",
+                serde_json::json!({
+                    "requested_slot_zero_based": workspace,
+                    "requested_workspace_number": target_number,
+                    "command_space": command_space,
+                    "focus_follows_mouse": reactor.config.settings.focus_follows_mouse,
+                    "layout_focus": layout_focus,
+                    "resolved_window": current_window,
+                    "layout_focus_workspace": layout_focus.and_then(|window| reactor.workspace_for_window(window)),
+                    "resolved_window_workspace": current_window.and_then(|window| reactor.workspace_for_window(window)),
+                    "target_workspace": target_workspace,
+                }),
+            );
             let current_window_without_workspace =
                 current_window.filter(|wid| reactor.workspace_for_window(*wid).is_none());
             if let Some(window_id) = current_window_without_workspace {
+                reactor.recording_manager.diagnostics.record_decision(
+                    "move_window_result",
+                    serde_json::json!({
+                        "status": "deferred_until_window_assignment",
+                        "window": window_id,
+                    }),
+                );
                 reactor.remember_recent_workspace_target_for_slot(window_id, *workspace);
                 reactor.handle_layout_response(EventResponse::default(), workspace_space);
                 return;
@@ -419,6 +455,10 @@ impl CommandEventHandler {
                 if let Err(error) =
                     Self::transition_core_window_move(reactor, *workspace, window_id)
                 {
+                    reactor.recording_manager.diagnostics.record_decision(
+                        "move_window_result",
+                        serde_json::json!({"status": "rejected", "error": error.to_string()}),
+                    );
                     warn!(?error, ?cmd, "Core rejected window move");
                     reactor.handle_layout_response(EventResponse::default(), workspace_space);
                     return;
@@ -432,13 +472,33 @@ impl CommandEventHandler {
                 }
 
                 reactor.remember_recent_workspace_target(window_id);
+                reactor.recording_manager.diagnostics.record_decision(
+                    "move_window_result",
+                    serde_json::json!({
+                        "status": "accepted",
+                        "window": window_id,
+                        "actual_workspace": reactor.workspace_for_window(window_id),
+                    }),
+                );
                 let response = EventResponse::default();
                 reactor.handle_layout_response(response, workspace_space);
                 return;
             }
 
             if let Some(window_id) = layout_focus {
+                reactor.recording_manager.diagnostics.record_decision(
+                    "move_window_result",
+                    serde_json::json!({
+                        "status": "deferred_without_resolved_current_window",
+                        "layout_focus": window_id,
+                    }),
+                );
                 reactor.remember_recent_workspace_target_for_slot(window_id, *workspace);
+            } else {
+                reactor.recording_manager.diagnostics.record_decision(
+                    "move_window_result",
+                    serde_json::json!({"status": "ignored_without_current_window"}),
+                );
             }
         }
 
@@ -627,6 +687,10 @@ impl CommandEventHandler {
         };
         let old_keys = reactor.config.keys.clone();
 
+        reactor
+            .recording_manager
+            .diagnostics
+            .reconfigure(new_cfg.settings.diagnostics.clone());
         reactor.config = new_cfg;
         reactor.window_rules = window_rules;
         if let Some(tx) = &reactor.communication_manager.stack_line_tx {

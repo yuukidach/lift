@@ -589,6 +589,15 @@ impl EventTap {
                 let bindings = self.hotkeys.load();
                 if let Some(commands) = bindings.get(&hotkey) {
                     for cmd in commands {
+                        self.events_tx.send(Event::UserInput(
+                            crate::runtime::diagnostics::UserInputTrace {
+                                source: "hotkey".into(),
+                                input: hotkey.to_string(),
+                                command: serde_json::to_value(cmd).unwrap_or_else(|error| {
+                                    serde_json::json!({"serialization_error": error.to_string()})
+                                }),
+                            },
+                        ));
                         self.wm_sender.send(WmEvent::Command(cmd.clone()));
                     }
                     return false;

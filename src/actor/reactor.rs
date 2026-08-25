@@ -52,6 +52,7 @@ use crate::model::layout::{self as layout, Direction};
 use crate::model::space_activation::{SpaceActivationConfig, SpaceActivationPolicy};
 use crate::model::tx_store::WindowTxStore;
 use crate::runtime::SnapshotStore;
+use crate::runtime::diagnostics::{DiagnosticLog, UserInputTrace};
 use crate::sys::event::MouseState;
 use crate::sys::executor::Executor;
 use crate::sys::geometry::{CGRectDef, CGRectExt};
@@ -245,6 +246,7 @@ pub enum Event {
 
     #[serde(skip)]
     ConfigUpdated(Config),
+    UserInput(UserInputTrace),
 }
 
 pub struct Reactor {
@@ -354,6 +356,15 @@ impl Reactor {
             Some((tx, store)) => (Some(tx), store),
             None => (None, WindowTxStore::new()),
         };
+        let diagnostic_settings = {
+            let settings = config.settings.diagnostics.clone();
+            #[cfg(test)]
+            let settings = crate::common::config::DiagnosticsSettings {
+                enabled: false,
+                ..settings
+            };
+            settings
+        };
         let reactor = Reactor {
             config: config.clone(),
             one_space,
@@ -378,7 +389,13 @@ impl Reactor {
                 pending_workspace_mouse_warp: None,
                 quiet_activation_deadlines: HashMap::default(),
             },
-            recording_manager: managers::RecordingManager { record },
+            recording_manager: managers::RecordingManager {
+                record,
+                diagnostics: DiagnosticLog::new(
+                    diagnostic_settings,
+                    crate::common::config::diagnostics_file(),
+                ),
+            },
             communication_manager: managers::CommunicationManager {
                 event_tap_tx: None,
                 gesture_tap_tx: None,
@@ -879,6 +896,7 @@ impl Reactor {
         self.snapshot_store.publish(snapshot);
         let current = self.snapshot_store.load();
         self.broadcast_windows_changed(&previous, &current);
+        self.recording_manager.diagnostics.record_snapshot(&current);
         if let Some(stack_line_tx) = self.communication_manager.stack_line_tx.as_ref() {
             if let Err(error) =
                 stack_line_tx.try_send(stack_line::Event::SnapshotUpdated(current.clone()))
@@ -1513,6 +1531,7 @@ impl Reactor {
                 | Event::ApplicationMainWindowChanged(..)
                 | Event::RegisterWmSender(..)
                 | Event::ConfigUpdated(..)
+                | Event::UserInput(..)
                 | Event::Command(..)
                 | Event::RaiseCompleted { .. }
                 | Event::RaiseTimeout { .. }
@@ -1558,6 +1577,17 @@ impl Reactor {
     fn handle_event(&mut self, event: Event) {
         self.log_event(&event);
         self.recording_manager.record.on_event(&event);
+        let is_operation = matches!(&event, Event::Command(..));
+        match &event {
+            Event::UserInput(input) => {
+                self.recording_manager.diagnostics.note_input(input.clone());
+            }
+            Event::Command(command) => {
+                let before = self.core_snapshot();
+                self.recording_manager.diagnostics.begin_operation(command, &before);
+            }
+            _ => {}
+        }
 
         match event {
             Event::DisplayChurnBegin => {
@@ -1761,6 +1791,7 @@ impl Reactor {
             Event::ConfigUpdated(new_cfg) => {
                 CommandEventHandler::handle_config_updated(self, new_cfg);
             }
+            Event::UserInput(_) => {}
             Event::Command(cmd) => {
                 CommandEventHandler::handle_command(self, cmd);
             }
@@ -1773,6 +1804,10 @@ impl Reactor {
             window_was_destroyed,
             should_update_notifications,
         );
+        if is_operation {
+            let after = self.core_snapshot();
+            self.recording_manager.diagnostics.finish_operation(&after);
+        }
     }
 
     fn finalize_event_processing(

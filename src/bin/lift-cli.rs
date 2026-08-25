@@ -59,6 +59,11 @@ enum Commands {
         #[command(subcommand)]
         service: ServiceCommands,
     },
+    /// Inspect the local bounded diagnostic history
+    Diagnostics {
+        #[command(subcommand)]
+        diagnostics: DiagnosticsCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -73,6 +78,17 @@ enum ServiceCommands {
     Stop,
     /// Restart the service (kickstart -k)
     Restart,
+}
+
+#[derive(Subcommand)]
+enum DiagnosticsCommands {
+    /// Print the active diagnostic JSONL file path
+    Path,
+    /// Print the most recent diagnostic records (works even if Lift is stopped)
+    Tail {
+        #[arg(long, default_value_t = 50)]
+        lines: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -378,6 +394,10 @@ fn main() {
             );
             process::exit(0);
         }
+        Commands::Diagnostics { diagnostics } => {
+            handle_diagnostics_command(diagnostics);
+            process::exit(0);
+        }
         Commands::Subscribe {
             subscribe: SubscribeCommands::Mach { event },
         } => {
@@ -446,6 +466,34 @@ fn build_request(command: Commands) -> Result<LiftRequest, String> {
             "Service commands are handled locally and should not be sent to the Lift server."
                 .to_string(),
         ),
+        Commands::Diagnostics { .. } => Err(
+            "Diagnostics commands are handled locally and should not be sent to the Lift server."
+                .to_string(),
+        ),
+    }
+}
+
+fn handle_diagnostics_command(command: DiagnosticsCommands) {
+    let path = lift::common::config::diagnostics_file();
+    match command {
+        DiagnosticsCommands::Path => println!("{}", path.display()),
+        DiagnosticsCommands::Tail { lines } => {
+            match lift::runtime::diagnostics::tail(&path, lines) {
+                Ok(records) => {
+                    for record in records {
+                        println!("{record}");
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    eprintln!("No diagnostic log exists yet at {}", path.display());
+                    process::exit(1);
+                }
+                Err(error) => {
+                    eprintln!("Could not read {}: {error}", path.display());
+                    process::exit(1);
+                }
+            }
+        }
     }
 }
 

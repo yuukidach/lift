@@ -158,6 +158,7 @@ pub struct CommunicationManager {
 /// Manages recording state
 pub struct RecordingManager {
     pub record: Record,
+    pub diagnostics: crate::runtime::diagnostics::DiagnosticLog,
 }
 
 pub type LayoutResult = Vec<(SpaceId, Vec<(WindowId, CGRect)>)>;

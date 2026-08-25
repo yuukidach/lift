@@ -41,6 +41,22 @@ lift --help
 lift-cli --help
 ```
 
+## Diagnostic history
+
+Lift keeps a compact JSONL history of user commands, routing decisions, and
+observed workspace/window state. Window titles are intentionally omitted. The
+default rotation is three 4 MiB files, so the history cannot grow without
+bound.
+
+```bash
+lift-cli diagnostics path
+lift-cli diagnostics tail --lines 50
+```
+
+The limits can be changed with `settings.diagnostics` in the configuration.
+The `tail` command reads the newest records across rotated files and works even
+when the Lift service is stopped.
+
 ## Architecture
 
 - [Target core architecture](docs/design/2026-08-25-lift-core-architecture-design.md)
