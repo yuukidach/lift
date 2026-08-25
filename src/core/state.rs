@@ -503,6 +503,86 @@ mod tests {
     }
 
     #[test]
+    fn numbered_workspace_rule_is_a_default_and_does_not_undo_a_manual_move() {
+        let mut config = CoreConfig::default();
+        config.window_rules.push(WindowRule {
+            app_id: Some("com.example.Terminal".into()),
+            app_name: None,
+            title_regex: None,
+            title_substring: None,
+            ax_role: None,
+            ax_subrole: None,
+            workspace: WorkspaceTarget::Number(number(8)),
+            floating: false,
+            manage: true,
+        });
+        let mut state = CoreState::new(config);
+        let first = window(1);
+        let initial = observe(&mut state, 1, vec![display("main", 9)], vec![observed_window(
+            first, "main",
+        )])
+        .unwrap();
+
+        assert_eq!(
+            initial.snapshot.windows[0].workspace.and_then(|workspace| initial
+                .snapshot
+                .workspaces
+                .iter()
+                .find(|candidate| candidate.id == workspace)
+                .and_then(|workspace| workspace.number)),
+            Some(number(8))
+        );
+
+        state
+            .transition(Input::Command(Command::Workspace(
+                WorkspaceCommand::MoveWindow {
+                    workspace: number(3),
+                    window: Some(first),
+                },
+            )))
+            .unwrap();
+        let after_manual_move =
+            observe(&mut state, 2, vec![display("main", 9)], vec![observed_window(
+                first, "main",
+            )])
+            .unwrap();
+
+        assert_eq!(
+            after_manual_move.snapshot.windows[0]
+                .workspace
+                .and_then(|workspace| after_manual_move
+                    .snapshot
+                    .workspaces
+                    .iter()
+                    .find(|candidate| candidate.id == workspace)
+                    .and_then(|workspace| workspace.number)),
+            Some(number(3))
+        );
+
+        let second = window(2);
+        let with_new_window = observe(&mut state, 3, vec![display("main", 9)], vec![
+            observed_window(first, "main"),
+            observed_window(second, "main"),
+        ])
+        .unwrap();
+        assert_eq!(
+            with_new_window
+                .snapshot
+                .windows
+                .iter()
+                .find(|window| window.id == second)
+                .and_then(|window| window.workspace)
+                .and_then(|workspace| with_new_window
+                    .snapshot
+                    .workspaces
+                    .iter()
+                    .find(|candidate| candidate.id == workspace)
+                    .and_then(|workspace| workspace.number)),
+            Some(number(8))
+        );
+    }
+
+    #[test]
     fn stale_display_observation_does_not_undo_cross_display_workspace_move() {
         let mut state = CoreState::new(CoreConfig::default());
         let tracked = window(1);

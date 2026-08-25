@@ -116,7 +116,8 @@ pub fn workspace_number_to_global_slot(number: usize) -> Option<usize> {
 pub struct AppWorkspaceRule {
     /// Application bundle identifier (e.g., "com.apple.Terminal")
     pub app_id: Option<String>,
-    /// Target workspace digit (0 through 9) OR workspace name. If None, window goes to active workspace.
+    /// Initial workspace digit (0 through 9) or workspace name. Existing windows keep their
+    /// current workspace, so an explicit move is not overwritten by later observations.
     pub workspace: Option<WorkspaceSelector>,
     /// Whether windows should be floating in this workspace
     #[serde(default)]

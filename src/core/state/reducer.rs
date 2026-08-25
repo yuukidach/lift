@@ -362,37 +362,38 @@ impl CoreState {
                     } else {
                         floating
                     };
-                    let target = match workspace {
-                        WorkspaceTarget::Number(number) => {
-                            if let Some(workspace) = self.workspaces.workspace_by_number(number) {
-                                workspace
-                            } else {
-                                self.workspaces.create_numbered(number, display.clone())?
+                    // Workspace rules choose a window's initial workspace. An
+                    // existing assignment is authoritative so a later platform
+                    // observation cannot undo an explicit move by the user.
+                    let target = if let Some(existing) = existing {
+                        existing
+                    } else {
+                        match workspace {
+                            WorkspaceTarget::Number(number) => {
+                                if let Some(workspace) = self.workspaces.workspace_by_number(number)
+                                {
+                                    workspace
+                                } else {
+                                    self.workspaces.create_numbered(number, display.clone())?
+                                }
+                            }
+                            WorkspaceTarget::Name(name) => self
+                                .workspaces
+                                .workspace_by_name(&display, &name)
+                                .or_else(|| self.workspaces.active_workspace(&display))
+                                .ok_or_else(|| {
+                                    CoreError::InvalidCommand(format!(
+                                        "display {display:?} has no active workspace"
+                                    ))
+                                })?,
+                            WorkspaceTarget::Current => {
+                                self.workspaces.active_workspace(&display).ok_or_else(|| {
+                                    CoreError::InvalidCommand(format!(
+                                        "display {display:?} has no active workspace"
+                                    ))
+                                })?
                             }
                         }
-                        WorkspaceTarget::Name(name) => self
-                            .workspaces
-                            .workspace_by_name(&display, &name)
-                            .or_else(|| self.workspaces.active_workspace(&display))
-                            .ok_or_else(|| {
-                                CoreError::InvalidCommand(format!(
-                                    "display {display:?} has no active workspace"
-                                ))
-                            })?,
-                        // `Current` is an initial-placement policy. Reapplying
-                        // it on every platform observation makes a visible
-                        // window follow each workspace activation, so the UI
-                        // reports a switch while the screen never changes.
-                        // The platform-observed display can also lag an
-                        // explicit cross-display move, so it must not rewrite
-                        // an existing virtual-workspace assignment.
-                        WorkspaceTarget::Current => existing
-                            .or_else(|| self.workspaces.active_workspace(&display))
-                            .ok_or_else(|| {
-                                CoreError::InvalidCommand(format!(
-                                    "display {display:?} has no active workspace"
-                                ))
-                            })?,
                     };
                     if floating {
                         self.workspaces.assign_floating(target, window.id)?;

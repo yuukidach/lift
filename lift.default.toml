@@ -204,8 +204,9 @@ display_migration_priority = []
 #   - ax_role / ax_subrole: exact match against macOS Accessibility (AX) role/subrole
 #
 # Rule options:
-#   - workspace (integer, 0..9): target workspace digit. If omitted or invalid, uses the active workspace.
-#     Alternatively, `workspace` may be a workspace name string to target by name.
+#   - workspace (integer, 0..9): initial workspace digit. If omitted, uses the active workspace.
+#     Alternatively, `workspace` may be a workspace name string to target by name. Manual moves
+#     always win: later observations will not move an existing window back to this default.
 #   - floating (boolean): whether matched windows should float by default.
 #   - manage (boolean): whether Lift should manage the matching window. Set to false to ignore the window completely (default = true).
 #
