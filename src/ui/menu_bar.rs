@@ -7,8 +7,9 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSColor, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSFont,
-    NSFontAttributeName, NSForegroundColorAttributeName, NSGraphicsContext, NSMenu, NSMenuItem,
-    NSImage, NSRunningApplication, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSView,
+    NSFontAttributeName, NSFontWeightRegular, NSFontWeightSemibold,
+    NSForegroundColorAttributeName, NSGraphicsContext, NSMenu, NSMenuItem, NSImage,
+    NSRunningApplication, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSView,
 };
 use objc2_core_foundation::{
     CFAttributedString, CFDictionary, CFRetained, CFString, CGFloat, CGPoint, CGRect, CGSize,
@@ -36,18 +37,21 @@ use crate::sys::screen::SpaceId;
 use crate::ui::common::compute_window_layout_metrics;
 
 const CELL_WIDTH: f64 = 20.0;
-const CELL_HEIGHT: f64 = 15.0;
-const CELL_SPACING: f64 = 4.0;
-const CORNER_RADIUS: f64 = 3.0;
+const CELL_HEIGHT: f64 = 17.0;
+const CELL_SPACING: f64 = 3.0;
+const CORNER_RADIUS: f64 = 5.0;
 const BORDER_WIDTH: f64 = 1.0;
 const CONTENT_INSET: f64 = 2.0;
 const FONT_SIZE: f64 = 12.0;
 const LABEL_HORIZONTAL_INSET: f64 = 4.0;
-const APP_ICON_SIZE: f64 = 13.0;
+const APP_ICON_SIZE: f64 = 12.0;
 const APP_ICON_SPACING: f64 = 3.0;
-const DISPLAY_GROUP_SPACING: f64 = 14.0;
-const DISPLAY_SEPARATOR_HEIGHT: f64 = 13.0;
-const DISPLAY_SEPARATOR_WIDTH: f64 = 1.5;
+const DISPLAY_GROUP_SPACING: f64 = 16.0;
+const DISPLAY_SEPARATOR_HEIGHT: f64 = 12.0;
+const DISPLAY_SEPARATOR_WIDTH: f64 = 2.0;
+const LABEL_ACTIVE_BACKGROUND_ALPHA: f64 = 0.10;
+const LABEL_ACTIVE_INDICATOR_ALPHA: f64 = 0.85;
+const LABEL_INACTIVE_ICON_ALPHA: f64 = 0.72;
 
 #[derive(Debug, Clone, Copy)]
 pub enum MenuAction {
@@ -172,7 +176,6 @@ impl MenuIcon {
                     let app_icon = primary_app_icon(&ws);
                     let mut clone = ws.clone();
                     clone.windows.clear();
-                    clone.window_count = 0;
                     WorkspaceRenderInput {
                         workspace: clone,
                         label: label_for(&ws),
@@ -200,7 +203,6 @@ impl MenuIcon {
                     let app_icon = primary_app_icon(&ws);
                     let mut clone = ws.clone();
                     clone.windows.clear();
-                    clone.window_count = 0;
                     WorkspaceRenderInput {
                         workspace: clone,
                         label: label_for(&ws),
@@ -222,7 +224,8 @@ impl MenuIcon {
             let view_ivars = self.view.ivars();
             let active_attrs = view_ivars.active_text_attrs.as_ref();
             let inactive_attrs = view_ivars.inactive_text_attrs.as_ref();
-            build_layout(&render_inputs, active_attrs, inactive_attrs)
+            let empty_attrs = view_ivars.empty_text_attrs.as_ref();
+            build_layout(&render_inputs, active_attrs, inactive_attrs, empty_attrs)
         };
         if layout.workspaces.is_empty() {
             self.status_item.setVisible(false);
@@ -306,6 +309,7 @@ struct MenuIconViewIvars {
     layout: RefCell<MenuIconLayout>,
     active_text_attrs: Retained<NSDictionary<NSAttributedStringKey, AnyObject>>,
     inactive_text_attrs: Retained<NSDictionary<NSAttributedStringKey, AnyObject>>,
+    empty_text_attrs: Retained<NSDictionary<NSAttributedStringKey, AnyObject>>,
 }
 
 fn as_any_object<T: Message>(obj: &T) -> &AnyObject {
@@ -769,17 +773,27 @@ fn build_cached_text_line(
 
 impl MenuIconView {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let font = NSFont::menuBarFontOfSize(FONT_SIZE);
-        let active_color = NSColor::selectedMenuItemTextColor();
-        let inactive_color = NSColor::labelColor();
-        let active_attrs = build_text_attrs(font.as_ref(), active_color.as_ref());
-        let inactive_attrs = build_text_attrs(font.as_ref(), inactive_color.as_ref());
+        let active_font = NSFont::monospacedDigitSystemFontOfSize_weight(
+            FONT_SIZE,
+            unsafe { NSFontWeightSemibold },
+        );
+        let inactive_font = NSFont::monospacedDigitSystemFontOfSize_weight(
+            FONT_SIZE,
+            unsafe { NSFontWeightRegular },
+        );
+        let active_color = NSColor::labelColor();
+        let inactive_color = NSColor::secondaryLabelColor();
+        let empty_color = NSColor::tertiaryLabelColor();
+        let active_attrs = build_text_attrs(active_font.as_ref(), active_color.as_ref());
+        let inactive_attrs = build_text_attrs(inactive_font.as_ref(), inactive_color.as_ref());
+        let empty_attrs = build_text_attrs(inactive_font.as_ref(), empty_color.as_ref());
 
         let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
         let view = mtm.alloc().set_ivars(MenuIconViewIvars {
             layout: RefCell::new(MenuIconLayout::default()),
             active_text_attrs: active_attrs,
             inactive_text_attrs: inactive_attrs,
+            empty_text_attrs: empty_attrs,
         });
         unsafe { msg_send![super(view), initWithFrame: frame] }
     }
@@ -794,6 +808,7 @@ fn build_layout(
     inputs: &[WorkspaceRenderInput],
     active_attrs: &NSDictionary<NSAttributedStringKey, AnyObject>,
     inactive_attrs: &NSDictionary<NSAttributedStringKey, AnyObject>,
+    empty_attrs: &NSDictionary<NSAttributedStringKey, AnyObject>,
 ) -> MenuIconLayout {
     let total_height = CELL_HEIGHT;
 
@@ -810,15 +825,15 @@ fn build_layout(
             } else {
                 0.0
             }
-        } else if workspace.is_active {
-            1.0
         } else {
-            0.35
+            label_fill_alpha(workspace.is_active)
         };
 
         let label_line = if !input.label.is_empty() {
             let attrs = if workspace.is_active {
                 active_attrs
+            } else if workspace.window_count == 0 {
+                empty_attrs
             } else {
                 inactive_attrs
             };
@@ -911,6 +926,10 @@ fn label_cell_width(label_width: f64, has_icon: bool) -> f64 {
     CELL_WIDTH.max(label_width + icon_width + LABEL_HORIZONTAL_INSET * 2.0)
 }
 
+fn label_fill_alpha(is_active: bool) -> f64 {
+    if is_active { LABEL_ACTIVE_BACKGROUND_ALPHA } else { 0.0 }
+}
+
 fn label_and_icon_positions(
     content_x: f64,
     label_width: f64,
@@ -960,37 +979,39 @@ define_class!(
                 CGContext::clear_rect(Some(cg), bounds);
 
                 let y_offset = (bounds.size.height - layout.total_height) / 2.0;
-                let separator_color = NSColor::labelColor().CGColor();
+                let separator_color = NSColor::secondaryLabelColor().CGColor();
+                let layout_border = NSColor::separatorColor().CGColor();
+                let label_background = NSColor::labelColor().CGColor();
                 let active_background = NSColor::controlAccentColor().CGColor();
                 let inactive_background = NSColor::labelColor().CGColor();
 
                 CGContext::set_fill_color_with_color(Some(cg), Some(separator_color.as_ref()));
-                CGContext::set_alpha(Some(cg), 0.65);
+                CGContext::set_alpha(Some(cg), 0.48);
                 for separator_x in &layout.separators {
-                    let separator = CGRect::new(
-                        CGPoint::new(
-                            *separator_x - DISPLAY_SEPARATOR_WIDTH / 2.0,
-                            y_offset + (CELL_HEIGHT - DISPLAY_SEPARATOR_HEIGHT) / 2.0,
-                        ),
-                        CGSize::new(DISPLAY_SEPARATOR_WIDTH, DISPLAY_SEPARATOR_HEIGHT),
+                    add_rounded_rect(
+                        cg,
+                        *separator_x - DISPLAY_SEPARATOR_WIDTH / 2.0,
+                        y_offset + (CELL_HEIGHT - DISPLAY_SEPARATOR_HEIGHT) / 2.0,
+                        DISPLAY_SEPARATOR_WIDTH,
+                        DISPLAY_SEPARATOR_HEIGHT,
+                        DISPLAY_SEPARATOR_WIDTH / 2.0,
                     );
-                    CGContext::fill_rect(Some(cg), separator);
+                    CGContext::fill_path(Some(cg));
                 }
                 CGContext::set_alpha(Some(cg), 1.0);
 
                 for workspace in layout.workspaces.iter() {
                     let rect = workspace.bg_rect;
                     let bg_y = rect.origin.y + y_offset;
-                    add_rounded_rect(
-                        cg,
-                        rect.origin.x,
-                        bg_y,
-                        rect.size.width,
-                        rect.size.height,
-                        CORNER_RADIUS,
-                    );
-
-                    if workspace.fill_alpha > 0.0 {
+                    if workspace.show_windows {
+                        add_rounded_rect(
+                            cg,
+                            rect.origin.x,
+                            bg_y,
+                            rect.size.width,
+                            rect.size.height,
+                            CORNER_RADIUS,
+                        );
                         CGContext::save_g_state(Some(cg));
                         let background = if workspace.is_active {
                             active_background.as_ref()
@@ -1004,24 +1025,22 @@ define_class!(
                         );
                         CGContext::fill_path(Some(cg));
                         CGContext::restore_g_state(Some(cg));
-                    }
 
-                    add_rounded_rect(
-                        cg,
-                        rect.origin.x,
-                        bg_y,
-                        rect.size.width,
-                        rect.size.height,
-                        CORNER_RADIUS,
-                    );
-                    CGContext::set_stroke_color_with_color(
-                        Some(cg),
-                        Some(separator_color.as_ref()),
-                    );
-                    CGContext::set_line_width(Some(cg), BORDER_WIDTH);
-                    CGContext::stroke_path(Some(cg));
+                        add_rounded_rect(
+                            cg,
+                            rect.origin.x,
+                            bg_y,
+                            rect.size.width,
+                            rect.size.height,
+                            CORNER_RADIUS,
+                        );
+                        CGContext::set_stroke_color_with_color(
+                            Some(cg),
+                            Some(layout_border.as_ref()),
+                        );
+                        CGContext::set_line_width(Some(cg), BORDER_WIDTH);
+                        CGContext::stroke_path(Some(cg));
 
-                    if workspace.show_windows {
                         for window in workspace.windows.iter() {
                             add_rounded_rect(
                                 cg,
@@ -1049,13 +1068,49 @@ define_class!(
                             CGContext::stroke_path(Some(cg));
                             CGContext::restore_g_state(Some(cg));
                         }
+                    } else if workspace.is_active {
+                        add_rounded_rect(
+                            cg,
+                            rect.origin.x,
+                            bg_y,
+                            rect.size.width,
+                            rect.size.height,
+                            CORNER_RADIUS,
+                        );
+                        CGContext::set_fill_color_with_color(
+                            Some(cg),
+                            Some(label_background.as_ref()),
+                        );
+                        CGContext::set_alpha(Some(cg), workspace.fill_alpha);
+                        CGContext::fill_path(Some(cg));
+                        CGContext::set_alpha(Some(cg), LABEL_ACTIVE_INDICATOR_ALPHA);
+                        CGContext::set_fill_color_with_color(
+                            Some(cg),
+                            Some(active_background.as_ref()),
+                        );
+                        let indicator_width = (rect.size.width - 10.0).max(8.0);
+                        add_rounded_rect(
+                            cg,
+                            rect.origin.x + (rect.size.width - indicator_width) / 2.0,
+                            bg_y + 0.5,
+                            indicator_width,
+                            1.5,
+                            0.75,
+                        );
+                        CGContext::fill_path(Some(cg));
+                        CGContext::set_alpha(Some(cg), 1.0);
                     }
 
                     if let (Some(app_icon), Some(mut icon_rect)) =
                         (&workspace.app_icon, workspace.app_icon_rect)
                     {
                         icon_rect.origin.y += y_offset;
+                        CGContext::save_g_state(Some(cg));
+                        if !workspace.is_active {
+                            CGContext::set_alpha(Some(cg), LABEL_INACTIVE_ICON_ALPHA);
+                        }
                         app_icon.drawInRect(icon_rect);
+                        CGContext::restore_g_state(Some(cg));
                     }
 
                     if let Some(label_line) = &workspace.label_line {
@@ -1085,7 +1140,7 @@ mod tests {
     use super::{
         APP_ICON_SIZE, APP_ICON_SPACING, CELL_SPACING, DISPLAY_GROUP_SPACING,
         LABEL_HORIZONTAL_INSET, inter_workspace_spacing, label_and_icon_positions,
-        label_cell_width,
+        label_cell_width, label_fill_alpha,
     };
 
     #[test]
@@ -1112,5 +1167,13 @@ mod tests {
         assert_eq!(inter_workspace_spacing(false), CELL_SPACING);
         assert_eq!(inter_workspace_spacing(true), DISPLAY_GROUP_SPACING);
         assert!(DISPLAY_GROUP_SPACING > CELL_SPACING);
+    }
+
+    #[test]
+    fn label_style_only_gives_the_active_workspace_a_subtle_background() {
+        assert_eq!(label_fill_alpha(false), 0.0);
+        let active_alpha = label_fill_alpha(true);
+        assert!(active_alpha > 0.0);
+        assert!(active_alpha < 0.2);
     }
 }
