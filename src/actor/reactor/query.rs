@@ -39,8 +39,10 @@ impl Reactor {
             return;
         };
 
-        let (workspaces, display_starts) =
-            crate::interfaces::ui::grouped_workspace_data(&snapshot);
+        let (workspaces, display_starts) = crate::interfaces::ui::grouped_workspace_data(
+            &snapshot,
+            &self.config.virtual_workspaces.display_order,
+        );
         let active_space_is_activated = self.is_space_active(active_space);
         let active_workspace = display.active_workspace;
         let active_workspace_idx = workspaces

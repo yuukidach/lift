@@ -8,7 +8,7 @@ Lift is a focused macOS tiling window manager derived from [Rift](https://github
 - Ten global virtual workspaces numbered `0`–`9` and ordered as `1`–`9`, then `0`, with per-display active/last state and cross-display window movement.
 - Multi-display and native Spaces support with identity-safe migration when displays change or macOS reuses Space IDs.
 - Floating and fullscreen windows, focus and pointer controls, drag-to-swap, animations, gestures, and haptics.
-- Hot-reloaded application rules, a native menu bar indicator with per-display workspace groups, independent active highlights, and primary App icons, optional Mission Control UI, Stack Line, and grouped-window indicators.
+- Hot-reloaded application rules, a native menu bar indicator with left-to-right display groups, visible separators, independent active highlights, and primary App icons, optional Mission Control UI, Stack Line, and grouped-window indicators.
 - `lift-cli`, Mach IPC subscriptions, service management, metrics, recording, replay, and bounded diagnostics.
 
 Lift uses private macOS APIs but does not require disabling System Integrity Protection.

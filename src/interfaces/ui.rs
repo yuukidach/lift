@@ -69,10 +69,30 @@ pub fn workspace_data(snapshot: &CoreSnapshot) -> Vec<WorkspaceData> {
     workspace_data_for_display(snapshot, display)
 }
 
-pub fn grouped_workspace_data(snapshot: &CoreSnapshot) -> (Vec<WorkspaceData>, Vec<usize>) {
+pub fn grouped_workspace_data(
+    snapshot: &CoreSnapshot,
+    preferred_display_order: &[String],
+) -> (Vec<WorkspaceData>, Vec<usize>) {
     let mut workspaces = Vec::new();
     let mut display_starts = Vec::new();
-    for display in &snapshot.displays {
+    let mut displays = snapshot.displays.iter().collect::<Vec<_>>();
+    displays.sort_by(|left, right| {
+        let configured_rank = |display: &DisplaySnapshot| {
+            preferred_display_order.iter().position(|uuid| uuid == &display.id.0)
+        };
+        match (configured_rank(left), configured_rank(right)) {
+            (Some(left), Some(right)) => left.cmp(&right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left
+                .frame
+                .origin
+                .x
+                .total_cmp(&right.frame.origin.x)
+                .then_with(|| left.frame.origin.y.total_cmp(&right.frame.origin.y)),
+        }
+    });
+    for display in displays {
         let display_workspaces = workspace_data_for_display(snapshot, display);
         if display_workspaces.is_empty() {
             continue;
@@ -266,16 +286,16 @@ mod tests {
             last_floating_window: None,
             layout_frames: BTreeMap::new(),
         };
-        let display = |id: &DisplayId, active_workspace| DisplaySnapshot {
+        let display = |id: &DisplayId, active_workspace, x| DisplaySnapshot {
             id: id.clone(),
-            frame: Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap(),
+            frame: Rect::new(x, 0.0, 1000.0, 800.0).unwrap(),
             space: Some(SpaceId(active_workspace)),
             is_active_context: id == &left,
             active_workspace: Some(WorkspaceId(active_workspace)),
             last_workspace: None,
         };
         let snapshot = CoreSnapshot {
-            displays: vec![display(&left, 1), display(&right, 2)],
+            displays: vec![display(&right, 2, 0.0), display(&left, 1, -1000.0)],
             workspaces: vec![
                 workspace(1, 1, &left),
                 workspace(3, 3, &left),
@@ -284,7 +304,7 @@ mod tests {
             ..CoreSnapshot::default()
         };
 
-        let (workspaces, display_starts) = grouped_workspace_data(&snapshot);
+        let (workspaces, display_starts) = grouped_workspace_data(&snapshot, &[]);
 
         assert_eq!(display_starts, vec![2]);
         assert_eq!(
@@ -298,6 +318,15 @@ mod tests {
                 .map(|workspace| workspace.number)
                 .collect::<Vec<_>>(),
             vec![1, 2]
+        );
+
+        let configured_order = vec!["right".to_string(), "left".to_string()];
+        let (workspaces, display_starts) =
+            grouped_workspace_data(&snapshot, &configured_order);
+        assert_eq!(display_starts, vec![1]);
+        assert_eq!(
+            workspaces.iter().map(|workspace| workspace.number).collect::<Vec<_>>(),
+            vec![2, 1, 3]
         );
     }
 }

@@ -96,6 +96,10 @@ pub struct VirtualWorkspaceSettings {
     /// number 1". Mid-session ws creation is not constrained by this map.
     #[serde(default)]
     pub display_default_workspaces: HashMap<String, usize>,
+    /// Stable display UUIDs ordered from left to right for workspace UI.
+    /// Unlisted displays follow their observed physical position.
+    #[serde(default)]
+    pub display_order: Vec<String>,
     /// Ordered display UUIDs used as receivers when another display is removed.
     #[serde(default)]
     pub display_migration_priority: Vec<String>,
@@ -168,6 +172,7 @@ impl Default for VirtualWorkspaceSettings {
             reapply_app_rules_on_title_change: false,
             app_rules: Vec::new(),
             display_default_workspaces: HashMap::default(),
+            display_order: Vec::new(),
             display_migration_priority: Vec::new(),
         }
     }
@@ -196,6 +201,15 @@ impl VirtualWorkspaceSettings {
                     "display_default_workspaces[{}] = {} is outside 0..=9",
                     uuid, number
                 ));
+            }
+        }
+
+        let mut seen_display_order_uuids = crate::common::collections::HashSet::default();
+        for uuid in &self.display_order {
+            if uuid.trim().is_empty() {
+                issues.push("display_order has empty display UUID".to_string());
+            } else if !seen_display_order_uuids.insert(uuid.clone()) {
+                issues.push(format!("display_order has duplicate display UUID '{}'", uuid));
             }
         }
 
@@ -1273,6 +1287,22 @@ mod tests {
         assert!(VirtualWorkspaceSettings::default()
             .display_migration_priority
             .is_empty());
+    }
+
+    #[test]
+    fn display_order_preserves_configured_order_and_rejects_invalid_uuids() {
+        let settings: VirtualWorkspaceSettings =
+            toml::from_str(r#"display_order = ["display-left", "display-right"]"#).unwrap();
+        assert_eq!(
+            settings.display_order,
+            vec!["display-left".to_string(), "display-right".to_string()]
+        );
+
+        let mut invalid = VirtualWorkspaceSettings::default();
+        invalid.display_order = vec!["display-left".into(), "".into(), "display-left".into()];
+        let issues = invalid.validate();
+        assert!(issues.iter().any(|issue| issue.contains("display_order has empty")));
+        assert!(issues.iter().any(|issue| issue.contains("display_order has duplicate")));
     }
 
     #[test]

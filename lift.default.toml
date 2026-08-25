@@ -187,6 +187,10 @@ reapply_app_rules_on_title_change = false
 # display_default_workspaces = { "30999A24-1234-5678-..." = 1 }
 display_default_workspaces = {}
 
+# Workspace groups in the native menu bar follow this stable left-to-right
+# display UUID order. Unlisted displays fall back to their physical position.
+display_order = []
+
 # Preferred receivers when a display is removed, highest priority first.
 # Online entries override the macOS main display; unlisted displays fall back
 # to main-display-first, then display UUID alphabetical order.

@@ -45,8 +45,9 @@ const FONT_SIZE: f64 = 12.0;
 const LABEL_HORIZONTAL_INSET: f64 = 4.0;
 const APP_ICON_SIZE: f64 = 13.0;
 const APP_ICON_SPACING: f64 = 3.0;
-const DISPLAY_GROUP_SPACING: f64 = 10.0;
-const DISPLAY_SEPARATOR_HEIGHT: f64 = 11.0;
+const DISPLAY_GROUP_SPACING: f64 = 14.0;
+const DISPLAY_SEPARATOR_HEIGHT: f64 = 13.0;
+const DISPLAY_SEPARATOR_WIDTH: f64 = 1.5;
 
 #[derive(Debug, Clone, Copy)]
 pub enum MenuAction {
@@ -959,18 +960,23 @@ define_class!(
                 CGContext::clear_rect(Some(cg), bounds);
 
                 let y_offset = (bounds.size.height - layout.total_height) / 2.0;
-                let separator_color = NSColor::separatorColor().CGColor();
+                let separator_color = NSColor::labelColor().CGColor();
                 let active_background = NSColor::controlAccentColor().CGColor();
                 let inactive_background = NSColor::labelColor().CGColor();
 
                 CGContext::set_fill_color_with_color(Some(cg), Some(separator_color.as_ref()));
+                CGContext::set_alpha(Some(cg), 0.65);
                 for separator_x in &layout.separators {
                     let separator = CGRect::new(
-                        CGPoint::new(*separator_x - 0.5, y_offset + 2.0),
-                        CGSize::new(1.0, DISPLAY_SEPARATOR_HEIGHT),
+                        CGPoint::new(
+                            *separator_x - DISPLAY_SEPARATOR_WIDTH / 2.0,
+                            y_offset + (CELL_HEIGHT - DISPLAY_SEPARATOR_HEIGHT) / 2.0,
+                        ),
+                        CGSize::new(DISPLAY_SEPARATOR_WIDTH, DISPLAY_SEPARATOR_HEIGHT),
                     );
                     CGContext::fill_rect(Some(cg), separator);
                 }
+                CGContext::set_alpha(Some(cg), 1.0);
 
                 for workspace in layout.workspaces.iter() {
                     let rect = workspace.bg_rect;
