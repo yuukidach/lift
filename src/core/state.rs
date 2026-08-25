@@ -457,6 +457,64 @@ mod tests {
     }
 
     #[test]
+    fn current_workspace_rule_does_not_follow_later_workspace_switches() {
+        let mut config = CoreConfig::default();
+        config.window_rules.push(WindowRule {
+            app_id: Some("com.example.Terminal".into()),
+            app_name: None,
+            title_regex: None,
+            title_substring: None,
+            ax_role: None,
+            ax_subrole: None,
+            workspace: WorkspaceTarget::Current,
+            floating: false,
+            manage: true,
+        });
+        let mut state = CoreState::new(config);
+        let tracked = window(1);
+        let initial = observe(
+            &mut state,
+            1,
+            vec![display("main", 9)],
+            vec![observed_window(tracked, "main")],
+        )
+        .unwrap();
+        let original_workspace = initial.snapshot.windows[0].workspace.unwrap();
+
+        state
+            .transition(Input::Command(Command::Workspace(
+                WorkspaceCommand::ActivateOrCreate {
+                    workspace: number(2),
+                    display: DisplayId("main".into()),
+                },
+            )))
+            .unwrap();
+        let observed_after_switch = observe(
+            &mut state,
+            2,
+            vec![display("main", 9)],
+            vec![observed_window(tracked, "main")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            observed_after_switch.snapshot.windows[0].workspace,
+            Some(original_workspace)
+        );
+        assert_eq!(
+            observed_after_switch.snapshot.displays[0]
+                .active_workspace
+                .and_then(|workspace| observed_after_switch
+                    .snapshot
+                    .workspaces
+                    .iter()
+                    .find(|candidate| candidate.id == workspace)
+                    .map(|workspace| workspace.number)),
+            Some(number(2))
+        );
+    }
+
+    #[test]
     fn repeated_identical_observation_has_an_empty_change_set() {
         let mut state = CoreState::new(CoreConfig::default());
         let initial = observe(

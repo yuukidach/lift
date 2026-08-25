@@ -57,6 +57,23 @@ The limits can be changed with `settings.diagnostics` in the configuration.
 The `tail` command reads the newest records across rotated files and works even
 when the Lift service is stopped.
 
+## Stable local signing
+
+An ad-hoc signature identifies only one exact build, so replacing the binary
+can make macOS request Accessibility permission again. For local development,
+create a persistent signing identity once and use the guarded installer for
+all later builds:
+
+```bash
+scripts/setup-local-signing.sh
+scripts/install-local.sh
+```
+
+The first command creates a non-extractable private key in the login keychain.
+Changing to that identity requires one final Accessibility authorization. The
+installer then preserves the same designated requirement across builds and
+refuses to install a binary whose identity falls back to a per-build `cdhash`.
+
 ## Architecture
 
 - [Target core architecture](docs/design/2026-08-25-lift-core-architecture-design.md)

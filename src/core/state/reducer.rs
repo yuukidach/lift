@@ -369,48 +369,37 @@ impl CoreState {
                     } else {
                         floating
                     };
-                    let target = if rule_index.is_none()
-                        && existing.is_some_and(|workspace| {
-                            self.workspaces.display_for_workspace(workspace) == Some(&display)
-                        })
-                    {
-                        existing.expect("checked above")
-                    } else if rule_index.is_none() && existing.is_some() {
-                        self.workspaces.active_workspace(&display).ok_or_else(|| {
-                            CoreError::IncompleteObservation(format!(
-                                "display {display:?} has no active workspace for moved window {:?}",
-                                window.id
-                            ))
-                        })?
-                    } else {
-                        match workspace {
-                            WorkspaceTarget::Number(number) => {
-                                if let Some(workspace) =
-                                    self.workspaces.workspace_by_number(number)
-                                {
-                                    workspace
-                                } else {
-                                    self.workspaces.create_numbered(number, display.clone())?
-                                }
+                    let existing_on_display = existing.filter(|workspace| {
+                        self.workspaces.display_for_workspace(*workspace) == Some(&display)
+                    });
+                    let target = match workspace {
+                        WorkspaceTarget::Number(number) => {
+                            if let Some(workspace) = self.workspaces.workspace_by_number(number) {
+                                workspace
+                            } else {
+                                self.workspaces.create_numbered(number, display.clone())?
                             }
-                            WorkspaceTarget::Name(name) => self
-                                .workspaces
-                                .workspace_by_name(&display, &name)
-                                .or_else(|| self.workspaces.active_workspace(&display))
-                                .ok_or_else(|| {
-                                    CoreError::InvalidCommand(format!(
-                                        "display {display:?} has no active workspace"
-                                    ))
-                                })?,
-                            WorkspaceTarget::Current => self
-                                .workspaces
-                                .active_workspace(&display)
-                                .ok_or_else(|| {
-                                    CoreError::InvalidCommand(format!(
-                                        "display {display:?} has no active workspace"
-                                    ))
-                                })?,
                         }
+                        WorkspaceTarget::Name(name) => self
+                            .workspaces
+                            .workspace_by_name(&display, &name)
+                            .or_else(|| self.workspaces.active_workspace(&display))
+                            .ok_or_else(|| {
+                                CoreError::InvalidCommand(format!(
+                                    "display {display:?} has no active workspace"
+                                ))
+                            })?,
+                        // `Current` is an initial-placement policy. Reapplying
+                        // it on every platform observation makes a visible
+                        // window follow each workspace activation, so the UI
+                        // reports a switch while the screen never changes.
+                        WorkspaceTarget::Current => existing_on_display
+                            .or_else(|| self.workspaces.active_workspace(&display))
+                            .ok_or_else(|| {
+                                CoreError::InvalidCommand(format!(
+                                    "display {display:?} has no active workspace"
+                                ))
+                            })?,
                     };
                     if floating {
                         self.workspaces.assign_floating(target, window.id)?;
