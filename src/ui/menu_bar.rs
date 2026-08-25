@@ -842,12 +842,10 @@ impl MenuIconView {
         let inactive_font = NSFont::monospacedDigitSystemFontOfSize_weight(FONT_SIZE, unsafe {
             NSFontWeightRegular
         });
-        let active_color = NSColor::labelColor();
-        let inactive_color = NSColor::secondaryLabelColor();
-        let empty_color = NSColor::tertiaryLabelColor();
-        let active_attrs = build_text_attrs(active_font.as_ref(), active_color.as_ref());
-        let inactive_attrs = build_text_attrs(inactive_font.as_ref(), inactive_color.as_ref());
-        let empty_attrs = build_text_attrs(inactive_font.as_ref(), empty_color.as_ref());
+        let label_color = NSColor::labelColor();
+        let active_attrs = build_text_attrs(active_font.as_ref(), label_color.as_ref());
+        let inactive_attrs = build_text_attrs(inactive_font.as_ref(), label_color.as_ref());
+        let empty_attrs = build_text_attrs(inactive_font.as_ref(), label_color.as_ref());
 
         let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
         let view = mtm.alloc().set_ivars(MenuIconViewIvars {
@@ -1212,6 +1210,9 @@ define_class!(
     struct MenuIconView;
 
     impl MenuIconView {
+        #[unsafe(method(allowsVibrancy))]
+        fn allows_vibrancy(&self) -> bool { true }
+
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, _point: NSPoint) -> Option<&NSView> { None }
 
