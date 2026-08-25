@@ -37,12 +37,21 @@ impl Reactor {
             return;
         };
 
-        let (workspaces, display_starts) = crate::interfaces::ui::menu_bar_workspace_data(
+        let displays = crate::interfaces::ui::menu_bar_display_data(
             &snapshot,
-            display,
-            self.config.settings.ui.menu_bar.workspace_scope,
             &self.config.virtual_workspaces.display_order,
         );
+        let mut workspaces = Vec::new();
+        let mut display_starts = Vec::new();
+        for display in &displays {
+            if display.workspaces.is_empty() {
+                continue;
+            }
+            if !workspaces.is_empty() {
+                display_starts.push(workspaces.len());
+            }
+            workspaces.extend(display.workspaces.iter().cloned());
+        }
         let active_space_is_activated = self.is_space_active(active_space);
         let active_workspace = display.active_workspace;
         let active_workspace_idx = workspaces
@@ -58,6 +67,7 @@ impl Reactor {
             active_space_is_activated,
             workspaces,
             display_starts,
+            displays,
             active_workspace_idx,
             active_workspace,
             windows,

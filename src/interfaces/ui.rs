@@ -1,11 +1,17 @@
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 
 use crate::actor::app::WindowId;
-use crate::common::config::MenuBarWorkspaceScope;
+use crate::core::geometry::Rect;
 use crate::core::snapshot::{CoreSnapshot, DisplaySnapshot, WindowSnapshot, WorkspaceSnapshot};
 use crate::model::server::{WindowData, WorkspaceData};
 use crate::sys::app::WindowInfo;
 use crate::sys::window_server::WindowServerId;
+
+#[derive(Clone, Debug)]
+pub struct MenuBarDisplayData {
+    pub frame: Rect,
+    pub workspaces: Vec<WorkspaceData>,
+}
 
 pub fn active_context_display(snapshot: &CoreSnapshot) -> Option<&DisplaySnapshot> {
     snapshot
@@ -75,6 +81,22 @@ pub fn grouped_workspace_data(
 ) -> (Vec<WorkspaceData>, Vec<usize>) {
     let mut workspaces = Vec::new();
     let mut display_starts = Vec::new();
+    for display in menu_bar_display_data(snapshot, preferred_display_order) {
+        if display.workspaces.is_empty() {
+            continue;
+        }
+        if !workspaces.is_empty() {
+            display_starts.push(workspaces.len());
+        }
+        workspaces.extend(display.workspaces);
+    }
+    (workspaces, display_starts)
+}
+
+pub fn menu_bar_display_data(
+    snapshot: &CoreSnapshot,
+    preferred_display_order: &[String],
+) -> Vec<MenuBarDisplayData> {
     let mut displays = snapshot.displays.iter().collect::<Vec<_>>();
     displays.sort_by(|left, right| {
         let configured_rank = |display: &DisplaySnapshot| {
@@ -92,31 +114,13 @@ pub fn grouped_workspace_data(
                 .then_with(|| left.frame.origin.y.total_cmp(&right.frame.origin.y)),
         }
     });
-    for display in displays {
-        let display_workspaces = workspace_data_for_display(snapshot, display);
-        if display_workspaces.is_empty() {
-            continue;
-        }
-        if !workspaces.is_empty() {
-            display_starts.push(workspaces.len());
-        }
-        workspaces.extend(display_workspaces);
-    }
-    (workspaces, display_starts)
-}
-
-pub fn menu_bar_workspace_data(
-    snapshot: &CoreSnapshot,
-    display: &DisplaySnapshot,
-    scope: MenuBarWorkspaceScope,
-    preferred_display_order: &[String],
-) -> (Vec<WorkspaceData>, Vec<usize>) {
-    match scope {
-        MenuBarWorkspaceScope::PerDisplay => {
-            (workspace_data_for_display(snapshot, display), Vec::new())
-        }
-        MenuBarWorkspaceScope::Global => grouped_workspace_data(snapshot, preferred_display_order),
-    }
+    displays
+        .into_iter()
+        .map(|display| MenuBarDisplayData {
+            frame: display.frame,
+            workspaces: workspace_data_for_display(snapshot, display),
+        })
+        .collect()
 }
 
 pub fn workspace_data_for_display(
@@ -340,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn menu_bar_workspace_scope_selects_current_display_or_global_groups() {
+    fn menu_bar_display_data_keeps_each_displays_workspaces() {
         let left = DisplayId("left".into());
         let right = DisplayId("right".into());
         let workspace = |id, number, display: &DisplayId| WorkspaceSnapshot {
@@ -377,24 +381,26 @@ mod tests {
             ..CoreSnapshot::default()
         };
 
-        let (per_display, starts) = menu_bar_workspace_data(
-            &snapshot,
-            &snapshot.displays[0],
-            MenuBarWorkspaceScope::PerDisplay,
-            &[],
-        );
+        let displays = menu_bar_display_data(&snapshot, &[]);
+        assert_eq!(displays.len(), 2);
         assert_eq!(
-            per_display.iter().map(|workspace| workspace.number).collect::<Vec<_>>(),
+            displays[0]
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.number)
+                .collect::<Vec<_>>(),
             vec![1]
         );
-        assert!(starts.is_empty());
-
-        let (global, starts) = menu_bar_workspace_data(
-            &snapshot,
-            &snapshot.displays[0],
-            MenuBarWorkspaceScope::Global,
-            &[],
+        assert_eq!(
+            displays[1]
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.number)
+                .collect::<Vec<_>>(),
+            vec![2]
         );
+
+        let (global, starts) = grouped_workspace_data(&snapshot, &[]);
         assert_eq!(
             global.iter().map(|workspace| workspace.number).collect::<Vec<_>>(),
             vec![1, 2]

@@ -8,6 +8,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::actor::{config, reactor};
 use crate::common::config::{Config, ConfigCommand};
+use crate::interfaces::ui::MenuBarDisplayData;
 use crate::model::layout::LayoutCommand;
 use crate::model::server::{WindowData, WorkspaceData};
 use crate::sys::screen::SpaceId;
@@ -20,6 +21,7 @@ pub struct Update {
     pub active_space_is_activated: bool,
     pub workspaces: Vec<WorkspaceData>,
     pub display_starts: Vec<usize>,
+    pub displays: Vec<MenuBarDisplayData>,
     pub active_workspace_idx: Option<u64>,
     pub active_workspace: Option<crate::core::ids::WorkspaceId>,
     pub windows: Vec<WindowData>,
@@ -153,6 +155,7 @@ impl Menu {
             update.active_workspace_idx,
             &update.workspaces,
             &update.display_starts,
+            &update.displays,
             &update.windows,
         );
         if self.last_signature == Some(sig) {
@@ -166,6 +169,7 @@ impl Menu {
             update.active_space_is_activated,
             &update.workspaces,
             &update.display_starts,
+            &update.displays,
             update.active_workspace,
             &update.windows,
             menu_bar_settings,
@@ -286,6 +290,7 @@ fn sig(
     active_workspace: Option<u64>,
     workspaces: &[WorkspaceData],
     display_starts: &[usize],
+    displays: &[MenuBarDisplayData],
     windows: &[WindowData],
 ) -> u64 {
     let mut x = active_space
@@ -312,6 +317,17 @@ fn sig(
 
     for &start in display_starts {
         let v = (start as u64).rotate_left(41);
+        x ^= v;
+        s = s.wrapping_add(v);
+    }
+
+    for display in displays {
+        let frame = display.frame;
+        let v = frame.origin.x.to_bits()
+            ^ frame.origin.y.to_bits().rotate_left(13)
+            ^ frame.size.width.to_bits().rotate_left(29)
+            ^ frame.size.height.to_bits().rotate_left(47)
+            ^ (display.workspaces.len() as u64).rotate_left(7);
         x ^= v;
         s = s.wrapping_add(v);
     }
@@ -385,8 +401,8 @@ mod tests {
         let base = vec![workspace("main")];
         let changed = vec![workspace("coding")];
 
-        let before = sig(1, true, Some(0), &base, &[], &[]);
-        let after = sig(1, true, Some(0), &changed, &[], &[]);
+        let before = sig(1, true, Some(0), &base, &[], &[], &[]);
+        let after = sig(1, true, Some(0), &changed, &[], &[], &[]);
 
         assert_ne!(before, after);
     }
@@ -395,8 +411,8 @@ mod tests {
     fn signature_changes_when_display_boundary_changes() {
         let workspaces = vec![workspace("one"), workspace("two")];
 
-        let single_display = sig(1, true, Some(0), &workspaces, &[], &[]);
-        let two_displays = sig(1, true, Some(0), &workspaces, &[1], &[]);
+        let single_display = sig(1, true, Some(0), &workspaces, &[], &[], &[]);
+        let two_displays = sig(1, true, Some(0), &workspaces, &[1], &[], &[]);
 
         assert_ne!(single_display, two_displays);
     }
