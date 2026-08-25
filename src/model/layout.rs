@@ -47,6 +47,7 @@ pub enum LayoutCommand {
     ResizeWindowBy {
         amount: f64,
     },
+    ResizeWindowDirectional(Direction),
     NextWorkspace(Option<bool>),
     PrevWorkspace(Option<bool>),
     SwitchToWorkspace(usize),

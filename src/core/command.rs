@@ -41,6 +41,10 @@ pub enum WindowCommand {
         amount: f64,
         window: Option<WindowId>,
     },
+    ResizeDirectional {
+        direction: Direction,
+        window: Option<WindowId>,
+    },
     ToggleFocusLayer {
         window: Option<WindowId>,
     },

@@ -568,6 +568,12 @@ impl CoreState {
                     self.workspaces.resize(window, amount)?;
                 }
             }
+            Command::Window(WindowCommand::ResizeDirectional { direction, window }) => {
+                let window = self.command_window(window)?;
+                if !self.workspaces.is_floating(window) {
+                    self.workspaces.resize_directional(window, direction)?;
+                }
+            }
             Command::Window(WindowCommand::ToggleFocusLayer { window }) => {
                 let window = self.command_window(window)?;
                 let workspace = self

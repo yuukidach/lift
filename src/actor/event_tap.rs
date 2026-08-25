@@ -19,7 +19,7 @@ use std::cell::{Cell, RefCell};
 use std::panic::AssertUnwindSafe;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use objc2_core_foundation::{CGPoint, CGRect};
@@ -49,6 +49,7 @@ const MOUSE_MOVE_MIN_INTERVAL_NS_NORMAL: u64 = 8_000_000; // 8ms ~= 125 Hz
 const MOUSE_MOVE_MIN_DISTANCE_PX_SQ_NORMAL: f64 = 4.0; // 2px^2
 const MOUSE_MOVE_MIN_INTERVAL_NS_LOW_POWER: u64 = 16_000_000; // 16ms ~= 62 Hz
 const MOUSE_MOVE_MIN_DISTANCE_PX_SQ_LOW_POWER: f64 = 9.0; // 3px^2
+const RESIZE_MODE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub enum Request {
@@ -59,6 +60,7 @@ pub enum Request {
     SetEventProcessing(bool),
     SetFocusFollowsMouseEnabled(bool),
     SetHotkeys(Vec<(String, WmCommand)>),
+    EnterResizeMode,
     KeyboardLayoutChanged,
     ConfigUpdated(Config),
     SetLowPowerMode(bool),
@@ -100,6 +102,7 @@ struct State {
     screen_spaces: Vec<(CGRect, SpaceId)>,
     last_mouse_move_loc: Option<CGPoint>,
     last_mouse_move_timestamp: u64,
+    resize_mode_deadline: Option<Instant>,
 }
 
 impl Default for State {
@@ -120,6 +123,7 @@ impl Default for State {
             screen_spaces: Vec::new(),
             last_mouse_move_loc: None,
             last_mouse_move_timestamp: 0,
+            resize_mode_deadline: None,
         }
     }
 }
@@ -364,6 +368,7 @@ impl EventTap {
                 self.rebuild_hotkeys_for_current_layout();
                 should_rebuild_mask = true;
             }
+            Request::EnterResizeMode => state.enter_resize_mode(Instant::now()),
             Request::KeyboardLayoutChanged => {
                 self.rebuild_hotkeys_for_current_layout();
                 should_rebuild_mask = true;
@@ -580,6 +585,29 @@ impl EventTap {
 
         if event_type == CGEventType::KeyDown {
             if let Some(key_code) = key_code_opt {
+                if let Some(action) = state.resize_mode_action(key_code, Instant::now()) {
+                    match action {
+                        ResizeModeAction::Resize(direction) => {
+                            let command = WmCommand::ReactorCommand(reactor::Command::Layout(
+                                crate::model::layout::LayoutCommand::ResizeWindowDirectional(
+                                    direction,
+                                ),
+                            ));
+                            self.events_tx.send(Event::UserInput(
+                                crate::runtime::diagnostics::UserInputTrace {
+                                    source: "resize_mode".into(),
+                                    input: key_code.to_string(),
+                                    command: serde_json::to_value(&command).unwrap_or_else(|error| {
+                                        serde_json::json!({"serialization_error": error.to_string()})
+                                    }),
+                                },
+                            ));
+                            self.wm_sender.send(WmEvent::Command(command));
+                        }
+                        ResizeModeAction::Exit => debug!("Exited resize mode"),
+                    }
+                    return false;
+                }
                 let hotkey = Hotkey::new(
                     modifiers_from_flags_with_keys(state.current_flags, &state.pressed_keys),
                     key_code,
@@ -596,7 +624,12 @@ impl EventTap {
                                 }),
                             },
                         ));
-                        self.wm_sender.send(WmEvent::Command(cmd.clone()));
+                        if matches!(cmd, WmCommand::Wm(wm_controller::WmCmd::ResizeMode)) {
+                            state.enter_resize_mode(Instant::now());
+                            debug!("Entered resize mode");
+                        } else {
+                            self.wm_sender.send(WmEvent::Command(cmd.clone()));
+                        }
                     }
                     return false;
                 }
@@ -660,6 +693,34 @@ unsafe extern "C-unwind" fn mouse_callback(
 }
 
 impl State {
+    fn enter_resize_mode(&mut self, now: Instant) {
+        self.resize_mode_deadline = Some(now + RESIZE_MODE_TIMEOUT);
+    }
+
+    fn resize_mode_action(&mut self, key_code: KeyCode, now: Instant) -> Option<ResizeModeAction> {
+        let deadline = self.resize_mode_deadline?;
+        if now > deadline {
+            self.resize_mode_deadline = None;
+            return None;
+        }
+        let direction = match key_code {
+            KeyCode::ArrowLeft => Some(crate::model::layout::Direction::Left),
+            KeyCode::ArrowRight => Some(crate::model::layout::Direction::Right),
+            KeyCode::ArrowUp => Some(crate::model::layout::Direction::Up),
+            KeyCode::ArrowDown => Some(crate::model::layout::Direction::Down),
+            KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter => {
+                self.resize_mode_deadline = None;
+                return Some(ResizeModeAction::Exit);
+            }
+            _ => {
+                self.resize_mode_deadline = None;
+                return None;
+            }
+        };
+        self.resize_mode_deadline = Some(now + RESIZE_MODE_TIMEOUT);
+        direction.map(ResizeModeAction::Resize)
+    }
+
     fn hide_mouse(&mut self) {
         if let Err(e) = event::hide_mouse() {
             warn!("Failed to hide mouse: {e:?}");
@@ -775,10 +836,65 @@ impl State {
     }
 
     fn reset(&mut self, enabled: bool) {
+        self.resize_mode_deadline = None;
         if enabled {
             self.last_mouse_move_loc = None;
             self.last_mouse_move_timestamp = 0;
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResizeModeAction {
+    Resize(crate::model::layout::Direction),
+    Exit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::layout::Direction;
+
+    #[test]
+    fn resize_mode_maps_arrows_and_refreshes_its_deadline() {
+        let mut state = State::default();
+        let now = Instant::now();
+        state.enter_resize_mode(now);
+
+        assert_eq!(
+            state.resize_mode_action(KeyCode::ArrowLeft, now + Duration::from_secs(9)),
+            Some(ResizeModeAction::Resize(Direction::Left))
+        );
+        assert_eq!(
+            state.resize_mode_action(KeyCode::ArrowDown, now + Duration::from_secs(18)),
+            Some(ResizeModeAction::Resize(Direction::Down))
+        );
+    }
+
+    #[test]
+    fn resize_mode_exits_explicitly_or_after_inactivity() {
+        let mut state = State::default();
+        let now = Instant::now();
+        state.enter_resize_mode(now);
+        assert_eq!(
+            state.resize_mode_action(KeyCode::Escape, now),
+            Some(ResizeModeAction::Exit)
+        );
+        assert!(state.resize_mode_deadline.is_none());
+
+        state.enter_resize_mode(now);
+        assert_eq!(
+            state.resize_mode_action(KeyCode::ArrowRight, now + RESIZE_MODE_TIMEOUT),
+            Some(ResizeModeAction::Resize(Direction::Right))
+        );
+        assert_eq!(
+            state.resize_mode_action(
+                KeyCode::ArrowRight,
+                now + RESIZE_MODE_TIMEOUT + RESIZE_MODE_TIMEOUT + Duration::from_millis(1),
+            ),
+            None
+        );
+        assert!(state.resize_mode_deadline.is_none());
     }
 }
 

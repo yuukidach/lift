@@ -279,6 +279,36 @@ impl BspTree {
         Ok(true)
     }
 
+    pub fn resize_axis(
+        &mut self,
+        window: WindowId,
+        axis: Axis,
+        amount: f64,
+    ) -> Result<bool, BspError> {
+        if !amount.is_finite() {
+            return Err(BspError::InvalidRatio(amount));
+        }
+        let mut child =
+            self.window_nodes.get(&window).copied().ok_or(BspError::MissingWindow(window))?;
+        while let Some(parent) = self.parent_of(child) {
+            let Some(BspNode::Split {
+                axis: split_axis, ratio, first, ..
+            }) = self.nodes.get_mut(&parent)
+            else {
+                return Err(BspError::InvariantViolation(
+                    "window ancestor is not a split".into(),
+                ));
+            };
+            if *split_axis == axis {
+                let delta = if *first == child { amount } else { -amount };
+                *ratio = Ratio::new((ratio.get() + delta).clamp(0.05, 0.95))?;
+                return Ok(true);
+            }
+            child = parent;
+        }
+        Ok(false)
+    }
+
     pub fn toggle_orientation(&mut self, window: WindowId) -> Result<bool, BspError> {
         let node =
             self.window_nodes.get(&window).copied().ok_or(BspError::MissingWindow(window))?;
@@ -891,6 +921,27 @@ mod tests {
         let fullscreen = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
         assert_eq!(fullscreen.len(), 1);
         assert_eq!(fullscreen[&window(2)], frame);
+    }
+
+    #[test]
+    fn directional_resize_uses_the_nearest_split_on_the_requested_axis() {
+        let mut tree = BspTree::default();
+        tree.insert_after(None, window(1)).unwrap();
+        tree.insert_after(Some(window(1)), window(2)).unwrap();
+        tree.insert_after(Some(window(2)), window(3)).unwrap();
+        let frame = Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap();
+        let gaps = Gaps::default();
+        let balanced = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+
+        assert!(tree.resize_axis(window(3), Axis::Horizontal, 0.1).unwrap());
+        let wider = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+        assert!(wider[&window(3)].size.width > balanced[&window(3)].size.width);
+        assert_eq!(wider[&window(3)].size.height, balanced[&window(3)].size.height);
+
+        assert!(tree.resize_axis(window(3), Axis::Vertical, -0.1).unwrap());
+        let shorter = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+        assert!(shorter[&window(3)].size.height < wider[&window(3)].size.height);
+        tree.validate().unwrap();
     }
 
     #[test]

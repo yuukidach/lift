@@ -67,6 +67,7 @@ pub enum WmCmd {
     SwitchToWorkspace(WorkspaceSelector),
     MoveWindowToWorkspace(WorkspaceSelector),
     MoveWindowToHiddenWorkspace,
+    ResizeMode,
     CreateWorkspace,
     SwitchToLastWorkspace,
     ToggleHiddenWorkspace,
@@ -367,6 +368,9 @@ impl WmController {
                 self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(
                     layout::LayoutCommand::MoveWindowToHiddenWorkspace { window_id: None },
                 )));
+            }
+            Command(Wm(ResizeMode)) => {
+                _ = self.event_tap_tx.send(event_tap::Request::EnterResizeMode);
             }
             Command(Wm(CreateWorkspace)) => {
                 self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(

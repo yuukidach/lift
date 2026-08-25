@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::bsp::{BspError, BspTree};
+use super::bsp::{Axis, BspError, BspTree};
+use super::command::Direction;
 use super::config::LayoutConfig;
 use super::constraints::WindowConstraints;
 use super::error::CoreError;
@@ -616,6 +617,27 @@ impl WorkspaceCatalog {
             .expect("window assignments reference live workspaces")
             .tiled
             .resize(window, amount)
+            .map_err(map_bsp_error)
+    }
+
+    pub fn resize_directional(
+        &mut self,
+        window: WindowId,
+        direction: Direction,
+    ) -> Result<bool, CoreError> {
+        let workspace =
+            self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
+        let (axis, amount) = match direction {
+            Direction::Left => (Axis::Horizontal, -0.05),
+            Direction::Right => (Axis::Horizontal, 0.05),
+            Direction::Up => (Axis::Vertical, -0.05),
+            Direction::Down => (Axis::Vertical, 0.05),
+        };
+        self.workspaces
+            .get_mut(&workspace)
+            .expect("window assignments reference live workspaces")
+            .tiled
+            .resize_axis(window, axis, amount)
             .map_err(map_bsp_error)
     }
 

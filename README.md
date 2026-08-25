@@ -4,7 +4,7 @@ Lift is a lightweight macOS tiling window manager derived from [Rift](https://gi
 
 ## Features
 
-- BSP tiling, directional focus and movement, resizing, grouping, swapping, floating, fullscreen, gaps, animations, gestures, and drag-to-swap.
+- BSP tiling, directional focus and movement, Hyprland-style modal resizing, grouping, swapping, floating, fullscreen, gaps, animations, gestures, and drag-to-swap.
 - Ten global workspaces numbered `0`–`9` and ordered `1`–`9`, then `0`, with independent active and previous workspaces per display; `Cmd+-` toggles an unnumbered hidden scratchpad workspace and `Cmd+Shift+-` sends the current window there.
 - Identity-safe display migration, hot-reloaded app rules, persistent workspace state, native Mission Control and Stack Line overlays, CLI/IPC subscriptions, and bounded diagnostics.
 - A native menu bar indicator that can show workspace numbers or layout previews, active state, and the primary app icon.

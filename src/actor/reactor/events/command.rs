@@ -164,6 +164,12 @@ impl CommandEventHandler {
                 amount: *amount,
                 window: focused,
             },
+            LayoutCommand::ResizeWindowDirectional(direction) => {
+                CoreWindowCommand::ResizeDirectional {
+                    direction: Self::core_direction(*direction),
+                    window: focused,
+                }
+            }
             LayoutCommand::ToggleFocusFloating => {
                 CoreWindowCommand::ToggleFocusLayer { window: focused }
             }
