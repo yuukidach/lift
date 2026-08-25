@@ -55,6 +55,9 @@ pub enum LayoutCommand {
         workspace: usize,
         window_id: Option<u32>,
     },
+    MoveWindowToHiddenWorkspace {
+        window_id: Option<u32>,
+    },
     CreateWorkspace,
     SwitchToLastWorkspace,
     ToggleHiddenWorkspace,

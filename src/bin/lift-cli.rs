@@ -217,6 +217,8 @@ enum WorkspaceCommands {
         workspace_id: usize,
         window_id: Option<u32>,
     },
+    /// Move a window to the hidden scratchpad workspace on the current display
+    MoveWindowHidden { window_id: Option<u32> },
     /// Create a new workspace
     Create,
     /// Switch to the last workspace
@@ -667,6 +669,9 @@ fn map_workspace_command(cmd: WorkspaceCommands) -> Result<LiftCommand, String> 
                 LC::MoveWindowToWorkspace { workspace: slot, window_id },
             )))
         }
+        WorkspaceCommands::MoveWindowHidden { window_id } => Ok(LiftCommand::Reactor(
+            reactor::Command::Layout(LC::MoveWindowToHiddenWorkspace { window_id }),
+        )),
         WorkspaceCommands::Create => Ok(LiftCommand::Reactor(reactor::Command::Layout(
             LC::CreateWorkspace,
         ))),
@@ -712,6 +717,15 @@ mod workspace_number_tests {
             request,
             Ok(LiftCommand::Reactor(reactor::Command::Layout(
                 layout::LayoutCommand::ToggleHiddenWorkspace
+            )))
+        ));
+
+        let request =
+            map_workspace_command(WorkspaceCommands::MoveWindowHidden { window_id: Some(42) });
+        assert!(matches!(
+            request,
+            Ok(LiftCommand::Reactor(reactor::Command::Layout(
+                layout::LayoutCommand::MoveWindowToHiddenWorkspace { window_id: Some(42) }
             )))
         ));
 

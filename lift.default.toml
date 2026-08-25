@@ -279,6 +279,7 @@ comb1 = "Alt + Shift"
 # - prev_workspace = true|false (optional skip-empty override)
 # - switch_to_workspace = N (workspace digit 0..9)
 # - move_window_to_workspace = N / move_window_to_workspace = { workspace = N, window_id = 123 } (workspace digit 0..9; optional window id)
+# - move_window_to_hidden_workspace
 # - create_workspace
 # - switch_to_last_workspace
 # - toggle_hidden_workspace
@@ -322,6 +323,7 @@ comb1 = "Alt + Shift"
 
 "Alt + Tab" = "switch_to_last_workspace"
 "Cmd + Minus" = "toggle_hidden_workspace"
+"Cmd + Shift + Minus" = "move_window_to_hidden_workspace"
 
 "Alt + Shift + Left" = { join_window = "left" }
 "Alt + Shift + Right" = { join_window = "right" }

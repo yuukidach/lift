@@ -66,6 +66,7 @@ pub enum WmCmd {
     PrevWorkspace,
     SwitchToWorkspace(WorkspaceSelector),
     MoveWindowToWorkspace(WorkspaceSelector),
+    MoveWindowToHiddenWorkspace,
     CreateWorkspace,
     SwitchToLastWorkspace,
     ToggleHiddenWorkspace,
@@ -361,6 +362,11 @@ impl WmController {
                         ws_sel
                     );
                 }
+            }
+            Command(Wm(MoveWindowToHiddenWorkspace)) => {
+                self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(
+                    layout::LayoutCommand::MoveWindowToHiddenWorkspace { window_id: None },
+                )));
             }
             Command(Wm(CreateWorkspace)) => {
                 self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(

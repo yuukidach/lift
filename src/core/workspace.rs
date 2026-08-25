@@ -299,24 +299,7 @@ impl WorkspaceCatalog {
             return Ok(target);
         }
 
-        let hidden = match self.hidden_workspaces.get(display).copied() {
-            Some(hidden) => hidden,
-            None => {
-                self.next_workspace_id += 1;
-                let hidden = WorkspaceId(self.next_workspace_id);
-                self.workspaces.insert(hidden, Workspace {
-                    id: hidden,
-                    number: None,
-                    name: "Hidden Workspace".into(),
-                    display: display.clone(),
-                    tiled: BspTree::default(),
-                    floating: BTreeSet::new(),
-                    floating_positions: BTreeMap::new(),
-                });
-                self.hidden_workspaces.insert(display.clone(), hidden);
-                hidden
-            }
-        };
+        let hidden = self.ensure_hidden_workspace(display);
 
         let return_workspace = self
             .active_workspace(display)
@@ -329,6 +312,17 @@ impl WorkspaceCatalog {
         state.hidden_return = Some(return_workspace);
         state.active = Some(hidden);
         Ok(hidden)
+    }
+
+    pub fn move_window_to_hidden(
+        &mut self,
+        display: &DisplayId,
+        window: WindowId,
+    ) -> Result<(WorkspaceId, WorkspaceId), CoreError> {
+        let source = self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
+        let target = self.ensure_hidden_workspace(display);
+        self.move_window(window, target)?;
+        Ok((source, target))
     }
 
     pub fn active_workspace(&self, display: &DisplayId) -> Option<WorkspaceId> {
@@ -782,6 +776,25 @@ impl WorkspaceCatalog {
         self.workspaces
             .get(&workspace)
             .is_some_and(|workspace| workspace.number.is_some() && &workspace.display == display)
+    }
+
+    fn ensure_hidden_workspace(&mut self, display: &DisplayId) -> WorkspaceId {
+        if let Some(hidden) = self.hidden_workspaces.get(display).copied() {
+            return hidden;
+        }
+        self.next_workspace_id += 1;
+        let hidden = WorkspaceId(self.next_workspace_id);
+        self.workspaces.insert(hidden, Workspace {
+            id: hidden,
+            number: None,
+            name: "Hidden Workspace".into(),
+            display: display.clone(),
+            tiled: BspTree::default(),
+            floating: BTreeSet::new(),
+            floating_positions: BTreeMap::new(),
+        });
+        self.hidden_workspaces.insert(display.clone(), hidden);
+        hidden
     }
 
     fn first_numbered_workspace(&self, display: &DisplayId) -> Option<WorkspaceId> {

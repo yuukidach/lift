@@ -171,6 +171,41 @@ fn workspace_move_command_changes_the_authoritative_assignment() {
 }
 
 #[test]
+fn hidden_workspace_move_command_moves_without_switching() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
+    let window = WindowId::new(7, 1);
+    reactor.handle_events(apps.make_app_with_opts(7, make_windows(1), Some(window), true, true));
+    apps.simulate_until_quiet(&mut reactor);
+    let regular = reactor.active_workspace_for_space(space).unwrap();
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToHiddenWorkspace { window_id: None },
+    )));
+
+    let hidden = reactor.workspace_for_window(window).unwrap();
+    assert_ne!(hidden, regular);
+    assert_eq!(reactor.active_workspace_for_space(space), Some(regular));
+    assert_eq!(
+        reactor
+            .core_snapshot()
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == hidden)
+            .unwrap()
+            .number,
+        None
+    );
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::ToggleHiddenWorkspace,
+    )));
+    assert_eq!(reactor.active_workspace_for_space(space), Some(hidden));
+}
+
+#[test]
 fn cross_display_workspace_move_survives_the_next_platform_observation() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test();

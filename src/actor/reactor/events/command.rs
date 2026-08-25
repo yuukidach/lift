@@ -331,6 +331,10 @@ impl CommandEventHandler {
             Self::handle_command_switch_to_global_slot(reactor, slot);
             return;
         }
+        if let LayoutCommand::MoveWindowToHiddenWorkspace { window_id } = cmd {
+            Self::handle_command_move_window_to_hidden(reactor, window_id);
+            return;
+        }
         let is_workspace_switch = matches!(
             cmd,
             LayoutCommand::NextWorkspace(_)
@@ -649,6 +653,50 @@ impl CommandEventHandler {
             }
         };
         reactor.handle_layout_response(response, Some(target_space));
+    }
+
+    fn handle_command_move_window_to_hidden(reactor: &mut Reactor, window_index: Option<u32>) {
+        let command_space = reactor.workspace_command_space();
+        let Some(space) = command_space else {
+            warn!("MoveWindowToHiddenWorkspace: no active native Space");
+            return;
+        };
+        let Some(display) = reactor.display_uuid_for_space(space) else {
+            warn!(
+                ?space,
+                "MoveWindowToHiddenWorkspace: Space has no display identity"
+            );
+            return;
+        };
+        reactor.store_current_floating_positions(space);
+        let window = match window_index {
+            Some(index) => Self::resolve_window_index(reactor, index, command_space),
+            None => Self::resolve_current_window_for_command(
+                reactor,
+                command_space,
+                reactor.config.settings.focus_follows_mouse,
+                reactor.focused_window_for_command(),
+            ),
+        };
+        let Some(window) = window else {
+            warn!("MoveWindowToHiddenWorkspace: no window was selected");
+            return;
+        };
+        let transition = reactor.transition_core_command(CoreCommand::Workspace(
+            CoreWorkspaceCommand::MoveWindowToHidden {
+                display: CoreDisplayId(display),
+                window: Some(Self::core_window(window)),
+            },
+        ));
+        let response = match transition {
+            Ok(transition) => Self::response_from_core_transition(reactor, &transition),
+            Err(error) => {
+                warn!(?error, ?window, "Core rejected move to hidden workspace");
+                return;
+            }
+        };
+        reactor.workspace_switch_manager.mark_workspace_switch_inactive();
+        reactor.handle_layout_response(response, command_space);
     }
 
     pub fn handle_command_metrics(_reactor: &mut Reactor, cmd: MetricsCommand) {

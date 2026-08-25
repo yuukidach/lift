@@ -927,6 +927,60 @@ mod tests {
     }
 
     #[test]
+    fn moving_a_window_to_hidden_keeps_the_numbered_workspace_active() {
+        let mut state = CoreState::new(CoreConfig::default());
+        let focused = window(1);
+        let display = DisplayId("main".into());
+        state
+            .transition(Input::Observation(Observation::PlatformSnapshot(
+                PlatformSnapshotObservation {
+                    generation: Generation(1),
+                    displays: vec![self::display("main", 9)],
+                    active_display: Some(display.clone()),
+                    windows: vec![observed_window(focused, "main")],
+                    focused_window: Some(focused),
+                },
+            )))
+            .unwrap();
+        let regular = state.snapshot().displays[0].active_workspace.unwrap();
+
+        let moved = state
+            .transition(Input::Command(Command::Workspace(
+                WorkspaceCommand::MoveWindowToHidden {
+                    display: display.clone(),
+                    window: None,
+                },
+            )))
+            .unwrap();
+        let hidden = moved
+            .snapshot
+            .windows
+            .iter()
+            .find(|window| window.id == focused)
+            .unwrap()
+            .workspace
+            .unwrap();
+        assert_eq!(moved.snapshot.displays[0].active_workspace, Some(regular));
+        assert_eq!(
+            moved
+                .snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == hidden)
+                .unwrap()
+                .number,
+            None
+        );
+
+        let shown = state
+            .transition(Input::Command(Command::Workspace(
+                WorkspaceCommand::ToggleHidden { display },
+            )))
+            .unwrap();
+        assert_eq!(shown.snapshot.displays[0].active_workspace, Some(hidden));
+    }
+
+    #[test]
     fn leaving_an_empty_workspace_destroys_it_without_losing_the_display() {
         let mut state = CoreState::new(CoreConfig::default());
         let focused = window(1);

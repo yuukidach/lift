@@ -86,6 +86,10 @@ pub enum WorkspaceCommand {
         workspace: WorkspaceNumber,
         window: Option<WindowId>,
     },
+    MoveWindowToHidden {
+        display: DisplayId,
+        window: Option<WindowId>,
+    },
     Next {
         display: DisplayId,
         skip_empty: bool,

@@ -475,6 +475,14 @@ impl CoreState {
                 self.workspaces.move_window(window, target)?;
                 self.workspaces.destroy_if_ephemeral(source)?;
             }
+            Command::Workspace(WorkspaceCommand::MoveWindowToHidden { display, window }) => {
+                self.require_online_display(&display)?;
+                let window = window.or(self.focus.focused_window).ok_or_else(|| {
+                    CoreError::InvalidCommand("no window was selected to move".into())
+                })?;
+                let (source, _) = self.workspaces.move_window_to_hidden(&display, window)?;
+                self.workspaces.destroy_if_ephemeral(source)?;
+            }
             Command::Workspace(WorkspaceCommand::Next { display, skip_empty }) => {
                 self.step_workspace(display, true, skip_empty, events)?;
             }
