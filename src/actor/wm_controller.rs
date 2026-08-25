@@ -14,8 +14,7 @@ use strum::VariantNames;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::actor::gesture_tap;
-use crate::common::config::WorkspaceSelector;
-use crate::core::ids::WORKSPACE_SLOTS;
+use crate::common::config::{WorkspaceSelector, workspace_number_to_global_slot};
 use crate::sys::app::{NSRunningApplicationExt, pid_t};
 
 pub type Sender = actor::Sender<WmEvent>;
@@ -318,8 +317,8 @@ impl WmController {
                 )));
             }
             Command(Wm(SwitchToWorkspace(ws_sel))) => {
-                let maybe_index: Option<usize> = match &ws_sel {
-                    WorkspaceSelector::Index(i) => Some(*i),
+                let maybe_slot: Option<usize> = match &ws_sel {
+                    WorkspaceSelector::Index(number) => workspace_number_to_global_slot(*number),
                     WorkspaceSelector::Name(_) => {
                         // Phase 4: workspace names live on individual workspaces
                         // now, not on a config-level list. Name-based lookup
@@ -328,18 +327,12 @@ impl WmController {
                     }
                 };
 
-                if let Some(workspace_index) = maybe_index {
-                    // Hotkeys carry a global slot index — the digit row is
-                    // shared across all displays. Route through
-                    // SwitchToGlobalSlot so the focus jumps to whichever
-                    // display owns the slot, falling back to per-space switch
-                    // semantics if the slot has not been allocated yet.
-                    let cmd = if workspace_index < WORKSPACE_SLOTS {
-                        layout::LayoutCommand::SwitchToGlobalSlot(workspace_index)
-                    } else {
-                        layout::LayoutCommand::SwitchToWorkspace(workspace_index)
-                    };
-                    self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(cmd)));
+                if let Some(workspace_slot) = maybe_slot {
+                    // Configuration is user-facing and numbered 1..=10. The
+                    // reducer owns zero-based global slots.
+                    self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(
+                        layout::LayoutCommand::SwitchToGlobalSlot(workspace_slot),
+                    )));
                 } else {
                     tracing::warn!(
                         "Hotkey requested switch to workspace {:?} but it could not be resolved; ignoring",
@@ -348,18 +341,18 @@ impl WmController {
                 }
             }
             Command(Wm(MoveWindowToWorkspace(ws_sel))) => {
-                let maybe_index: Option<usize> = match &ws_sel {
-                    WorkspaceSelector::Index(i) => Some(*i),
+                let maybe_slot: Option<usize> = match &ws_sel {
+                    WorkspaceSelector::Index(number) => workspace_number_to_global_slot(*number),
                     WorkspaceSelector::Name(_) => {
                         // Phase 4: see SwitchToWorkspace above.
                         None
                     }
                 };
 
-                if let Some(workspace_index) = maybe_index {
+                if let Some(workspace_slot) = maybe_slot {
                     self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(
                         layout::LayoutCommand::MoveWindowToWorkspace {
-                            workspace: workspace_index,
+                            workspace: workspace_slot,
                             window_id: None,
                         },
                     )));

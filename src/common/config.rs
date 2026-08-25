@@ -110,6 +110,14 @@ pub enum WorkspaceSelector {
     Name(String),
 }
 
+/// Converts the user-facing workspace number (1..=10) to the core's zero-based
+/// global slot. Keeping this conversion at input boundaries prevents hotkeys,
+/// CLI commands, app rules, and UI labels from assigning different meanings to
+/// the same number.
+pub fn workspace_number_to_global_slot(number: usize) -> Option<usize> {
+    number.checked_sub(1).filter(|slot| *slot < MAX_WORKSPACES)
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct AppWorkspaceRule {
@@ -1237,6 +1245,14 @@ mod tests {
         let issues = config.validate();
         assert!(issues.iter().any(|issue| issue.contains("max_file_size_mb")));
         assert!(issues.iter().any(|issue| issue.contains("retained_files")));
+    }
+
+    #[test]
+    fn public_workspace_numbers_map_to_zero_based_global_slots() {
+        assert_eq!(workspace_number_to_global_slot(1), Some(0));
+        assert_eq!(workspace_number_to_global_slot(10), Some(9));
+        assert_eq!(workspace_number_to_global_slot(0), None);
+        assert_eq!(workspace_number_to_global_slot(11), None);
     }
 
     #[test]

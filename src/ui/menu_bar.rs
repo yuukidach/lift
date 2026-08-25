@@ -26,10 +26,10 @@ use crate::actor::reactor::{Command as ReactorTopCommand, ReactorCommand};
 use crate::actor::wm_controller::{WmCmd, WmCommand};
 use crate::common::config::{
     ActiveWorkspaceLabel, MenuBarDisplayMode, MenuBarSettings, WorkspaceDisplayStyle,
-    WorkspaceSelector,
+    WorkspaceSelector, workspace_number_to_global_slot,
 };
-use crate::model::layout::LayoutCommand;
 use crate::core::ids::WorkspaceId;
+use crate::model::layout::LayoutCommand;
 use crate::model::server::{WindowData, WorkspaceData};
 use crate::sys::hotkey::{Hotkey, KeyCode, Modifiers};
 use crate::sys::screen::SpaceId;
@@ -496,7 +496,9 @@ impl MenuShortcuts {
                     out.prev_workspace.get_or_insert_with(|| hotkey.clone());
                 }
                 WmCommand::Wm(WmCmd::SwitchToWorkspace(WorkspaceSelector::Index(i))) => {
-                    out.switch_workspace_by_index.entry(*i).or_insert_with(|| hotkey.clone());
+                    if let Some(slot) = workspace_number_to_global_slot(*i) {
+                        out.switch_workspace_by_index.entry(slot).or_insert_with(|| hotkey.clone());
+                    }
                 }
                 WmCommand::Wm(WmCmd::SwitchToWorkspace(WorkspaceSelector::Name(name))) => {
                     out.switch_workspace_by_name

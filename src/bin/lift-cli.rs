@@ -4,6 +4,7 @@ use std::process::{self};
 use clap::{Parser, Subcommand, ValueEnum};
 use lift::actor::app::WindowId;
 use lift::actor::reactor::{self, DisplaySelector};
+use lift::common::config::workspace_number_to_global_slot;
 use lift::core::ids::WORKSPACE_SLOTS;
 use lift::ipc::{LiftCommand, LiftMachClient, LiftRequest, LiftResponse};
 use lift::model::layout;
@@ -207,9 +208,9 @@ enum WorkspaceCommands {
     Next { skip_empty: Option<bool> },
     /// Switch to previous workspace
     Prev { skip_empty: Option<bool> },
-    /// Switch to specific workspace
+    /// Switch to a workspace by its number (1 through 10)
     Switch { workspace_id: usize },
-    /// Move current window to workspace
+    /// Move a window to a workspace by its number (1 through 10)
     MoveWindow {
         workspace_id: usize,
         window_id: Option<u32>,
@@ -650,25 +651,58 @@ fn map_workspace_command(cmd: WorkspaceCommands) -> Result<LiftCommand, String> 
             reactor::Command::Layout(LC::PrevWorkspace(skip_empty)),
         )),
         WorkspaceCommands::Switch { workspace_id } => {
-            let cmd = if workspace_id < WORKSPACE_SLOTS {
-                LC::SwitchToGlobalSlot(workspace_id)
-            } else {
-                LC::SwitchToWorkspace(workspace_id)
-            };
+            let slot = workspace_number_to_global_slot(workspace_id).ok_or_else(|| {
+                format!("workspace number must be in 1..={WORKSPACE_SLOTS}, got {workspace_id}")
+            })?;
+            let cmd = LC::SwitchToGlobalSlot(slot);
             Ok(LiftCommand::Reactor(reactor::Command::Layout(cmd)))
         }
-        WorkspaceCommands::MoveWindow { workspace_id, window_id } => Ok(LiftCommand::Reactor(
-            reactor::Command::Layout(LC::MoveWindowToWorkspace {
-                workspace: workspace_id,
-                window_id,
-            }),
-        )),
+        WorkspaceCommands::MoveWindow { workspace_id, window_id } => {
+            let slot = workspace_number_to_global_slot(workspace_id).ok_or_else(|| {
+                format!("workspace number must be in 1..={WORKSPACE_SLOTS}, got {workspace_id}")
+            })?;
+            Ok(LiftCommand::Reactor(reactor::Command::Layout(
+                LC::MoveWindowToWorkspace { workspace: slot, window_id },
+            )))
+        }
         WorkspaceCommands::Create => Ok(LiftCommand::Reactor(reactor::Command::Layout(
             LC::CreateWorkspace,
         ))),
         WorkspaceCommands::Last => Ok(LiftCommand::Reactor(reactor::Command::Layout(
             LC::SwitchToLastWorkspace,
         ))),
+    }
+}
+
+#[cfg(test)]
+mod workspace_number_tests {
+    use super::*;
+
+    #[test]
+    fn cli_workspace_numbers_are_one_based() {
+        let request = map_workspace_command(WorkspaceCommands::Switch { workspace_id: 1 });
+        let Ok(LiftCommand::Reactor(reactor::Command::Layout(
+            layout::LayoutCommand::SwitchToGlobalSlot(slot),
+        ))) = request
+        else {
+            panic!("expected global workspace switch");
+        };
+        assert_eq!(slot, 0);
+
+        let request = map_workspace_command(WorkspaceCommands::MoveWindow {
+            workspace_id: 10,
+            window_id: Some(42),
+        });
+        let Ok(LiftCommand::Reactor(reactor::Command::Layout(
+            layout::LayoutCommand::MoveWindowToWorkspace { workspace, window_id },
+        ))) = request
+        else {
+            panic!("expected workspace move");
+        };
+        assert_eq!(workspace, 9);
+        assert_eq!(window_id, Some(42));
+
+        assert!(map_workspace_command(WorkspaceCommands::Switch { workspace_id: 0 }).is_err());
     }
 }
 
