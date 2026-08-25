@@ -328,8 +328,8 @@ impl WmController {
                 };
 
                 if let Some(workspace_slot) = maybe_slot {
-                    // Configuration is user-facing and numbered 1..=10. The
-                    // reducer owns zero-based global slots.
+                    // Configuration uses digit-row numbers; the reactor owns
+                    // their 1..9,0 display order as zero-based global slots.
                     self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(
                         layout::LayoutCommand::SwitchToGlobalSlot(workspace_slot),
                     )));

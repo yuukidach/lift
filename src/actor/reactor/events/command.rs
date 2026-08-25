@@ -48,14 +48,9 @@ impl CommandEventHandler {
     }
 
     fn core_workspace_number(number: usize) -> Result<CoreWorkspaceNumber, CoreError> {
-        let one_based = number
-            .checked_add(1)
-            .and_then(|number| u8::try_from(number).ok())
-            .ok_or_else(|| {
-                CoreError::InvalidCommand(format!("workspace slot {number} is out of range"))
-            })?;
-        CoreWorkspaceNumber::try_from(one_based)
-            .map_err(|error| CoreError::InvalidCommand(error.to_string()))
+        CoreWorkspaceNumber::from_global_slot(number).ok_or_else(|| {
+            CoreError::InvalidCommand(format!("workspace slot {number} is out of range"))
+        })
     }
 
     fn transition_core_workspace_command(
@@ -407,13 +402,13 @@ impl CommandEventHandler {
                 reactor.config.settings.focus_follows_mouse,
                 layout_focus,
             );
-            let target_number = u8::try_from(workspace.saturating_add(1)).ok();
+            let target_number = CoreWorkspaceNumber::from_global_slot(*workspace);
             let snapshot = reactor.core_snapshot();
             let target_workspace = target_number.and_then(|number| {
                 snapshot
                     .workspaces
                     .iter()
-                    .find(|candidate| candidate.number.get() == number)
+                    .find(|candidate| candidate.number == number)
                     .map(|candidate| {
                         serde_json::json!({
                             "id": candidate.id,
@@ -426,7 +421,7 @@ impl CommandEventHandler {
                 "move_window_resolution",
                 serde_json::json!({
                     "requested_slot_zero_based": workspace,
-                    "requested_workspace_number": target_number,
+                    "requested_workspace_number": target_number.map(CoreWorkspaceNumber::get),
                     "command_space": command_space,
                     "focus_follows_mouse": reactor.config.settings.focus_follows_mouse,
                     "main_window": reactor.main_window(),

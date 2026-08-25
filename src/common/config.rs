@@ -110,12 +110,13 @@ pub enum WorkspaceSelector {
     Name(String),
 }
 
-/// Converts the user-facing workspace number (1..=10) to the core's zero-based
-/// global slot. Keeping this conversion at input boundaries prevents hotkeys,
-/// CLI commands, app rules, and UI labels from assigning different meanings to
-/// the same number.
+/// Converts the digit-row workspace number (1..=9, then 0) to its global slot.
 pub fn workspace_number_to_global_slot(number: usize) -> Option<usize> {
-    number.checked_sub(1).filter(|slot| *slot < MAX_WORKSPACES)
+    match number {
+        1..=9 => Some(number - 1),
+        0 => Some(9),
+        _ => None,
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -123,7 +124,7 @@ pub fn workspace_number_to_global_slot(number: usize) -> Option<usize> {
 pub struct AppWorkspaceRule {
     /// Application bundle identifier (e.g., "com.apple.Terminal")
     pub app_id: Option<String>,
-    /// Target workspace index (0 based) OR workspace name. If None, window goes to active workspace.
+    /// Target workspace digit (0 through 9) OR workspace name. If None, window goes to active workspace.
     pub workspace: Option<WorkspaceSelector>,
     /// Whether windows should be floating in this workspace
     #[serde(default)]
@@ -190,16 +191,10 @@ impl VirtualWorkspaceSettings {
                     uuid
                 ));
             }
-            if *number == 0 {
+            if *number >= MAX_WORKSPACES {
                 issues.push(format!(
-                    "display_default_workspaces[{}] = 0 is invalid (workspace numbers start at 1)",
-                    uuid
-                ));
-            }
-            if *number > MAX_WORKSPACES {
-                issues.push(format!(
-                    "display_default_workspaces[{}] = {} exceeds MAX_WORKSPACES ({})",
-                    uuid, number, MAX_WORKSPACES
+                    "display_default_workspaces[{}] = {} is outside 0..=9",
+                    uuid, number
                 ));
             }
         }
@@ -241,15 +236,10 @@ impl VirtualWorkspaceSettings {
 
             if let Some(ref workspace) = rule.workspace {
                 if let WorkspaceSelector::Index(idx) = workspace {
-                    if *idx == 0 {
+                    if *idx >= MAX_WORKSPACES {
                         issues.push(format!(
-                            "App rule {} references workspace 0 (workspace numbers start at 1)",
-                            index
-                        ));
-                    } else if *idx > MAX_WORKSPACES {
-                        issues.push(format!(
-                            "App rule {} references workspace {} which exceeds MAX_WORKSPACES ({})",
-                            index, idx, MAX_WORKSPACES
+                            "App rule {} references workspace {} which is outside 0..=9",
+                            index, idx
                         ));
                     }
                 }
@@ -1248,11 +1238,34 @@ mod tests {
     }
 
     #[test]
-    fn public_workspace_numbers_map_to_zero_based_global_slots() {
+    fn digit_row_workspace_numbers_map_to_global_slots() {
         assert_eq!(workspace_number_to_global_slot(1), Some(0));
-        assert_eq!(workspace_number_to_global_slot(10), Some(9));
-        assert_eq!(workspace_number_to_global_slot(0), None);
+        assert_eq!(workspace_number_to_global_slot(9), Some(8));
+        assert_eq!(workspace_number_to_global_slot(0), Some(9));
+        assert_eq!(workspace_number_to_global_slot(10), None);
         assert_eq!(workspace_number_to_global_slot(11), None);
+    }
+
+    #[test]
+    fn workspace_zero_is_valid_and_ten_is_rejected_in_configuration() {
+        let valid: VirtualWorkspaceSettings = toml::from_str(
+            r#"
+                display_default_workspaces = { main = 0 }
+                app_rules = [{ app_id = "com.example.app", workspace = 0 }]
+            "#,
+        )
+        .unwrap();
+        assert!(valid.validate().is_empty());
+
+        let invalid: VirtualWorkspaceSettings = toml::from_str(
+            r#"
+                display_default_workspaces = { main = 10 }
+                app_rules = [{ app_id = "com.example.app", workspace = 10 }]
+            "#,
+        )
+        .unwrap();
+        let issues = invalid.validate();
+        assert_eq!(issues.iter().filter(|issue| issue.contains("outside 0..=9")).count(), 2);
     }
 
     #[test]

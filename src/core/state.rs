@@ -69,7 +69,7 @@ impl CoreState {
         config: CoreConfig,
         persisted: &PersistedState,
     ) -> Result<Self, CoreError> {
-        if persisted.schema_version != 1 {
+        if persisted.schema_version != 2 {
             return Err(CoreError::InvalidCommand(format!(
                 "unsupported persisted state schema {}",
                 persisted.schema_version
@@ -180,7 +180,7 @@ impl CoreState {
 
     fn persisted_state(&self) -> PersistedState {
         PersistedState {
-            schema_version: 1,
+            schema_version: 2,
             workspaces: self
                 .snapshot()
                 .workspaces
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn persisted_state_restores_stable_workspace_identity_before_platform_observation() {
         let persisted = PersistedState {
-            schema_version: 1,
+            schema_version: 2,
             workspaces: vec![
                 PersistedWorkspace {
                     id: WorkspaceId(7),
@@ -326,7 +326,7 @@ mod tests {
         let mut state = CoreState::from_persisted(CoreConfig::default(), &persisted).unwrap();
 
         let restored = state.persisted_state();
-        assert_eq!(restored.schema_version, 1);
+        assert_eq!(restored.schema_version, 2);
         assert_eq!(restored.workspaces.len(), 2);
         assert!(restored.workspaces.contains(&persisted.workspaces[0]));
         assert!(restored.workspaces.contains(&persisted.workspaces[1]));
@@ -349,7 +349,7 @@ mod tests {
     fn persisted_state_rejects_unknown_schema() {
         let error = CoreState::from_persisted(
             CoreConfig::default(),
-            &PersistedState { schema_version: 2, workspaces: Vec::new() },
+            &PersistedState { schema_version: 3, workspaces: Vec::new() },
         )
         .err()
         .unwrap();
@@ -1129,7 +1129,7 @@ mod tests {
 
         assert!(matches!(
             transition.effects.as_slice(),
-            [Effect::Save(PersistedState { schema_version: 1, .. }), Effect::Shutdown(_), ..]
+            [Effect::Save(PersistedState { schema_version: 2, .. }), Effect::Shutdown(_), ..]
         ));
     }
 

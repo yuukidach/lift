@@ -33,6 +33,18 @@ mkdir -p "$install_dir"
 /usr/bin/install -m 755 target/release/lift-cli "$install_dir/lift-cli.new"
 
 if launchctl print "gui/$(id -u)/$service_label" >/dev/null 2>&1; then
+    if [ -x "$install_dir/lift-cli" ]; then
+        if ! "$install_dir/lift-cli" execute save-and-exit >/dev/null 2>&1; then
+            echo "Warning: running Lift did not save its workspace state before installation." >&2
+        fi
+        for _ in {1..40}; do
+            if ! launchctl print "gui/$(id -u)/$service_label" 2>/dev/null \
+                | grep -Fq 'state = running'; then
+                break
+            fi
+            sleep 0.05
+        done
+    fi
     "$install_dir/lift" service stop
 fi
 

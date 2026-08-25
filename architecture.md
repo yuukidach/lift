@@ -53,7 +53,7 @@ pub struct CoreState {
 It owns:
 
 - accepted display, native Space, application, and window facts;
-- global workspace numbers 1 through 10 and stable workspace IDs;
+- global workspace numbers 0 through 9, ordered as 1 through 9 then 0, and stable workspace IDs;
 - per-display active/last workspaces and identity-safe display migration;
 - window-to-workspace assignment, tiled/floating membership, and BSP groups;
 - logical focus history, drag-swap state, and Mission Control phase;

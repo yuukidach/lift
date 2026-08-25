@@ -172,6 +172,18 @@ fn global_slot_command_creates_and_activates_the_requested_workspace() {
         .find(|workspace| workspace.number.get() == 8)
         .unwrap();
     assert_eq!(reactor.active_workspace_for_space(space), Some(target.id));
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::SwitchToGlobalSlot(9),
+    )));
+    let snapshot = reactor.core_snapshot();
+    let zero = snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.number.get() == 0)
+        .unwrap();
+    assert_eq!(zero.name, "Workspace 0");
+    assert_eq!(reactor.active_workspace_for_space(space), Some(zero.id));
 }
 
 #[test]

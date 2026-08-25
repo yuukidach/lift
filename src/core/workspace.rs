@@ -183,8 +183,8 @@ impl WorkspaceCatalog {
     }
 
     fn next_available_number(&self) -> Option<WorkspaceNumber> {
-        (WorkspaceNumber::MIN..=WorkspaceNumber::MAX)
-            .filter_map(|number| WorkspaceNumber::try_from(number).ok())
+        WorkspaceNumber::ORDERED
+            .into_iter()
             .find(|number| !self.by_number.contains_key(number))
     }
 
@@ -749,6 +749,24 @@ mod tests {
         catalog.validate().unwrap();
         assert_eq!(catalog.active_workspace(&display), Some(second));
         assert_eq!(catalog.last_workspace(&display), Some(first));
+    }
+
+    #[test]
+    fn automatic_workspace_numbers_follow_digit_row_order() {
+        let mut catalog = WorkspaceCatalog::default();
+        let display = DisplayId("main".into());
+        for _ in 0..WorkspaceNumber::COUNT {
+            catalog.create_next(display.clone()).unwrap();
+        }
+        let numbers = catalog
+            .snapshots()
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.number)
+            .collect::<Vec<_>>();
+
+        assert_eq!(numbers, WorkspaceNumber::ORDERED);
+        assert!(catalog.create_next(display).is_err());
     }
 
     #[test]

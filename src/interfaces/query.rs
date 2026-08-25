@@ -1,6 +1,6 @@
 use crate::actor::app::WindowId as ActorWindowId;
 use crate::core::geometry::Rect;
-use crate::core::ids::{SpaceId, WindowId, WorkspaceId};
+use crate::core::ids::{SpaceId, WindowId, WorkspaceId, WorkspaceNumber};
 use crate::core::snapshot::{CoreSnapshot, WorkspaceSnapshot};
 use crate::model::server::{WindowData, WorkspaceData};
 use serde::Serialize;
@@ -177,7 +177,11 @@ pub fn workspace_layouts(
             is_active: active.contains(&item.id),
         })
         .collect::<Vec<_>>();
-    layouts.sort_by_key(|item| item.number);
+    layouts.sort_by_key(|item| {
+        WorkspaceNumber::try_from(item.number)
+            .map(WorkspaceNumber::global_slot)
+            .unwrap_or(usize::MAX)
+    });
     layouts
 }
 

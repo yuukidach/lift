@@ -203,7 +203,7 @@ display_migration_priority = []
 #   - ax_role / ax_subrole: exact match against macOS Accessibility (AX) role/subrole
 #
 # Rule options:
-#   - workspace (integer, 0-based): target workspace index. If omitted or invalid, uses the active workspace.
+#   - workspace (integer, 0..9): target workspace digit. If omitted or invalid, uses the active workspace.
 #     Alternatively, `workspace` may be a workspace name string to target by name.
 #   - floating (boolean): whether matched windows should float by default.
 #   - manage (boolean): whether Lift should manage the matching window. Set to false to ignore the window completely (default = true).
@@ -277,8 +277,8 @@ comb1 = "Alt + Shift"
 # - next_workspace / prev_workspace
 # - next_workspace = true|false (optional skip-empty override)
 # - prev_workspace = true|false (optional skip-empty override)
-# - switch_to_workspace = N (workspace number 1..10; bind the 0 key to 10)
-# - move_window_to_workspace = N / move_window_to_workspace = { workspace = N, window_id = 123 } (workspace number 1..10; optional window id)
+# - switch_to_workspace = N (workspace digit 0..9)
+# - move_window_to_workspace = N / move_window_to_workspace = { workspace = N, window_id = 123 } (workspace digit 0..9; optional window id)
 # - create_workspace
 # - switch_to_last_workspace
 # - next_window / prev_window (focus wraps when it reaches last window in current workspace)
@@ -309,12 +309,12 @@ comb1 = "Alt + Shift"
 "comb1 + K" = { move_node = "up" }
 "comb1 + L" = { move_node = "right" }
 
-"Alt + 0" = { switch_to_workspace = 10 }
+"Alt + 0" = { switch_to_workspace = 0 }
 "Alt + 1" = { switch_to_workspace = 1 }
 "Alt + 2" = { switch_to_workspace = 2 }
 "Alt + 3" = { switch_to_workspace = 3 }
 
-"comb1 + 0" = { move_window_to_workspace = 10 }
+"comb1 + 0" = { move_window_to_workspace = 0 }
 "comb1 + 1" = { move_window_to_workspace = 1 }
 "comb1 + 2" = { move_window_to_workspace = 2 }
 "comb1 + 3" = { move_window_to_workspace = 3 }

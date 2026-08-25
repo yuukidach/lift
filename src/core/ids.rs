@@ -1,9 +1,9 @@
 use std::num::NonZeroU32;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-pub const WORKSPACE_SLOTS: usize = WorkspaceNumber::MAX as usize;
+pub const WORKSPACE_SLOTS: usize = WorkspaceNumber::COUNT;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ApplicationId(pub i32);
@@ -51,15 +51,63 @@ impl WindowId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WorkspaceNumber(u8);
 
 impl WorkspaceNumber {
-    pub const MIN: u8 = 1;
-    pub const MAX: u8 = 10;
+    pub const MIN: u8 = 0;
+    pub const MAX: u8 = 9;
+    pub const COUNT: usize = 10;
+    pub const ORDERED: [Self; Self::COUNT] = [
+        Self(1),
+        Self(2),
+        Self(3),
+        Self(4),
+        Self(5),
+        Self(6),
+        Self(7),
+        Self(8),
+        Self(9),
+        Self(0),
+    ];
 
     pub const fn get(self) -> u8 {
         self.0
+    }
+
+    pub const fn from_global_slot(slot: usize) -> Option<Self> {
+        if slot < 9 {
+            Some(Self(slot as u8 + 1))
+        } else if slot == 9 {
+            Some(Self(0))
+        } else {
+            None
+        }
+    }
+
+    pub const fn global_slot(self) -> usize {
+        if self.0 == 0 { 9 } else { self.0 as usize - 1 }
+    }
+}
+
+impl Ord for WorkspaceNumber {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.global_slot().cmp(&other.global_slot())
+    }
+}
+
+impl PartialOrd for WorkspaceNumber {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Serialize for WorkspaceNumber {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u8(self.0)
     }
 }
 
@@ -75,8 +123,18 @@ impl TryFrom<u8> for WorkspaceNumber {
     }
 }
 
+impl<'de> Deserialize<'de> for WorkspaceNumber {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = u8::deserialize(deserializer)?;
+        Self::try_from(value).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("workspace number must be in 1..=10, got {0}")]
+#[error("workspace number must be in 0..=9, got {0}")]
 pub struct WorkspaceNumberError(pub u8);
 
 #[cfg(test)]
@@ -85,10 +143,23 @@ mod tests {
 
     #[test]
     fn workspace_number_accepts_only_global_slots() {
+        assert_eq!(WorkspaceNumber::try_from(0).unwrap().get(), 0);
         assert_eq!(WorkspaceNumber::try_from(1).unwrap().get(), 1);
-        assert_eq!(WorkspaceNumber::try_from(10).unwrap().get(), 10);
-        assert_eq!(WorkspaceNumber::try_from(0), Err(WorkspaceNumberError(0)));
+        assert_eq!(WorkspaceNumber::try_from(9).unwrap().get(), 9);
+        assert_eq!(WorkspaceNumber::try_from(10), Err(WorkspaceNumberError(10)));
         assert_eq!(WorkspaceNumber::try_from(11), Err(WorkspaceNumberError(11)));
+    }
+
+    #[test]
+    fn workspace_number_order_matches_the_digit_row() {
+        let mut numbers = (0..=9)
+            .map(|number| WorkspaceNumber::try_from(number).unwrap())
+            .collect::<Vec<_>>();
+        numbers.sort();
+        assert_eq!(numbers, WorkspaceNumber::ORDERED);
+        assert_eq!(WorkspaceNumber::from_global_slot(0).unwrap().get(), 1);
+        assert_eq!(WorkspaceNumber::from_global_slot(9).unwrap().get(), 0);
+        assert_eq!(WorkspaceNumber::try_from(0).unwrap().global_slot(), 9);
     }
 
     #[test]

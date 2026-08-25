@@ -33,7 +33,7 @@ Lift retains the following product features:
 
 - BSP tiling with Fibonacci-style insertion, directional focus and movement,
   resizing, orientation changes, join, unjoin, swap, constraints, and gaps.
-- Global virtual workspace numbers 1 through 10, create, switch, move-window,
+- Global virtual workspace numbers 0 through 9 in digit-row order 1 through 9 then 0, create, switch, move-window,
   switch-to-last, per-display active and last workspaces, and automatic removal
   of inactive empty workspaces.
 - Multiple displays, display removal and reconnection, native Spaces changes,
@@ -273,7 +273,7 @@ are separate from persistence.
 Core tests use a transition harness that runs the real reducer and verifies
 invariants after every input. The mandatory invariants are:
 
-- Workspace numbers are unique and in `1..=10`.
+- Workspace numbers are unique and in `0..=9`.
 - Every online display has exactly one valid active workspace; last-workspace
   references are either valid or absent.
 - Every managed window belongs to exactly one workspace.

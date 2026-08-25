@@ -5,7 +5,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 use lift::actor::app::WindowId;
 use lift::actor::reactor::{self, DisplaySelector};
 use lift::common::config::workspace_number_to_global_slot;
-use lift::core::ids::WORKSPACE_SLOTS;
 use lift::ipc::{LiftCommand, LiftMachClient, LiftRequest, LiftResponse};
 use lift::model::layout;
 use lift::sys::window_server::WindowServerId;
@@ -208,9 +207,9 @@ enum WorkspaceCommands {
     Next { skip_empty: Option<bool> },
     /// Switch to previous workspace
     Prev { skip_empty: Option<bool> },
-    /// Switch to a workspace by its number (1 through 10)
+    /// Switch to a workspace by its digit (0 through 9)
     Switch { workspace_id: usize },
-    /// Move a window to a workspace by its number (1 through 10)
+    /// Move a window to a workspace by its digit (0 through 9)
     MoveWindow {
         workspace_id: usize,
         window_id: Option<u32>,
@@ -652,14 +651,14 @@ fn map_workspace_command(cmd: WorkspaceCommands) -> Result<LiftCommand, String> 
         )),
         WorkspaceCommands::Switch { workspace_id } => {
             let slot = workspace_number_to_global_slot(workspace_id).ok_or_else(|| {
-                format!("workspace number must be in 1..={WORKSPACE_SLOTS}, got {workspace_id}")
+                format!("workspace number must be in 0..=9, got {workspace_id}")
             })?;
             let cmd = LC::SwitchToGlobalSlot(slot);
             Ok(LiftCommand::Reactor(reactor::Command::Layout(cmd)))
         }
         WorkspaceCommands::MoveWindow { workspace_id, window_id } => {
             let slot = workspace_number_to_global_slot(workspace_id).ok_or_else(|| {
-                format!("workspace number must be in 1..={WORKSPACE_SLOTS}, got {workspace_id}")
+                format!("workspace number must be in 0..=9, got {workspace_id}")
             })?;
             Ok(LiftCommand::Reactor(reactor::Command::Layout(
                 LC::MoveWindowToWorkspace { workspace: slot, window_id },
@@ -679,7 +678,7 @@ mod workspace_number_tests {
     use super::*;
 
     #[test]
-    fn cli_workspace_numbers_are_one_based() {
+    fn cli_workspace_numbers_follow_the_digit_row() {
         let request = map_workspace_command(WorkspaceCommands::Switch { workspace_id: 1 });
         let Ok(LiftCommand::Reactor(reactor::Command::Layout(
             layout::LayoutCommand::SwitchToGlobalSlot(slot),
@@ -690,7 +689,7 @@ mod workspace_number_tests {
         assert_eq!(slot, 0);
 
         let request = map_workspace_command(WorkspaceCommands::MoveWindow {
-            workspace_id: 10,
+            workspace_id: 0,
             window_id: Some(42),
         });
         let Ok(LiftCommand::Reactor(reactor::Command::Layout(
@@ -702,7 +701,7 @@ mod workspace_number_tests {
         assert_eq!(workspace, 9);
         assert_eq!(window_id, Some(42));
 
-        assert!(map_workspace_command(WorkspaceCommands::Switch { workspace_id: 0 }).is_err());
+        assert!(map_workspace_command(WorkspaceCommands::Switch { workspace_id: 10 }).is_err());
     }
 }
 

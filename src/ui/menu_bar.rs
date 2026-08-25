@@ -122,10 +122,10 @@ impl MenuIcon {
         let mode = settings.mode;
         let style = settings.display_style;
         let label_for = |workspace: &WorkspaceData| match settings.active_label {
-            ActiveWorkspaceLabel::Index => format!("{}", workspace.index + 1),
+            ActiveWorkspaceLabel::Index => workspace.number.to_string(),
             ActiveWorkspaceLabel::Name => {
                 if workspace.name.is_empty() {
-                    format!("{}", workspace.index + 1)
+                    workspace.number.to_string()
                 } else {
                     workspace.name.clone()
                 }
@@ -366,13 +366,14 @@ fn build_status_menu(
 
     for ws in workspaces {
         let ws_label = if ws.name.is_empty() {
-            format!("Workspace {}", ws.index + 1)
+            format!("Workspace {}", ws.number)
         } else {
-            format!("{} ({})", ws.name, ws.index + 1)
+            format!("{} ({})", ws.name, ws.number)
         };
+        let global_slot = workspace_number_to_global_slot(ws.number);
         let ws_shortcut = shortcuts
             .switch_workspace_by_index
-            .get(&ws.index)
+            .get(&global_slot.unwrap_or(ws.index))
             .or_else(|| shortcuts.switch_workspace_by_name.get(&ws.name));
         let ws_item = make_menu_item(
             mtm,
