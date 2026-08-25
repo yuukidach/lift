@@ -847,18 +847,13 @@ fn build_layout(
             CGSize::new(cell_width, CELL_HEIGHT),
         );
         let content_x = next_x + (cell_width - content_width) / 2.0;
-        let app_icon_rect = has_icon.then(|| {
+        let (label_x, app_icon_x) = label_and_icon_positions(content_x, label_width, has_icon);
+        let app_icon_rect = app_icon_x.map(|icon_x| {
             CGRect::new(
-                CGPoint::new(content_x, (CELL_HEIGHT - APP_ICON_SIZE) / 2.0),
+                CGPoint::new(icon_x, (CELL_HEIGHT - APP_ICON_SIZE) / 2.0),
                 CGSize::new(APP_ICON_SIZE, APP_ICON_SIZE),
             )
         });
-        let label_x = content_x
-            + if has_icon {
-                APP_ICON_SIZE + APP_ICON_SPACING
-            } else {
-                0.0
-            };
 
         let windows = if input.show_windows && !workspace.windows.is_empty() {
             let layout = compute_window_layout_metrics(
@@ -913,6 +908,15 @@ fn label_cell_width(label_width: f64, has_icon: bool) -> f64 {
         0.0
     };
     CELL_WIDTH.max(label_width + icon_width + LABEL_HORIZONTAL_INSET * 2.0)
+}
+
+fn label_and_icon_positions(
+    content_x: f64,
+    label_width: f64,
+    has_icon: bool,
+) -> (f64, Option<f64>) {
+    let app_icon_x = has_icon.then_some(content_x + label_width + APP_ICON_SPACING);
+    (content_x, app_icon_x)
 }
 
 fn inter_workspace_spacing(display_boundary: bool) -> f64 {
@@ -1074,7 +1078,8 @@ define_class!(
 mod tests {
     use super::{
         APP_ICON_SIZE, APP_ICON_SPACING, CELL_SPACING, DISPLAY_GROUP_SPACING,
-        LABEL_HORIZONTAL_INSET, inter_workspace_spacing, label_cell_width,
+        LABEL_HORIZONTAL_INSET, inter_workspace_spacing, label_and_icon_positions,
+        label_cell_width,
     };
 
     #[test]
@@ -1085,6 +1090,15 @@ mod tests {
             label_cell_width(label_width, true),
             label_width + APP_ICON_SIZE + APP_ICON_SPACING + LABEL_HORIZONTAL_INSET * 2.0
         );
+    }
+
+    #[test]
+    fn label_precedes_the_primary_app_icon() {
+        let content_x = 5.0;
+        let label_width = 7.0;
+        let (label_x, icon_x) = label_and_icon_positions(content_x, label_width, true);
+        assert_eq!(label_x, content_x);
+        assert_eq!(icon_x, Some(content_x + label_width + APP_ICON_SPACING));
     }
 
     #[test]
