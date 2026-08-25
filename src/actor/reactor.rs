@@ -1326,7 +1326,8 @@ impl Reactor {
             })?;
         let focused_window = self
             .main_window()
-            .map(|window| crate::core::ids::WindowId::new(ApplicationId(window.pid), window.idx));
+            .map(|window| crate::core::ids::WindowId::new(ApplicationId(window.pid), window.idx))
+            .filter(|focused| windows.iter().any(|window| window.id == *focused));
         let core = self.core_state.as_mut().ok_or_else(|| {
             crate::core::error::CoreError::IncompleteObservation(
                 "core state was not initialized".into(),

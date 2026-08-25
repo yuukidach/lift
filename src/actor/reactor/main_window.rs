@@ -32,6 +32,14 @@ impl MainWindowTracker {
                 self.apps.remove(&pid);
                 return None;
             }
+            &Event::WindowDestroyed(window) => {
+                if let Some(app) = self.apps.get_mut(&window.pid)
+                    && app.main_window == Some(window)
+                {
+                    app.main_window = None;
+                }
+                return None;
+            }
             &Event::ApplicationActivated(pid, quiet) => {
                 let app = self.apps.get_mut(&pid)?;
                 app.is_frontmost = true;

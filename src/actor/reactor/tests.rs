@@ -96,6 +96,39 @@ fn destroyed_window_is_removed_before_the_same_event_reflows_layout() {
 }
 
 #[test]
+fn destroying_the_focused_main_window_reflows_the_remaining_window() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let pid = 7;
+    let destroyed = WindowId::new(pid, 1);
+    let remaining = WindowId::new(pid, 2);
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0)],
+        vec![Some(SpaceId::new(1))],
+        vec![],
+    ));
+    reactor.handle_events(apps.make_app_with_opts(
+        pid,
+        make_windows(2),
+        Some(destroyed),
+        true,
+        true,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    apps.simulate_until_quiet(&mut reactor);
+    let before = apps.windows[&remaining].frame;
+
+    reactor.handle_event(Event::WindowDestroyed(destroyed));
+    apps.simulate_until_quiet(&mut reactor);
+
+    let after = apps.windows[&remaining].frame;
+    assert_eq!(reactor.core_snapshot().windows.len(), 1);
+    assert_eq!(reactor.core_snapshot().focused_window, None);
+    assert!(after.size.width > before.size.width);
+    assert!(after.size.height >= before.size.height);
+}
+
+#[test]
 fn terminated_application_removes_all_windows_before_reflow() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test();
