@@ -130,9 +130,9 @@ pub fn workspace_data_for_display(
     let mut workspaces = snapshot
         .workspaces
         .iter()
-        .filter(|workspace| workspace.display == display.id)
+        .filter(|workspace| workspace.display == display.id && workspace.number.is_some())
         .collect::<Vec<_>>();
-    workspaces.sort_by_key(|workspace| workspace.number.global_slot());
+    workspaces.sort_by_key(|workspace| workspace.number.expect("numbered workspace").global_slot());
     workspaces
         .into_iter()
         .enumerate()
@@ -158,7 +158,7 @@ pub fn workspace_data_for_display(
             WorkspaceData {
                 id: workspace.id.0.to_string(),
                 index,
-                number: workspace.number.get() as usize,
+                number: workspace.number.expect("numbered workspace").get() as usize,
                 name: workspace.name.clone(),
                 is_active,
                 window_count: windows.len(),
@@ -213,7 +213,7 @@ mod tests {
             }],
             workspaces: vec![WorkspaceSnapshot {
                 id: workspace_id,
-                number: WorkspaceNumber::try_from(1).unwrap(),
+                number: Some(WorkspaceNumber::try_from(1).unwrap()),
                 name: "Main".into(),
                 display: display_id,
                 groups: vec![GroupSnapshot {
@@ -255,7 +255,7 @@ mod tests {
         let display_id = DisplayId("main".into());
         let workspace = |id, number| WorkspaceSnapshot {
             id: WorkspaceId(id),
-            number: WorkspaceNumber::try_from(number).unwrap(),
+            number: Some(WorkspaceNumber::try_from(number).unwrap()),
             name: format!("Workspace {number}"),
             display: display_id.clone(),
             groups: Vec::new(),
@@ -286,12 +286,58 @@ mod tests {
     }
 
     #[test]
+    fn hidden_workspace_is_not_projected_into_the_menu_bar() {
+        let display_id = DisplayId("main".into());
+        let hidden_id = WorkspaceId(99);
+        let snapshot = CoreSnapshot {
+            displays: vec![DisplaySnapshot {
+                id: display_id.clone(),
+                frame: Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap(),
+                space: Some(SpaceId(9)),
+                is_active_context: true,
+                active_workspace: Some(hidden_id),
+                last_workspace: Some(WorkspaceId(1)),
+            }],
+            workspaces: vec![
+                WorkspaceSnapshot {
+                    id: WorkspaceId(1),
+                    number: Some(WorkspaceNumber::try_from(1).unwrap()),
+                    name: "Workspace 1".into(),
+                    display: display_id.clone(),
+                    groups: Vec::new(),
+                    floating_windows: Vec::new(),
+                    last_tiled_window: None,
+                    last_floating_window: None,
+                    layout_frames: BTreeMap::new(),
+                },
+                WorkspaceSnapshot {
+                    id: hidden_id,
+                    number: None,
+                    name: "Hidden Workspace".into(),
+                    display: display_id.clone(),
+                    groups: Vec::new(),
+                    floating_windows: Vec::new(),
+                    last_tiled_window: None,
+                    last_floating_window: None,
+                    layout_frames: BTreeMap::new(),
+                },
+            ],
+            ..CoreSnapshot::default()
+        };
+
+        let workspaces = workspace_data_for_display(&snapshot, &snapshot.displays[0]);
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].number, 1);
+        assert!(!workspaces[0].is_active);
+    }
+
+    #[test]
     fn grouped_workspace_views_mark_display_boundaries_and_keep_each_active_workspace() {
         let left = DisplayId("left".into());
         let right = DisplayId("right".into());
         let workspace = |id, number, display: &DisplayId| WorkspaceSnapshot {
             id: WorkspaceId(id),
-            number: WorkspaceNumber::try_from(number).unwrap(),
+            number: Some(WorkspaceNumber::try_from(number).unwrap()),
             name: format!("Workspace {number}"),
             display: display.clone(),
             groups: Vec::new(),
@@ -349,7 +395,7 @@ mod tests {
         let right = DisplayId("right".into());
         let workspace = |id, number, display: &DisplayId| WorkspaceSnapshot {
             id: WorkspaceId(id),
-            number: WorkspaceNumber::try_from(number).unwrap(),
+            number: Some(WorkspaceNumber::try_from(number).unwrap()),
             name: String::new(),
             display: display.clone(),
             groups: Vec::new(),

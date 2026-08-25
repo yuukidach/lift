@@ -30,7 +30,7 @@ pub struct GroupSnapshot {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSnapshot {
     pub id: WorkspaceId,
-    pub number: WorkspaceNumber,
+    pub number: Option<WorkspaceNumber>,
     pub name: String,
     pub display: DisplayId,
     pub groups: Vec<GroupSnapshot>,

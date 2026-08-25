@@ -173,10 +173,12 @@ impl CoreState {
                 .snapshot()
                 .workspaces
                 .iter()
-                .map(|workspace| PersistedWorkspace {
-                    id: workspace.id,
-                    number: workspace.number,
-                    display: workspace.display.clone(),
+                .filter_map(|workspace| {
+                    Some(PersistedWorkspace {
+                        id: workspace.id,
+                        number: workspace.number?,
+                        display: workspace.display.clone(),
+                    })
                 })
                 .collect(),
         }
@@ -327,7 +329,7 @@ mod tests {
         .unwrap();
         assert!(observed.snapshot.workspaces.iter().any(|workspace| {
             workspace.id == WorkspaceId(7)
-                && workspace.number == number(3)
+                && workspace.number == Some(number(3))
                 && workspace.display == DisplayId("external".into())
         }));
     }
@@ -429,7 +431,7 @@ mod tests {
             .snapshot
             .workspaces
             .iter()
-            .find(|workspace| workspace.number == number(2))
+            .find(|workspace| workspace.number == Some(number(2)))
             .unwrap();
         assert_eq!(managed.workspace, Some(workspace.id));
         assert!(managed.floating);
@@ -495,7 +497,7 @@ mod tests {
                     .workspaces
                     .iter()
                     .find(|candidate| candidate.id == workspace)
-                    .map(|workspace| workspace.number)),
+                    .and_then(|workspace| workspace.number)),
             Some(number(2))
         );
     }
@@ -517,7 +519,7 @@ mod tests {
             .iter()
             .find(|workspace| workspace.display == DisplayId("right".into()))
             .unwrap();
-        let right_number = right_workspace.number;
+        let right_number = right_workspace.number.expect("numbered workspace");
         let right_id = right_workspace.id;
 
         state
@@ -813,10 +815,16 @@ mod tests {
             .unwrap();
 
         let moved = state.snapshot();
-        let workspace_two =
-            moved.workspaces.iter().find(|workspace| workspace.number == number(2)).unwrap();
-        let workspace_one =
-            moved.workspaces.iter().find(|workspace| workspace.number == number(1)).unwrap();
+        let workspace_two = moved
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.number == Some(number(2)))
+            .unwrap();
+        let workspace_one = moved
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.number == Some(number(1)))
+            .unwrap();
         assert_eq!(
             moved.windows.iter().find(|window| window.id == focused).unwrap().workspace,
             Some(workspace_two.id)
@@ -876,6 +884,49 @@ mod tests {
     }
 
     #[test]
+    fn hidden_workspace_toggle_is_reducer_owned_and_restores_the_numbered_workspace() {
+        let mut state = CoreState::new(CoreConfig::default());
+        observe(&mut state, 1, vec![display("main", 9)], Vec::new()).unwrap();
+        let display = DisplayId("main".into());
+        let regular = state.snapshot().displays[0].active_workspace.unwrap();
+
+        let shown = state
+            .transition(Input::Command(Command::Workspace(
+                WorkspaceCommand::ToggleHidden { display: display.clone() },
+            )))
+            .unwrap();
+        let hidden = shown.snapshot.displays[0].active_workspace.unwrap();
+        assert_ne!(hidden, regular);
+        assert_eq!(
+            shown
+                .snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == hidden)
+                .unwrap()
+                .number,
+            None
+        );
+        assert!(shown.events.iter().any(|event| {
+            matches!(event, DomainEvent::WorkspaceChanged { workspace, .. } if *workspace == hidden)
+        }));
+
+        let hidden_again = shown
+            .snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == hidden)
+            .unwrap();
+        assert!(hidden_again.groups.is_empty());
+        let returned = state
+            .transition(Input::Command(Command::Workspace(
+                WorkspaceCommand::ToggleHidden { display },
+            )))
+            .unwrap();
+        assert_eq!(returned.snapshot.displays[0].active_workspace, Some(regular));
+    }
+
+    #[test]
     fn leaving_an_empty_workspace_destroys_it_without_losing_the_display() {
         let mut state = CoreState::new(CoreConfig::default());
         let focused = window(1);
@@ -908,7 +959,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(returned.snapshot.workspaces.len(), 1);
-        assert_eq!(returned.snapshot.workspaces[0].number, number(1));
+        assert_eq!(returned.snapshot.workspaces[0].number, Some(number(1)));
         assert_eq!(returned.snapshot.displays[0].last_workspace, None);
     }
 

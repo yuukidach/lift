@@ -68,6 +68,7 @@ pub enum WmCmd {
     MoveWindowToWorkspace(WorkspaceSelector),
     CreateWorkspace,
     SwitchToLastWorkspace,
+    ToggleHiddenWorkspace,
 
     ShowMissionControlAll,
     ShowMissionControlCurrent,
@@ -183,6 +184,7 @@ impl WmController {
                 | Command(Wm(crate::actor::wm_controller::WmCmd::PrevWorkspace))
                 | Command(Wm(crate::actor::wm_controller::WmCmd::SwitchToWorkspace(_)))
                 | Command(Wm(crate::actor::wm_controller::WmCmd::SwitchToLastWorkspace))
+                | Command(Wm(crate::actor::wm_controller::WmCmd::ToggleHiddenWorkspace))
                 | SpaceChanged(_)
         ) && let Some(tx) = &self.mission_control_tx
         {
@@ -368,6 +370,11 @@ impl WmController {
             Command(Wm(SwitchToLastWorkspace)) => {
                 self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(
                     layout::LayoutCommand::SwitchToLastWorkspace,
+                )));
+            }
+            Command(Wm(ToggleHiddenWorkspace)) => {
+                self.events_tx.send(reactor::Event::Command(reactor::Command::Layout(
+                    layout::LayoutCommand::ToggleHiddenWorkspace,
                 )));
             }
             Command(Wm(ShowMissionControlAll)) => {

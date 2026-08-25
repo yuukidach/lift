@@ -1150,7 +1150,7 @@ impl Reactor {
             .workspaces
             .iter()
             .find(|candidate| candidate.id == workspace)
-            .map(|candidate| candidate.number)
+            .and_then(|candidate| candidate.number)
     }
 
     fn workspace_metadata(
@@ -1159,10 +1159,11 @@ impl Reactor {
     ) -> Option<(u64, String)> {
         let snapshot = self.core_snapshot();
         let item = snapshot.workspaces.iter().find(|candidate| candidate.id == workspace)?;
+        item.number?;
         let mut siblings = snapshot
             .workspaces
             .iter()
-            .filter(|candidate| candidate.display == item.display)
+            .filter(|candidate| candidate.display == item.display && candidate.number.is_some())
             .collect::<Vec<_>>();
         siblings.sort_by_key(|candidate| candidate.number);
         let index = siblings.iter().position(|candidate| candidate.id == workspace)? as u64;
@@ -2409,7 +2410,7 @@ impl Reactor {
                 snapshot
                     .workspaces
                     .iter()
-                    .find(|candidate| candidate.number == number)
+                    .find(|candidate| candidate.number == Some(number))
                     .and_then(|candidate| {
                         self.space_for_workspace(candidate.id).map(|space| (space, candidate.id))
                     })

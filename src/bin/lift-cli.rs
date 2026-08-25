@@ -221,6 +221,8 @@ enum WorkspaceCommands {
     Create,
     /// Switch to the last workspace
     Last,
+    /// Toggle the hidden scratchpad workspace on the current display
+    ToggleHidden,
 }
 
 #[derive(Subcommand)]
@@ -671,6 +673,9 @@ fn map_workspace_command(cmd: WorkspaceCommands) -> Result<LiftCommand, String> 
         WorkspaceCommands::Last => Ok(LiftCommand::Reactor(reactor::Command::Layout(
             LC::SwitchToLastWorkspace,
         ))),
+        WorkspaceCommands::ToggleHidden => Ok(LiftCommand::Reactor(reactor::Command::Layout(
+            LC::ToggleHiddenWorkspace,
+        ))),
     }
 }
 
@@ -701,6 +706,14 @@ mod workspace_number_tests {
         };
         assert_eq!(workspace, 9);
         assert_eq!(window_id, Some(42));
+
+        let request = map_workspace_command(WorkspaceCommands::ToggleHidden);
+        assert!(matches!(
+            request,
+            Ok(LiftCommand::Reactor(reactor::Command::Layout(
+                layout::LayoutCommand::ToggleHiddenWorkspace
+            )))
+        ));
 
         assert!(map_workspace_command(WorkspaceCommands::Switch { workspace_id: 10 }).is_err());
     }

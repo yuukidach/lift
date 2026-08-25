@@ -88,7 +88,7 @@ impl CommandEventHandler {
                     .workspaces
                     .iter()
                     .filter(|workspace| workspace.display == display)
-                    .map(|workspace| workspace.number)
+                    .filter_map(|workspace| workspace.number)
                     .collect::<Vec<_>>();
                 workspaces.sort_unstable();
                 let number = workspaces.get(*index).copied().ok_or_else(|| {
@@ -101,6 +101,9 @@ impl CommandEventHandler {
             LayoutCommand::CreateWorkspace => CoreWorkspaceCommand::Create { display: display()? },
             LayoutCommand::SwitchToLastWorkspace => {
                 CoreWorkspaceCommand::Last { display: display()? }
+            }
+            LayoutCommand::ToggleHiddenWorkspace => {
+                CoreWorkspaceCommand::ToggleHidden { display: display()? }
             }
             unsupported => {
                 return Err(CoreError::UnsupportedCommand(format!(
@@ -334,6 +337,7 @@ impl CommandEventHandler {
                 | LayoutCommand::PrevWorkspace(_)
                 | LayoutCommand::SwitchToWorkspace(_)
                 | LayoutCommand::SwitchToLastWorkspace
+                | LayoutCommand::ToggleHiddenWorkspace
         );
         let requires_workspace_space = matches!(
             cmd,
@@ -342,6 +346,7 @@ impl CommandEventHandler {
                 | LayoutCommand::SwitchToWorkspace(_)
                 | LayoutCommand::CreateWorkspace
                 | LayoutCommand::SwitchToLastWorkspace
+                | LayoutCommand::ToggleHiddenWorkspace
         );
         let command_space = reactor.workspace_command_space();
 
@@ -360,6 +365,7 @@ impl CommandEventHandler {
                 | LayoutCommand::SwitchToWorkspace(_)
                 | LayoutCommand::CreateWorkspace
                 | LayoutCommand::SwitchToLastWorkspace
+                | LayoutCommand::ToggleHiddenWorkspace
         ) {
             match Self::transition_core_workspace_command(reactor, workspace_space, &cmd) {
                 Ok(response) => Some(response),
@@ -391,15 +397,17 @@ impl CommandEventHandler {
             let target_number = CoreWorkspaceNumber::from_global_slot(*workspace);
             let snapshot = reactor.core_snapshot();
             let target_workspace = target_number.and_then(|number| {
-                snapshot.workspaces.iter().find(|candidate| candidate.number == number).map(
-                    |candidate| {
+                snapshot
+                    .workspaces
+                    .iter()
+                    .find(|candidate| candidate.number == Some(number))
+                    .map(|candidate| {
                         serde_json::json!({
                             "id": candidate.id,
-                            "number": candidate.number.get(),
+                            "number": number.get(),
                             "display": candidate.display,
                         })
-                    },
-                )
+                    })
             });
             reactor.recording_manager.diagnostics.record_decision(
                 "move_window_resolution",
@@ -503,7 +511,8 @@ impl CommandEventHandler {
             | LayoutCommand::PrevWorkspace(_)
             | LayoutCommand::SwitchToWorkspace(_)
             | LayoutCommand::CreateWorkspace
-            | LayoutCommand::SwitchToLastWorkspace => core_workspace_response.unwrap_or_default(),
+            | LayoutCommand::SwitchToLastWorkspace
+            | LayoutCommand::ToggleHiddenWorkspace => core_workspace_response.unwrap_or_default(),
             LayoutCommand::MoveWindowToWorkspace { .. } => {
                 let LayoutCommand::MoveWindowToWorkspace {
                     workspace,
@@ -548,8 +557,11 @@ impl CommandEventHandler {
             .workspace_command_space()
             .and_then(|space| reactor.display_uuid_for_space(space));
         let before = reactor.core_snapshot();
-        let existing =
-            before.workspaces.iter().find(|workspace| workspace.number == number).cloned();
+        let existing = before
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.number == Some(number))
+            .cloned();
         let target_display = existing
             .as_ref()
             .map(|workspace| workspace.display.0.clone())

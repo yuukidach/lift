@@ -132,7 +132,7 @@ fn workspace_move_command_changes_the_authoritative_assignment() {
     let target = snapshot
         .workspaces
         .iter()
-        .find(|workspace| workspace.number.get() == 2)
+        .find(|workspace| workspace.number.is_some_and(|number| number.get() == 2))
         .unwrap();
     assert_eq!(reactor.workspace_for_window(window), Some(target.id));
 }
@@ -157,7 +157,7 @@ fn cross_display_workspace_move_survives_the_next_platform_observation() {
         .core_snapshot()
         .workspaces
         .iter()
-        .find(|workspace| workspace.number.get() == 2)
+        .find(|workspace| workspace.number.is_some_and(|number| number.get() == 2))
         .unwrap()
         .id;
     assert_eq!(reactor.workspace_for_window(window), Some(target));
@@ -182,7 +182,7 @@ fn global_slot_command_creates_and_activates_the_requested_workspace() {
     let target = snapshot
         .workspaces
         .iter()
-        .find(|workspace| workspace.number.get() == 8)
+        .find(|workspace| workspace.number.is_some_and(|number| number.get() == 8))
         .unwrap();
     assert_eq!(reactor.active_workspace_for_space(space), Some(target.id));
 
@@ -193,7 +193,7 @@ fn global_slot_command_creates_and_activates_the_requested_workspace() {
     let zero = snapshot
         .workspaces
         .iter()
-        .find(|workspace| workspace.number.get() == 0)
+        .find(|workspace| workspace.number.is_some_and(|number| number.get() == 0))
         .unwrap();
     assert_eq!(zero.name, "Workspace 0");
     assert_eq!(reactor.active_workspace_for_space(space), Some(zero.id));

@@ -12,6 +12,7 @@ use super::snapshot::{PersistedWorkspace, WorkspaceSnapshot};
 pub(crate) struct WorkspaceCatalog {
     workspaces: BTreeMap<WorkspaceId, Workspace>,
     by_number: BTreeMap<WorkspaceNumber, WorkspaceId>,
+    hidden_workspaces: BTreeMap<DisplayId, WorkspaceId>,
     displays: BTreeMap<DisplayId, DisplayWorkspaces>,
     window_assignment: BTreeMap<WindowId, WorkspaceId>,
     next_workspace_id: u64,
@@ -20,7 +21,7 @@ pub(crate) struct WorkspaceCatalog {
 #[derive(Clone, Debug)]
 struct Workspace {
     id: WorkspaceId,
-    number: WorkspaceNumber,
+    number: Option<WorkspaceNumber>,
     name: String,
     display: DisplayId,
     tiled: BspTree,
@@ -32,6 +33,7 @@ struct Workspace {
 struct DisplayWorkspaces {
     active: Option<WorkspaceId>,
     last: Option<WorkspaceId>,
+    hidden_return: Option<WorkspaceId>,
 }
 
 // The catalog is the mutable workspace aggregate used by the core reducer.
@@ -56,7 +58,7 @@ impl WorkspaceCatalog {
             catalog.by_number.insert(persisted.number, persisted.id);
             catalog.workspaces.insert(persisted.id, Workspace {
                 id: persisted.id,
-                number: persisted.number,
+                number: Some(persisted.number),
                 name: format!("Workspace {}", persisted.number.get()),
                 display: persisted.display.clone(),
                 tiled: BspTree::default(),
@@ -69,7 +71,8 @@ impl WorkspaceCatalog {
                 catalog
                     .workspaces
                     .get(&active)
-                    .is_none_or(|workspace| persisted.number < workspace.number)
+                    .and_then(|workspace| workspace.number)
+                    .is_none_or(|number| persisted.number < number)
             });
             if should_activate {
                 display.active = Some(persisted.id);
@@ -104,9 +107,37 @@ impl WorkspaceCatalog {
                     "online displays have no valid migration receiver".into(),
                 )
             })?;
+        let offline_hidden = self
+            .hidden_workspaces
+            .iter()
+            .filter(|(display, _)| !online.contains(*display))
+            .map(|(_, workspace)| *workspace)
+            .collect::<Vec<_>>();
         for workspace in self.workspaces.values_mut() {
             if !online.contains(&workspace.display) {
                 workspace.display = receiver.clone();
+            }
+        }
+        self.hidden_workspaces.retain(|display, _| online.contains(display));
+        if !offline_hidden.is_empty() {
+            let target = match self.hidden_workspaces.get(&receiver).copied() {
+                Some(target) => target,
+                None => {
+                    let target = offline_hidden[0];
+                    self.hidden_workspaces.insert(receiver.clone(), target);
+                    target
+                }
+            };
+            for duplicate in offline_hidden.into_iter().filter(|workspace| *workspace != target) {
+                let windows = self
+                    .window_assignment
+                    .iter()
+                    .filter_map(|(window, workspace)| (*workspace == duplicate).then_some(*window))
+                    .collect::<Vec<_>>();
+                for window in windows {
+                    self.move_window(window, target)?;
+                }
+                self.workspaces.remove(&duplicate);
             }
         }
         self.displays.retain(|display, _| online.contains(display));
@@ -129,8 +160,8 @@ impl WorkspaceCatalog {
             let fallback = self
                 .workspaces
                 .values()
-                .filter(|workspace| &workspace.display == display)
-                .min_by_key(|workspace| workspace.number)
+                .filter(|workspace| &workspace.display == display && workspace.number.is_some())
+                .min_by_key(|workspace| workspace.number.expect("numbered workspace"))
                 .map(|workspace| workspace.id)
                 .expect("each online display was assigned a workspace");
             let state = self.displays.get_mut(display).expect("display state was inserted");
@@ -144,6 +175,9 @@ impl WorkspaceCatalog {
             }
             if !state.last.is_some_and(valid) {
                 state.last = None;
+            }
+            if !state.hidden_return.is_some_and(valid) {
+                state.hidden_return = None;
             }
         }
         self.validate()
@@ -197,7 +231,7 @@ impl WorkspaceCatalog {
         let id = WorkspaceId(self.next_workspace_id);
         self.workspaces.insert(id, Workspace {
             id,
-            number,
+            number: Some(number),
             name: format!("Workspace {}", number.get()),
             display: display.clone(),
             tiled: BspTree::default(),
@@ -226,12 +260,75 @@ impl WorkspaceCatalog {
                 state.display
             )));
         }
+        if state.number.is_none() {
+            return Err(CoreError::InvalidCommand(
+                "hidden workspace can only be activated by toggling it".into(),
+            ));
+        }
         let display_state = self.displays.entry(display.clone()).or_default();
         if display_state.active != Some(workspace) {
-            display_state.last = display_state.active;
+            if display_state.active.is_some_and(|active| {
+                self.workspaces.get(&active).is_some_and(|workspace| workspace.number.is_some())
+            }) {
+                display_state.last = display_state.active;
+            }
             display_state.active = Some(workspace);
+            display_state.hidden_return = None;
         }
         Ok(())
+    }
+
+    pub fn toggle_hidden(&mut self, display: &DisplayId) -> Result<WorkspaceId, CoreError> {
+        if let Some(hidden) = self.hidden_workspaces.get(display).copied()
+            && self.active_workspace(display) == Some(hidden)
+        {
+            let target = self
+                .displays
+                .get(display)
+                .and_then(|state| state.hidden_return)
+                .filter(|workspace| self.is_numbered_on_display(*workspace, display))
+                .or_else(|| self.first_numbered_workspace(display))
+                .ok_or_else(|| {
+                    CoreError::InvariantViolation(
+                        "hidden workspace owner has no numbered workspace".into(),
+                    )
+                })?;
+            let state = self.displays.entry(display.clone()).or_default();
+            state.active = Some(target);
+            state.hidden_return = None;
+            return Ok(target);
+        }
+
+        let hidden = match self.hidden_workspaces.get(display).copied() {
+            Some(hidden) => hidden,
+            None => {
+                self.next_workspace_id += 1;
+                let hidden = WorkspaceId(self.next_workspace_id);
+                self.workspaces.insert(hidden, Workspace {
+                    id: hidden,
+                    number: None,
+                    name: "Hidden Workspace".into(),
+                    display: display.clone(),
+                    tiled: BspTree::default(),
+                    floating: BTreeSet::new(),
+                    floating_positions: BTreeMap::new(),
+                });
+                self.hidden_workspaces.insert(display.clone(), hidden);
+                hidden
+            }
+        };
+
+        let return_workspace = self
+            .active_workspace(display)
+            .filter(|workspace| self.is_numbered_on_display(*workspace, display))
+            .or_else(|| self.first_numbered_workspace(display))
+            .ok_or_else(|| {
+                CoreError::InvariantViolation("display has no numbered workspace".into())
+            })?;
+        let state = self.displays.entry(display.clone()).or_default();
+        state.hidden_return = Some(return_workspace);
+        state.active = Some(hidden);
+        Ok(hidden)
     }
 
     pub fn active_workspace(&self, display: &DisplayId) -> Option<WorkspaceId> {
@@ -253,18 +350,28 @@ impl WorkspaceCatalog {
             .workspaces
             .values()
             .filter(|workspace| &workspace.display == display)
-            .map(|workspace| {
+            .filter_map(|workspace| {
+                let number = workspace.number?;
                 (
-                    workspace.number,
+                    number,
                     workspace.id,
                     workspace.tiled.is_empty() && workspace.floating.is_empty(),
                 )
+                    .into()
             })
             .collect::<Vec<_>>();
         candidates.sort_by_key(|(number, _, _)| *number);
         if candidates.is_empty() {
             return None;
         }
+        let current = if self.is_numbered_on_display(current, display) {
+            current
+        } else {
+            self.displays
+                .get(display)
+                .and_then(|state| state.hidden_return)
+                .unwrap_or(current)
+        };
         let position = candidates
             .iter()
             .position(|(_, workspace, _)| *workspace == current)
@@ -332,23 +439,25 @@ impl WorkspaceCatalog {
         let Some(candidate) = self.workspaces.get(&workspace) else {
             return Ok(false);
         };
+        let Some(number) = candidate.number else {
+            return Ok(false);
+        };
         let display = candidate.display.clone();
         let empty = candidate.tiled.is_empty() && candidate.floating.is_empty();
         let workspace_count = self
             .workspaces
             .values()
-            .filter(|candidate| candidate.display == display)
+            .filter(|candidate| candidate.display == display && candidate.number.is_some())
             .count();
         let active = self.active_workspace(&display) == Some(workspace);
         if !empty || active || workspace_count <= 1 {
             return Ok(false);
         }
 
-        let removed = self
-            .workspaces
+        self.workspaces
             .remove(&workspace)
             .expect("ephemeral workspace was checked above");
-        self.by_number.remove(&removed.number);
+        self.by_number.remove(&number);
         if let Some(display_state) = self.displays.get_mut(&display)
             && display_state.last == Some(workspace)
         {
@@ -592,7 +701,7 @@ impl WorkspaceCatalog {
     }
 
     pub fn validate(&self) -> Result<(), CoreError> {
-        if self.workspaces.len() != self.by_number.len() {
+        if self.workspaces.len() != self.by_number.len() + self.hidden_workspaces.len() {
             return Err(CoreError::InvariantViolation(
                 "workspace number index has the wrong size".into(),
             ));
@@ -600,7 +709,11 @@ impl WorkspaceCatalog {
 
         let mut membership = BTreeMap::new();
         for (id, workspace) in &self.workspaces {
-            if workspace.id != *id || self.by_number.get(&workspace.number) != Some(id) {
+            let index_matches = match workspace.number {
+                Some(number) => self.by_number.get(&number) == Some(id),
+                None => self.hidden_workspaces.get(&workspace.display) == Some(id),
+            };
+            if workspace.id != *id || !index_matches {
                 return Err(CoreError::InvariantViolation(
                     "workspace number index disagrees with workspace state".into(),
                 ));
@@ -638,9 +751,20 @@ impl WorkspaceCatalog {
                     self.workspaces.get(&id).is_some_and(|workspace| &workspace.display == display)
                 })
             };
-            if !valid(state.active) || !valid(state.last) {
+            if !valid(state.active) || !valid(state.last) || !valid(state.hidden_return) {
                 return Err(CoreError::InvariantViolation(
                     "display active/last state references another display".into(),
+                ));
+            }
+            if state
+                .last
+                .is_some_and(|workspace| !self.is_numbered_on_display(workspace, display))
+                || state
+                    .hidden_return
+                    .is_some_and(|workspace| !self.is_numbered_on_display(workspace, display))
+            {
+                return Err(CoreError::InvariantViolation(
+                    "display history references a hidden workspace".into(),
                 ));
             }
             if self.workspaces.values().any(|workspace| &workspace.display == display)
@@ -652,6 +776,24 @@ impl WorkspaceCatalog {
             }
         }
         Ok(())
+    }
+
+    fn is_numbered_on_display(&self, workspace: WorkspaceId, display: &DisplayId) -> bool {
+        self.workspaces
+            .get(&workspace)
+            .is_some_and(|workspace| workspace.number.is_some() && &workspace.display == display)
+    }
+
+    fn first_numbered_workspace(&self, display: &DisplayId) -> Option<WorkspaceId> {
+        self.workspaces
+            .values()
+            .filter_map(|workspace| {
+                (&workspace.display == display)
+                    .then_some(workspace.number?)
+                    .map(|number| (number.global_slot(), workspace.id))
+            })
+            .min_by_key(|(slot, _)| *slot)
+            .map(|(_, workspace)| workspace)
     }
 
     fn remove_membership(&mut self, window: WindowId) -> Result<(), CoreError> {
@@ -736,6 +878,103 @@ mod tests {
     }
 
     #[test]
+    fn hidden_workspace_toggles_without_consuming_number_or_previous_history() {
+        let mut catalog = WorkspaceCatalog::default();
+        let display = DisplayId("main".into());
+        let first = catalog.create(number(1), display.clone()).unwrap();
+        let second = catalog.create(number(2), display.clone()).unwrap();
+        catalog.activate(&display, second).unwrap();
+
+        let hidden = catalog.toggle_hidden(&display).unwrap();
+        assert_eq!(catalog.active_workspace(&display), Some(hidden));
+        assert_eq!(catalog.last_workspace(&display), Some(first));
+        assert_eq!(
+            catalog
+                .snapshots()
+                .unwrap()
+                .iter()
+                .find(|workspace| workspace.id == hidden)
+                .unwrap()
+                .number,
+            None
+        );
+
+        assert_eq!(catalog.toggle_hidden(&display).unwrap(), second);
+        assert_eq!(catalog.active_workspace(&display), Some(second));
+        assert_eq!(catalog.last_workspace(&display), Some(first));
+        catalog.validate().unwrap();
+    }
+
+    #[test]
+    fn hidden_workspace_does_not_reduce_numbered_workspace_capacity() {
+        let mut catalog = WorkspaceCatalog::default();
+        let display = DisplayId("main".into());
+        catalog.create_next(display.clone()).unwrap();
+        catalog.toggle_hidden(&display).unwrap();
+        for _ in 1..WorkspaceNumber::COUNT {
+            catalog.create_next(display.clone()).unwrap();
+        }
+
+        let snapshots = catalog.snapshots().unwrap();
+        assert_eq!(
+            snapshots.iter().filter(|workspace| workspace.number.is_some()).count(),
+            10
+        );
+        assert_eq!(
+            snapshots.iter().filter(|workspace| workspace.number.is_none()).count(),
+            1
+        );
+        assert!(catalog.create_next(display).is_err());
+        catalog.validate().unwrap();
+    }
+
+    #[test]
+    fn each_display_toggles_its_own_hidden_workspace() {
+        let mut catalog = WorkspaceCatalog::default();
+        let left = DisplayId("left".into());
+        let right = DisplayId("right".into());
+        let left_regular = catalog.create(number(1), left.clone()).unwrap();
+        catalog.create(number(2), right.clone()).unwrap();
+
+        let left_hidden = catalog.toggle_hidden(&left).unwrap();
+        let right_hidden = catalog.toggle_hidden(&right).unwrap();
+        assert_ne!(left_hidden, right_hidden);
+        assert_eq!(catalog.active_workspace(&left), Some(left_hidden));
+        assert_eq!(catalog.active_workspace(&right), Some(right_hidden));
+
+        assert_eq!(catalog.toggle_hidden(&left).unwrap(), left_regular);
+        assert_eq!(catalog.active_workspace(&left), Some(left_regular));
+        assert_eq!(catalog.active_workspace(&right), Some(right_hidden));
+        catalog.validate().unwrap();
+    }
+
+    #[test]
+    fn removing_a_display_merges_its_hidden_workspace_into_the_receiver() {
+        let mut catalog = WorkspaceCatalog::default();
+        let left = DisplayId("left".into());
+        let right = DisplayId("right".into());
+        catalog.create(number(1), left.clone()).unwrap();
+        catalog.create(number(2), right.clone()).unwrap();
+        let left_hidden = catalog.toggle_hidden(&left).unwrap();
+        let right_hidden = catalog.toggle_hidden(&right).unwrap();
+        catalog.assign_tiled(left_hidden, window(1), None).unwrap();
+
+        catalog.reconcile_displays(std::slice::from_ref(&right), Some(&right)).unwrap();
+
+        assert_eq!(catalog.workspace_for_window(window(1)), Some(right_hidden));
+        assert_eq!(
+            catalog
+                .snapshots()
+                .unwrap()
+                .iter()
+                .filter(|workspace| workspace.number.is_none())
+                .count(),
+            1
+        );
+        catalog.validate().unwrap();
+    }
+
+    #[test]
     fn automatic_workspace_numbers_follow_digit_row_order() {
         let mut catalog = WorkspaceCatalog::default();
         let display = DisplayId("main".into());
@@ -746,7 +985,7 @@ mod tests {
             .snapshots()
             .unwrap()
             .into_iter()
-            .map(|workspace| workspace.number)
+            .filter_map(|workspace| workspace.number)
             .collect::<Vec<_>>();
 
         assert_eq!(numbers, WorkspaceNumber::ORDERED);

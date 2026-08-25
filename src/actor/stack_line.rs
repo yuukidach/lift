@@ -604,7 +604,7 @@ mod tests {
             }],
             workspaces: vec![WorkspaceSnapshot {
                 id: workspace_id,
-                number: WorkspaceNumber::try_from(1).unwrap(),
+                number: Some(WorkspaceNumber::try_from(1).unwrap()),
                 name: "Main".into(),
                 display: display_id,
                 groups: vec![GroupSnapshot {

@@ -45,7 +45,7 @@ struct DisplayState {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 struct WorkspaceState {
     id: WorkspaceId,
-    number: u8,
+    number: Option<u8>,
     name: String,
     display: DisplayId,
 }
@@ -93,7 +93,7 @@ impl DiagnosticState {
                 .iter()
                 .map(|workspace| WorkspaceState {
                     id: workspace.id,
-                    number: workspace.number.get(),
+                    number: workspace.number.map(crate::core::ids::WorkspaceNumber::get),
                     name: workspace.name.clone(),
                     display: workspace.display.clone(),
                 })

@@ -169,11 +169,13 @@ pub fn workspace_layouts(
         .iter()
         .filter(|item| display_filter.as_ref().is_none_or(|display| &item.display == display))
         .filter(|item| workspace.is_none_or(|workspace| item.id == workspace))
-        .map(|item| WorkspaceLayoutView {
-            id: item.id,
-            number: item.number.get(),
-            name: item.name.clone(),
-            is_active: active.contains(&item.id),
+        .filter_map(|item| {
+            Some(WorkspaceLayoutView {
+                id: item.id,
+                number: item.number?.get(),
+                name: item.name.clone(),
+                is_active: active.contains(&item.id),
+            })
         })
         .collect::<Vec<_>>();
     layouts.sort_by_key(|item| {
@@ -246,7 +248,7 @@ mod tests {
             }],
             workspaces: vec![WorkspaceSnapshot {
                 id: workspace,
-                number: WorkspaceNumber::try_from(1).unwrap(),
+                number: Some(WorkspaceNumber::try_from(1).unwrap()),
                 name: "Main".into(),
                 display,
                 groups: vec![GroupSnapshot {

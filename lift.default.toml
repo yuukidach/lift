@@ -281,6 +281,7 @@ comb1 = "Alt + Shift"
 # - move_window_to_workspace = N / move_window_to_workspace = { workspace = N, window_id = 123 } (workspace digit 0..9; optional window id)
 # - create_workspace
 # - switch_to_last_workspace
+# - toggle_hidden_workspace
 # - next_window / prev_window (focus wraps when it reaches last window in current workspace)
 # - ascend / descend
 # - move_focus = "left"|"right"|"up"|"down"
@@ -320,6 +321,7 @@ comb1 = "Alt + Shift"
 "comb1 + 3" = { move_window_to_workspace = 3 }
 
 "Alt + Tab" = "switch_to_last_workspace"
+"Cmd + Minus" = "toggle_hidden_workspace"
 
 "Alt + Shift + Left" = { join_window = "left" }
 "Alt + Shift + Right" = { join_window = "right" }

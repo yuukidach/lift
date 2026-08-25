@@ -488,6 +488,14 @@ impl CoreState {
                 })?;
                 self.activate_workspace(display, workspace, events)?;
             }
+            Command::Workspace(WorkspaceCommand::ToggleHidden { display }) => {
+                self.require_online_display(&display)?;
+                let previous = self.workspaces.active_workspace(&display);
+                let workspace = self.workspaces.toggle_hidden(&display)?;
+                if previous != Some(workspace) {
+                    events.push(DomainEvent::WorkspaceChanged { display, workspace });
+                }
+            }
             Command::Display(DisplayCommand::MoveWindowTo { display, window }) => {
                 self.require_online_display(&display)?;
                 let window = self.command_window(window)?;

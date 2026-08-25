@@ -97,6 +97,9 @@ pub enum WorkspaceCommand {
     Last {
         display: DisplayId,
     },
+    ToggleHidden {
+        display: DisplayId,
+    },
     Create {
         display: DisplayId,
     },
