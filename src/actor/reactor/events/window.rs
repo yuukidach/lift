@@ -92,13 +92,37 @@ impl WindowEventHandler {
             }
         }
 
+        if !Self::remove_window_state(reactor, wid, window_server_id) {
+            return false;
+        }
+        reactor.send_layout_event(LayoutEvent::Changed);
+        true
+    }
+
+    pub fn remove_windows_for_terminated_app(reactor: &mut Reactor, pid: i32) -> bool {
+        let windows = reactor.window_manager.window_ids_for_pid(pid).collect::<Vec<_>>();
+        let mut removed = false;
+        for wid in windows {
+            let window_server_id =
+                reactor.window_manager.window(wid).and_then(|window| window.info.sys_id);
+            removed |= Self::remove_window_state(reactor, wid, window_server_id);
+        }
+        removed
+    }
+
+    fn remove_window_state(
+        reactor: &mut Reactor,
+        wid: WindowId,
+        window_server_id: Option<WindowServerId>,
+    ) -> bool {
+        if !reactor.window_manager.contains_window(wid) {
+            return false;
+        }
+
         if let Some(ws_id) = window_server_id {
             reactor.transaction_manager.remove_for_window(ws_id);
             reactor.window_manager.remove_window_server_state(ws_id);
-        } else {
-            debug!(?wid, "Received WindowDestroyed for unknown window - ignoring");
         }
-        reactor.send_layout_event(LayoutEvent::Changed);
         reactor.window_manager.remove_window(wid);
 
         let drag = reactor.core_drag_snapshot();

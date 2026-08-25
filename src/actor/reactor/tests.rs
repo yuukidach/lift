@@ -76,6 +76,45 @@ fn publishing_window_membership_changes_broadcasts_once_for_the_display() {
 }
 
 #[test]
+fn destroyed_window_is_removed_before_the_same_event_reflows_layout() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0)],
+        vec![Some(SpaceId::new(1))],
+        vec![],
+    ));
+    reactor.handle_events(apps.make_app(1, make_windows(2)));
+    apps.simulate_until_quiet(&mut reactor);
+    assert_eq!(reactor.core_snapshot().windows.len(), 2);
+
+    reactor.handle_event(Event::WindowDestroyed(WindowId::new(1, 1)));
+
+    assert_eq!(reactor.window_manager.tracked_window_count(), 1);
+    assert_eq!(reactor.core_snapshot().windows.len(), 1);
+    assert_eq!(reactor.core_snapshot().windows[0].id.index.get(), 2);
+}
+
+#[test]
+fn terminated_application_removes_all_windows_before_reflow() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0)],
+        vec![Some(SpaceId::new(1))],
+        vec![],
+    ));
+    reactor.handle_events(apps.make_app(7, make_windows(2)));
+    apps.simulate_until_quiet(&mut reactor);
+    assert_eq!(reactor.core_snapshot().windows.len(), 2);
+
+    reactor.handle_event(Event::ApplicationThreadTerminated(7));
+
+    assert_eq!(reactor.window_manager.tracked_window_count(), 0);
+    assert!(reactor.core_snapshot().windows.is_empty());
+}
+
+#[test]
 fn workspace_move_command_changes_the_authoritative_assignment() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test();

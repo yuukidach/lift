@@ -1,5 +1,6 @@
 use tracing::{debug, warn};
 
+use super::window::WindowEventHandler;
 use crate::actor::app::{AppInfo, AppThreadHandle, Quiet, WindowId};
 use crate::actor::reactor::{AppState, LayoutEvent, Reactor};
 use crate::sys::app::WindowInfo;
@@ -33,6 +34,7 @@ impl AppEventHandler {
 
     pub fn handle_application_thread_terminated(reactor: &mut Reactor, pid: i32) {
         reactor.app_manager.apps.remove(&pid);
+        WindowEventHandler::remove_windows_for_terminated_app(reactor, pid);
         reactor.send_layout_event(LayoutEvent::Changed);
     }
 
