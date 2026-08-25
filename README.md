@@ -24,7 +24,7 @@ scripts/setup-local-signing.sh
 scripts/install-local.sh
 ```
 
-The signing setup runs once. Later installs reuse the same local identity, so macOS normally keeps the existing Accessibility authorization. Universal `lift` and `lift-cli` binaries are also attached to each [GitHub release](https://github.com/yuukidach/lift/releases).
+The signing setup runs once. Later installs reuse the same local identity, so macOS normally keeps the existing Accessibility authorization. Universal ad-hoc-signed `lift` and `lift-cli` binaries are also attached to each [GitHub release](https://github.com/yuukidach/lift/releases), but the source install above is recommended when preserving authorization across upgrades matters.
 
 ## Menu bar
 

@@ -59,6 +59,10 @@ jobs:
             -output dist/lift-cli
 
           strip -x dist/lift dist/lift-cli
+          codesign --force --timestamp=none --sign - --identifier git.acsandmann.rift dist/lift
+          codesign --force --timestamp=none --sign - --identifier git.acsandmann.rift.cli dist/lift-cli
+          codesign --verify --strict dist/lift
+          codesign --verify --strict dist/lift-cli
 
       - name: Package tarball
         id: pkg
