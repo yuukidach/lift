@@ -112,6 +112,46 @@ fn workspace_move_command_changes_the_authoritative_assignment() {
 }
 
 #[test]
+fn cross_display_workspace_move_survives_the_next_platform_observation() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0), screen(1000.0)],
+        vec![Some(SpaceId::new(1)), Some(SpaceId::new(2))],
+        vec![],
+    ));
+    let window = WindowId::new(7, 1);
+    reactor.handle_events(apps.make_app_with_opts(
+        7,
+        make_windows(1),
+        Some(window),
+        true,
+        true,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace {
+            workspace: 1,
+            window_id: None,
+        },
+    )));
+    let target = reactor
+        .core_snapshot()
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.number.get() == 2)
+        .unwrap()
+        .id;
+    assert_eq!(reactor.workspace_for_window(window), Some(target));
+
+    // The synthetic AX frame still overlaps the source display here, exactly
+    // like production before the asynchronous cross-display write completes.
+    reactor.advance_core_state().unwrap();
+    assert_eq!(reactor.workspace_for_window(window), Some(target));
+}
+
+#[test]
 fn global_slot_command_creates_and_activates_the_requested_workspace() {
     let mut reactor = Reactor::new_for_test();
     let space = SpaceId::new(1);

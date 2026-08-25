@@ -515,6 +515,48 @@ mod tests {
     }
 
     #[test]
+    fn stale_display_observation_does_not_undo_cross_display_workspace_move() {
+        let mut state = CoreState::new(CoreConfig::default());
+        let tracked = window(1);
+        let initial = observe(
+            &mut state,
+            1,
+            vec![display("left", 9), display("right", 10)],
+            vec![observed_window(tracked, "left")],
+        )
+        .unwrap();
+        let right_workspace = initial
+            .snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.display == DisplayId("right".into()))
+            .unwrap();
+        let right_number = right_workspace.number;
+        let right_id = right_workspace.id;
+
+        state
+            .transition(Input::Command(Command::Workspace(
+                WorkspaceCommand::MoveWindow {
+                    workspace: right_number,
+                    window: Some(tracked),
+                },
+            )))
+            .unwrap();
+
+        // AX/window-server geometry may still identify the source display
+        // until the asynchronous frame write completes.
+        let stale_observation = observe(
+            &mut state,
+            2,
+            vec![display("left", 9), display("right", 10)],
+            vec![observed_window(tracked, "left")],
+        )
+        .unwrap();
+
+        assert_eq!(stale_observation.snapshot.windows[0].workspace, Some(right_id));
+    }
+
+    #[test]
     fn repeated_identical_observation_has_an_empty_change_set() {
         let mut state = CoreState::new(CoreConfig::default());
         let initial = observe(

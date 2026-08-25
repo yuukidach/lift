@@ -429,6 +429,8 @@ impl CommandEventHandler {
                     "requested_workspace_number": target_number,
                     "command_space": command_space,
                     "focus_follows_mouse": reactor.config.settings.focus_follows_mouse,
+                    "main_window": reactor.main_window(),
+                    "window_under_cursor": reactor.window_id_under_cursor(),
                     "layout_focus": layout_focus,
                     "resolved_window": current_window,
                     "layout_focus_workspace": layout_focus.and_then(|window| reactor.workspace_for_window(window)),

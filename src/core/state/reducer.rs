@@ -369,9 +369,6 @@ impl CoreState {
                     } else {
                         floating
                     };
-                    let existing_on_display = existing.filter(|workspace| {
-                        self.workspaces.display_for_workspace(*workspace) == Some(&display)
-                    });
                     let target = match workspace {
                         WorkspaceTarget::Number(number) => {
                             if let Some(workspace) = self.workspaces.workspace_by_number(number) {
@@ -393,7 +390,10 @@ impl CoreState {
                         // it on every platform observation makes a visible
                         // window follow each workspace activation, so the UI
                         // reports a switch while the screen never changes.
-                        WorkspaceTarget::Current => existing_on_display
+                        // The platform-observed display can also lag an
+                        // explicit cross-display move, so it must not rewrite
+                        // an existing virtual-workspace assignment.
+                        WorkspaceTarget::Current => existing
                             .or_else(|| self.workspaces.active_workspace(&display))
                             .ok_or_else(|| {
                                 CoreError::InvalidCommand(format!(

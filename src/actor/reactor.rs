@@ -2949,16 +2949,12 @@ impl Reactor {
                     }
                     false
                 } else {
-                    let skip_center_warp = workspace_switch_space
-                        .map(|space| {
-                            self.windows_in_active_workspace(space).is_empty()
-                        })
-                        .unwrap_or(false);
-                    let warp_space = if skip_center_warp {
-                        None
-                    } else {
-                        workspace_switch_space.or_else(|| self.workspace_command_space())
-                    };
+                    // Empty workspaces still need to become the command
+                    // context. With no window to focus, moving the pointer is
+                    // the only platform action that transfers that context to
+                    // the target display when mouse-follows-focus is enabled.
+                    let warp_space =
+                        workspace_switch_space.or_else(|| self.workspace_command_space());
                     if let Some(space) = workspace_switch_space {
                         if self.space_for_cursor_screen() == Some(space)
                             && self.focus_untracked_window_under_cursor()
