@@ -166,13 +166,16 @@ impl PartialOrd for OrderedFloat {
 fn corner_frame(display: Rect, size: Size, left: bool, bundle_id: Option<&str>) -> Rect {
     let zoom = bundle_id == Some("us.zoom.xos");
     let offset_x = if zoom { 0.0 } else { 1.0 };
-    let offset_y = if zoom { 0.0 } else if left { -1.0 } else { 1.0 };
     let x = if left {
         display.origin.x + offset_x - size.width + 1.0
     } else {
         display.origin.x + display.size.width - offset_x - 1.0
     };
-    let y = display.origin.y + display.size.height + offset_y;
+    // Both corners retain the same one-pixel strip at the display's bottom
+    // edge. The old bottom-right `+ 1` put that candidate fully off-screen,
+    // so the scorer rejected it and could choose a fallback that substantially
+    // overlapped a portrait display on the left.
+    let y = display.origin.y + display.size.height - if zoom { 0.0 } else { 1.0 };
     Rect::new(x, y, size.width, size.height).unwrap()
 }
 
@@ -226,5 +229,21 @@ mod tests {
         );
         assert!(intersection_area(left, hidden) >= MIN_ANCHOR_AREA);
         assert_eq!(intersection_area(main, hidden), 0.0);
+    }
+
+    #[test]
+    fn hidden_frame_does_not_leak_onto_a_tall_left_display() {
+        let main = Rect::new(0.0, 0.0, 2560.0, 1440.0).unwrap();
+        let portrait = Rect::new(-1440.0, -205.0, 1440.0, 2560.0).unwrap();
+        let hidden = hidden_frame(
+            main,
+            Size { width: 1278.0, height: 1402.0 },
+            None,
+            &[main, portrait],
+        );
+
+        assert!(intersection_area(main, hidden) >= MIN_ANCHOR_AREA);
+        assert_eq!(intersection_area(portrait, hidden), 0.0);
+        assert_eq!(hidden.origin.y, 1439.0);
     }
 }
