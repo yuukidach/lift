@@ -36,21 +36,71 @@ If the workspace indicator and other menu extras exceed the available width, use
 brew install --cask jordanbaird-ice
 ```
 
-## Usage
+## Configuration
 
-Lift reads `~/.config/lift/config.toml`; [lift.default.toml](lift.default.toml) documents every option.
+Lift reads `~/.config/lift/config.toml` and reloads changes when `settings.hot_reload = true`. Copy [lift.default.toml](lift.default.toml) for the complete option and command reference.
+
+| Section | Purpose |
+| --- | --- |
+| `[settings]` | Focus, animation, diagnostics, startup commands |
+| `[settings.layout]` | Gaps and per-display layout overrides |
+| `[settings.ui.menu_bar]` | Native menu bar indicator |
+| `[virtual_workspaces]` | Workspace, display, and app placement rules |
+| `[modifier_combinations]` | Reusable modifier aliases |
+| `[keys]` | Shortcut-to-command mappings |
+
+Keys use `Cmd`, `Alt`, `Ctrl`, and `Shift`; `Meta` is an alias for `Cmd`. Values are either a command name or a command with arguments:
+
+```toml
+[virtual_workspaces]
+app_rules = [
+  { app_id = "com.tencent.xinWeChat", workspace = 8 },
+  { app_id = "com.electron.lark", workspace = 9 },
+]
+
+[keys]
+"Cmd + 1" = { switch_to_workspace = 1 }
+"Cmd + Shift + 1" = { move_window_to_workspace = 1 }
+"Cmd + Left" = { move_focus = "left" }
+"Cmd + Shift + Left" = { move_node = "left" }
+"Cmd + Enter" = { exec = ["/usr/bin/open", "-a", "Terminal"] }
+```
+
+App workspace rules apply when a window is first assigned; moving it manually takes precedence. Use `lift-cli query applications` for bundle IDs and `lift-cli query displays` for display UUIDs.
+
+## Default shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `Alt+H/J/K/L` | Focus left/down/up/right |
+| `Alt+Shift+H/J/K/L` | Move window left/down/up/right |
+| `Alt+0…3` | Switch to workspace 0–3 |
+| `Alt+Shift+0…3` | Move window to workspace 0–3 |
+| `Alt+Tab` | Return to the previous workspace |
+| `Cmd+-` | Toggle the hidden workspace |
+| `Cmd+Shift+-` | Move the current window to the hidden workspace |
+| `Alt+Shift+Arrow` | Join with the window in that direction |
+| `Alt+/` / `Alt+Ctrl+E` | Toggle orientation / unjoin |
+| `Alt+Shift+Space` | Toggle floating |
+| `Alt+Ctrl+Shift+Space` | Temporarily focus the floating layer |
+| `Alt+F` / `Alt+Shift+F` | Toggle fullscreen / fullscreen within gaps |
+| `Alt+R` | Enter resize mode; use arrows, then `Esc` or `Enter` |
+| `Alt+Z` | Toggle Lift management for the current macOS Space |
+| `Alt+Enter` | Open Terminal |
+| `Alt+Shift+D` / `Alt+Ctrl+S` | Print layout debug data / serialize state |
+| `Alt+Ctrl+Q` | Save state and exit |
+
+All workspace commands accept digits `0`–`9`; the bundled file binds 0–3 as examples. Edit `[keys]` to replace or extend any shortcut.
+
+## CLI and diagnostics
 
 ```bash
 lift --help
 lift-cli --help
-```
-
-Diagnostics are stored as a compact, title-free JSONL history and rotate at three 4 MiB files by default:
-
-```bash
-lift-cli diagnostics path
 lift-cli diagnostics tail --lines 50
 ```
+
+Diagnostics are title-free and rotate at three 4 MiB files by default. Run `lift-cli diagnostics path` to locate them.
 
 See [architecture.md](architecture.md) for the implementation boundaries and [docs/upstream-watch.md](docs/upstream-watch.md) for the compact upstream feature-review record.
 
