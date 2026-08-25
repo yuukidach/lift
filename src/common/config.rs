@@ -850,9 +850,9 @@ impl InnerGaps {
 
 fn yes() -> bool { true }
 
-fn default_animation_duration() -> f64 { 0.3 }
+fn default_animation_duration() -> f64 { 0.2 }
 
-fn default_animation_fps() -> f64 { 100.0 }
+fn default_animation_fps() -> f64 { 60.0 }
 
 fn default_diagnostic_file_size_mb() -> u64 { 4 }
 

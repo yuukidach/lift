@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use tokio::sync::mpsc;
@@ -32,6 +32,7 @@ pub struct AnimationManager {
 #[derive(Debug)]
 struct ActiveAnimation {
     animation: Animation,
+    started_at: Instant,
     next_frame: u32,
 }
 
@@ -40,7 +41,6 @@ pub struct Animation {
     interval: Duration,
     frames: u32,
     easing: AnimationEasing,
-    size_frame_stride: u32,
     windows: Vec<AnimatedWindow>,
     handled_windows: Vec<WindowId>,
 }
@@ -52,17 +52,12 @@ struct AnimatedWindow {
     start: CGRect,
     finish: CGRect,
     is_focus: bool,
+    resizes: bool,
     txid: TransactionId,
 }
 
 impl AnimatedWindow {
-    fn frame_after(
-        &self,
-        frame: u32,
-        total_frames: u32,
-        easing: AnimationEasing,
-        size_frame_stride: u32,
-    ) -> CGRect {
+    fn frame_after(&self, frame: u32, total_frames: u32, easing: AnimationEasing) -> CGRect {
         if frame == 0 {
             return if self.is_focus {
                 CGRect {
@@ -78,10 +73,6 @@ impl AnimatedWindow {
         let mut rect = get_frame(self.start, self.finish, t, easing);
         if self.is_focus {
             rect.size = self.finish.size;
-        } else if frame < total_frames {
-            let size_frame = frame / size_frame_stride * size_frame_stride;
-            let size_t = f64::from(size_frame) / f64::from(total_frames);
-            rect.size = get_frame(self.start, self.finish, size_t, easing).size;
         }
         rect
     }
@@ -131,15 +122,17 @@ impl AnimationManager {
         }
     }
 
-    pub fn tick(&mut self) -> Option<Duration> {
+    pub fn tick(&mut self) -> Option<Duration> { self.tick_at(Instant::now()) }
+
+    fn tick_at(&mut self, now: Instant) -> Option<Duration> {
         let active = self.active.as_mut()?;
-        active.send_next_frame();
+        active.send_next_frame_at(now);
         if active.is_complete() {
             let active = self.active.take().expect("animation disappeared while ticking");
             active.animation.end();
             None
         } else {
-            Some(active.animation.interval)
+            Some(active.delay_until_next_frame(now))
         }
     }
 
@@ -377,12 +370,18 @@ impl AnimationManager {
 }
 
 impl ActiveAnimation {
-    fn start(animation: Animation) -> Option<Self> {
+    fn start(animation: Animation) -> Option<Self> { Self::start_at(animation, Instant::now()) }
+
+    fn start_at(animation: Animation, started_at: Instant) -> Option<Self> {
         if animation.is_empty() {
             return None;
         }
         animation.begin();
-        Some(Self { animation, next_frame: 1 })
+        Some(Self {
+            animation,
+            started_at,
+            next_frame: 1,
+        })
     }
 
     fn replace_with(self, mut next: Animation) -> Self {
@@ -390,15 +389,31 @@ impl ActiveAnimation {
         let continuing = next.patch_starts_from(&current);
         next.begin_windows_not_in(&continuing);
         next.carry_over(self.animation, &current);
-        Self { animation: next, next_frame: 1 }
+        Self {
+            animation: next,
+            started_at: Instant::now(),
+            next_frame: 1,
+        }
     }
 
-    fn send_next_frame(&mut self) {
-        self.animation.send_frame(self.next_frame);
-        self.next_frame += 1;
+    fn send_next_frame_at(&mut self, now: Instant) {
+        let elapsed_frames = now
+            .saturating_duration_since(self.started_at)
+            .as_secs_f64()
+            .div_euclid(self.animation.interval.as_secs_f64())
+            .floor() as u32;
+        let frame = self.next_frame.max(elapsed_frames).min(self.animation.frames);
+        self.animation.send_frame(frame);
+        self.next_frame = frame.saturating_add(1);
     }
 
     fn is_complete(&self) -> bool { self.next_frame > self.animation.frames }
+
+    fn delay_until_next_frame(&self, now: Instant) -> Duration {
+        let deadline =
+            self.started_at + self.animation.interval.mul_f64(f64::from(self.next_frame));
+        deadline.saturating_duration_since(now)
+    }
 
     fn current_frames(&self) -> Vec<(WindowId, CGRect)> {
         let frame = self.next_frame.saturating_sub(1);
@@ -408,12 +423,7 @@ impl ActiveAnimation {
             .map(|window| {
                 (
                     window.wid,
-                    window.frame_after(
-                        frame,
-                        self.animation.frames,
-                        self.animation.easing,
-                        self.animation.size_frame_stride,
-                    ),
+                    window.frame_after(frame, self.animation.frames, self.animation.easing),
                 )
             })
             .collect()
@@ -435,9 +445,8 @@ impl Animation {
         let interval = Duration::from_secs_f64(1.0 / fps);
         Self {
             interval,
-            frames: ((duration * fps).round() as u32).max(1),
+            frames: ((duration * fps).ceil() as u32).max(1),
             easing,
-            size_frame_stride: ((fps / 30.0).round() as u32).max(1),
             windows: vec![],
             handled_windows: vec![],
         }
@@ -458,6 +467,7 @@ impl Animation {
             start,
             finish,
             is_focus,
+            resizes: !start.size.same_as(finish.size),
             txid,
         });
         self.mark_handled(wid);
@@ -521,12 +531,10 @@ impl Animation {
         let t = f64::from(frame) / f64::from(self.frames);
         for window in &self.windows {
             let mut rect = get_frame(window.start, window.finish, t, self.easing);
-            let set_size = frame.is_multiple_of(self.size_frame_stride) || frame == self.frames;
-            if set_size {
-                if window.is_focus {
-                    rect.size = window.finish.size;
-                }
+            if window.is_focus {
+                rect.size = window.finish.size;
             }
+            let set_size = window.resizes && !window.is_focus;
             _ = window.handle.send(Request::AnimationFrame {
                 wid: window.wid,
                 frame: rect,
@@ -745,14 +753,13 @@ mod tests {
     }
 
     #[test]
-    fn animation_uses_configured_timing_and_smooth_size_cadence() {
+    fn animation_uses_configured_timing_and_resizes_every_frame() {
         let (tx, mut rx) = crate::actor::channel();
         let handle = AppThreadHandle::new_for_test(tx);
         let wid = WindowId::new(1, 1);
         let mut animation = Animation::new(0.15, 60.0, AnimationEasing::EaseOutCubic);
         assert_eq!(animation.interval, Duration::from_secs_f64(1.0 / 60.0));
         assert_eq!(animation.frames, 9);
-        assert_eq!(animation.size_frame_stride, 2);
         animation.add_window(
             &handle,
             wid,
@@ -766,16 +773,62 @@ mod tests {
         manager.handle_message(Message::Replace(animation));
         let _ = collect_requests(&mut rx);
         manager.tick();
-        assert!(matches!(collect_requests(&mut rx).as_slice(), [
-            Request::AnimationFrame { set_size: false, .. }
-        ]));
-        manager.tick();
         let requests = collect_requests(&mut rx);
         let Request::AnimationFrame { frame, set_size, .. } = &requests[0] else {
             panic!("expected animation frame")
         };
         assert!(*set_size);
         assert!(frame.size.width > 100.0 && frame.size.width < 200.0);
+    }
+
+    #[test]
+    fn position_only_animation_avoids_expensive_size_writes() {
+        let (tx, mut rx) = crate::actor::channel();
+        let handle = AppThreadHandle::new_for_test(tx);
+        let wid = WindowId::new(1, 1);
+        let animation = animation(
+            &handle,
+            wid,
+            rect(0.0, 0.0, 100.0, 100.0),
+            rect(400.0, 300.0, 100.0, 100.0),
+        );
+        let mut manager = AnimationManager::new();
+        manager.handle_message(Message::Replace(animation));
+        let _ = collect_requests(&mut rx);
+
+        manager.tick();
+        assert!(matches!(collect_requests(&mut rx).as_slice(), [
+            Request::AnimationFrame { set_size: false, .. }
+        ]));
+    }
+
+    #[test]
+    fn delayed_tick_catches_up_to_wall_clock_progress() {
+        let (tx, mut rx) = crate::actor::channel();
+        let handle = AppThreadHandle::new_for_test(tx);
+        let wid = WindowId::new(1, 1);
+        let mut animation = Animation::new(0.2, 60.0, AnimationEasing::Linear);
+        animation.add_window(
+            &handle,
+            wid,
+            rect(0.0, 0.0, 100.0, 100.0),
+            rect(120.0, 0.0, 100.0, 100.0),
+            false,
+            TransactionId::default(),
+        );
+        let started_at = Instant::now();
+        let mut manager = AnimationManager {
+            active: ActiveAnimation::start_at(animation, started_at),
+        };
+        let _ = collect_requests(&mut rx);
+
+        manager.tick_at(started_at + Duration::from_millis(70));
+        let requests = collect_requests(&mut rx);
+        let Request::AnimationFrame { frame, .. } = &requests[0] else {
+            panic!("expected animation frame")
+        };
+        assert_eq!(frame.origin.x, 40.0);
+        assert_eq!(manager.active.as_ref().unwrap().next_frame, 5);
     }
 
     #[test]

@@ -4,11 +4,11 @@
 [settings]
 # Animations
 # - animate: master switch for all window animations
-# - animation_duration: seconds per animation (>= 0.0; 0.12–0.20 recommended)
+# - animation_duration: seconds per animation (>= 0.0; 0.18–0.24 recommended)
 # - animation_fps: frames per second (> 0.0; 60 recommended for AX performance)
 # - animation_easing: linear, ease_in/out/in_out_{sine,quad,cubic,quart,quint,expo,circ}
 animate = false
-animation_duration = 0.18
+animation_duration = 0.20
 animation_fps = 60.0
 animation_easing = "ease_out_cubic"
 

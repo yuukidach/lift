@@ -22,6 +22,10 @@ observed_at: 2026-08-25
 - `a39581e838fdce33981b4452272388fc49eac981`, `e546861f6899384288940dc76dce5bbcd2fc70eb` — reference typed IPC commands, queries, and events — paths: `crates/rift-protocol/`, `src/ipc.rs` — status: review
 - `c096f26fa440ac697962aaeb76be55bbb3076dbf` — reference restore matching without persisting `SpaceId` — paths: `src/layout_engine/engine/persistence.rs` — status: review
 
+## Adopted
+
+- `2484722dd989a434d9c994618816003278e14b1c` — removed ineffective WindowServer update suppression from animations; Lift also uses wall-clock frame catch-up and avoids resize writes for position-only movement — status: adapted
+
 ## Last review
 
 - Range: `23a4c9d7a3acc5a0477dc5259715c80af7236bde..be8afef6036c77b67b4c49725ced6414601d63b0`
