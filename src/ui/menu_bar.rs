@@ -8,7 +8,7 @@ use objc2::{ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_
 use objc2_app_kit::{
     NSColor, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSFont,
     NSFontAttributeName, NSForegroundColorAttributeName, NSGraphicsContext, NSMenu, NSMenuItem,
-    NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSView,
+    NSImage, NSRunningApplication, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSView,
 };
 use objc2_core_foundation::{
     CFAttributedString, CFDictionary, CFRetained, CFString, CGFloat, CGPoint, CGRect, CGSize,
@@ -42,6 +42,9 @@ const CORNER_RADIUS: f64 = 3.0;
 const BORDER_WIDTH: f64 = 1.0;
 const CONTENT_INSET: f64 = 2.0;
 const FONT_SIZE: f64 = 12.0;
+const LABEL_HORIZONTAL_INSET: f64 = 4.0;
+const APP_ICON_SIZE: f64 = 13.0;
+const APP_ICON_SPACING: f64 = 3.0;
 
 #[derive(Debug, Clone, Copy)]
 pub enum MenuAction {
@@ -149,6 +152,7 @@ impl MenuIcon {
                         workspace: ws,
                         label: String::new(),
                         show_windows: true,
+                        app_icon: None,
                     })
                     .collect()
             }
@@ -157,6 +161,7 @@ impl MenuIcon {
                 .cloned()
                 .filter(|w| settings.show_empty || w.window_count > 0 || w.is_active)
                 .map(|ws| {
+                    let app_icon = primary_app_icon(&ws);
                     let mut clone = ws.clone();
                     clone.windows.clear();
                     clone.window_count = 0;
@@ -164,6 +169,7 @@ impl MenuIcon {
                         workspace: clone,
                         label: label_for(&ws),
                         show_windows: false,
+                        app_icon,
                     }
                 })
                 .collect(),
@@ -176,6 +182,7 @@ impl MenuIcon {
                         workspace: ws,
                         label: String::new(),
                         show_windows: true,
+                        app_icon: None,
                     }]
                 })
                 .unwrap_or_default(),
@@ -184,6 +191,7 @@ impl MenuIcon {
                 .cloned()
                 .find(|w| w.is_active)
                 .map(|ws| {
+                    let app_icon = primary_app_icon(&ws);
                     let mut clone = ws.clone();
                     clone.windows.clear();
                     clone.window_count = 0;
@@ -191,6 +199,7 @@ impl MenuIcon {
                         workspace: clone,
                         label: label_for(&ws),
                         show_windows: false,
+                        app_icon,
                     }]
                 })
                 .unwrap_or_default(),
@@ -258,6 +267,9 @@ struct WorkspaceRenderData {
     fill_alpha: f64,
     windows: Vec<CGRect>,
     label_line: Option<CachedTextLine>,
+    label_x: f64,
+    app_icon: Option<Retained<NSImage>>,
+    app_icon_rect: Option<CGRect>,
     show_windows: bool,
 }
 
@@ -265,6 +277,12 @@ struct WorkspaceRenderInput {
     workspace: WorkspaceData,
     label: String,
     show_windows: bool,
+    app_icon: Option<Retained<NSImage>>,
+}
+
+fn primary_app_icon(workspace: &WorkspaceData) -> Option<Retained<NSImage>> {
+    let window = workspace.windows.first()?;
+    NSRunningApplication::runningApplicationWithProcessIdentifier(window.id.pid)?.icon()
 }
 
 struct CachedTextLine {
@@ -763,18 +781,12 @@ fn build_layout(
     active_attrs: &NSDictionary<NSAttributedStringKey, AnyObject>,
     inactive_attrs: &NSDictionary<NSAttributedStringKey, AnyObject>,
 ) -> MenuIconLayout {
-    let count = inputs.len();
-    let total_width =
-        (CELL_WIDTH * count as f64) + (CELL_SPACING * (count.saturating_sub(1) as f64));
     let total_height = CELL_HEIGHT;
 
-    let mut workspaces = Vec::with_capacity(count);
+    let mut workspaces = Vec::with_capacity(inputs.len());
+    let mut next_x = 0.0;
     for (i, input) in inputs.iter().enumerate() {
         let workspace = &input.workspace;
-        let bg_x = i as f64 * (CELL_WIDTH + CELL_SPACING);
-        let bg_y = 0.0;
-        let bg_rect = CGRect::new(CGPoint::new(bg_x, bg_y), CGSize::new(CELL_WIDTH, CELL_HEIGHT));
-
         let fill_alpha = if input.show_windows {
             if workspace.is_active {
                 1.0
@@ -788,6 +800,47 @@ fn build_layout(
         } else {
             0.35
         };
+
+        let label_line = if !input.label.is_empty() {
+            let attrs = if fill_alpha > 0.0 {
+                active_attrs
+            } else {
+                inactive_attrs
+            };
+            build_cached_text_line(&input.label, attrs)
+        } else {
+            None
+        };
+
+        if i > 0 {
+            next_x += CELL_SPACING;
+        }
+        let label_width = label_line.as_ref().map_or(0.0, |line| line.width);
+        let has_icon = input.app_icon.is_some();
+        let content_width = label_width
+            + if has_icon {
+                APP_ICON_SIZE + APP_ICON_SPACING
+            } else {
+                0.0
+            };
+        let cell_width = label_cell_width(label_width, has_icon);
+        let bg_rect = CGRect::new(
+            CGPoint::new(next_x, 0.0),
+            CGSize::new(cell_width, CELL_HEIGHT),
+        );
+        let content_x = next_x + (cell_width - content_width) / 2.0;
+        let app_icon_rect = has_icon.then(|| {
+            CGRect::new(
+                CGPoint::new(content_x, (CELL_HEIGHT - APP_ICON_SIZE) / 2.0),
+                CGSize::new(APP_ICON_SIZE, APP_ICON_SIZE),
+            )
+        });
+        let label_x = content_x
+            + if has_icon {
+                APP_ICON_SIZE + APP_ICON_SPACING
+            } else {
+                0.0
+            };
 
         let windows = if input.show_windows && !workspace.windows.is_empty() {
             let layout = compute_window_layout_metrics(
@@ -812,32 +865,34 @@ fn build_layout(
         } else {
             Vec::new()
         };
-
-        let label_line = if !input.label.is_empty() {
-            let attrs = if fill_alpha > 0.0 {
-                active_attrs
-            } else {
-                inactive_attrs
-            };
-            build_cached_text_line(&input.label, attrs)
-        } else {
-            None
-        };
+        next_x += cell_width;
 
         workspaces.push(WorkspaceRenderData {
             bg_rect,
             fill_alpha,
             windows,
             label_line,
+            label_x,
+            app_icon: input.app_icon.clone(),
+            app_icon_rect,
             show_windows: input.show_windows,
         });
     }
 
     MenuIconLayout {
-        total_width,
+        total_width: next_x,
         total_height,
         workspaces,
     }
+}
+
+fn label_cell_width(label_width: f64, has_icon: bool) -> f64 {
+    let icon_width = if has_icon {
+        APP_ICON_SIZE + APP_ICON_SPACING
+    } else {
+        0.0
+    };
+    CELL_WIDTH.max(label_width + icon_width + LABEL_HORIZONTAL_INSET * 2.0)
 }
 
 fn add_rounded_rect(ctx: &CGContext, x: f64, y: f64, w: f64, h: f64, r: f64) {
@@ -942,11 +997,16 @@ define_class!(
                         }
                     }
 
+                    if let (Some(app_icon), Some(mut icon_rect)) =
+                        (&workspace.app_icon, workspace.app_icon_rect)
+                    {
+                        icon_rect.origin.y += y_offset;
+                        app_icon.drawInRect(icon_rect);
+                    }
+
                     if let Some(label_line) = &workspace.label_line {
-                        let text_width = label_line.width;
                         let text_center_y = bg_y + rect.size.height / 2.0;
                         let baseline_y = text_center_y - (label_line.ascent - label_line.descent) / 2.0;
-                        let text_x = rect.origin.x + (rect.size.width - text_width) / 2.0;
 
                         CGContext::save_g_state(Some(cg));
                         if workspace.fill_alpha > 0.0 {
@@ -954,7 +1014,11 @@ define_class!(
                         } else {
                             CGContext::set_rgb_fill_color(Some(cg), 1.0, 1.0, 1.0, 1.0);
                         }
-                        CGContext::set_text_position(Some(cg), text_x as CGFloat, baseline_y as CGFloat);
+                        CGContext::set_text_position(
+                            Some(cg),
+                            workspace.label_x as CGFloat,
+                            baseline_y as CGFloat,
+                        );
                         let line_ref: &CTLine = label_line.line.as_ref();
                         unsafe { line_ref.draw(cg) };
                         CGContext::restore_g_state(Some(cg));
@@ -966,3 +1030,18 @@ define_class!(
         }
     }
 );
+
+#[cfg(test)]
+mod tests {
+    use super::{APP_ICON_SIZE, APP_ICON_SPACING, LABEL_HORIZONTAL_INSET, label_cell_width};
+
+    #[test]
+    fn label_cells_reserve_space_for_the_primary_app_icon() {
+        let label_width = 7.0;
+        assert_eq!(label_cell_width(label_width, false), 20.0);
+        assert_eq!(
+            label_cell_width(label_width, true),
+            label_width + APP_ICON_SIZE + APP_ICON_SPACING + LABEL_HORIZONTAL_INSET * 2.0
+        );
+    }
+}

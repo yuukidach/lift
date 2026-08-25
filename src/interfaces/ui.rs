@@ -78,7 +78,7 @@ pub fn workspace_data_for_display(
         .iter()
         .filter(|workspace| workspace.display == display.id)
         .collect::<Vec<_>>();
-    workspaces.sort_by_key(|workspace| workspace.number);
+    workspaces.sort_by_key(|workspace| workspace.number.global_slot());
     workspaces
         .into_iter()
         .enumerate()
@@ -198,5 +198,40 @@ mod tests {
         assert!(!workspaces[0].is_active);
         assert_eq!(workspaces[0].windows[0].info.frame.origin.x, preview.origin.x);
         assert_eq!(workspaces[0].windows[0].info.frame.origin.y, preview.origin.y);
+    }
+
+    #[test]
+    fn workspace_views_follow_digit_row_order() {
+        let display_id = DisplayId("main".into());
+        let workspace = |id, number| WorkspaceSnapshot {
+            id: WorkspaceId(id),
+            number: WorkspaceNumber::try_from(number).unwrap(),
+            name: format!("Workspace {number}"),
+            display: display_id.clone(),
+            groups: Vec::new(),
+            floating_windows: Vec::new(),
+            last_tiled_window: None,
+            last_floating_window: None,
+            layout_frames: BTreeMap::new(),
+        };
+        let snapshot = CoreSnapshot {
+            displays: vec![DisplaySnapshot {
+                id: display_id.clone(),
+                frame: Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap(),
+                space: Some(SpaceId(9)),
+                is_active_context: true,
+                active_workspace: Some(WorkspaceId(1)),
+                last_workspace: None,
+            }],
+            workspaces: vec![workspace(0, 0), workspace(9, 9), workspace(1, 1)],
+            ..CoreSnapshot::default()
+        };
+
+        let workspaces = workspace_data(&snapshot);
+
+        assert_eq!(
+            workspaces.iter().map(|workspace| workspace.number).collect::<Vec<_>>(),
+            vec![1, 9, 0]
+        );
     }
 }

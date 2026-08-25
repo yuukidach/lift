@@ -204,10 +204,10 @@ impl Menu {
                 )));
             }
             MenuAction::OpenGitHub => {
-                Self::open_path_or_url("https://github.com/yuukidach/rift");
+                Self::open_path_or_url("https://github.com/yuukidach/lift");
             }
             MenuAction::OpenDocumentation => {
-                Self::open_path_or_url("https://github.com/yuukidach/rift#readme");
+                Self::open_path_or_url("https://github.com/yuukidach/lift#readme");
             }
             MenuAction::OpenMatrix => {
                 Self::open_path_or_url("https://matrix.to/#/#rift:matrix.org");
