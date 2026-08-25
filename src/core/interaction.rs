@@ -35,7 +35,9 @@ pub enum DragObservation {
         frame: Rect,
         candidates: Vec<DragCandidate>,
     },
-    Committed { window: WindowId },
+    Committed {
+        window: WindowId,
+    },
     Cancelled,
 }
 
@@ -86,7 +88,11 @@ impl DragSwapState {
         if area <= 0.0 {
             return self.target;
         }
-        let threshold = if threshold > 0.0 { threshold.min(1.0) } else { 0.5 };
+        let threshold = if threshold > 0.0 {
+            threshold.min(1.0)
+        } else {
+            0.5
+        };
         let stick_threshold = threshold * STICK_RATIO;
         let center_x = frame.origin.x + frame.size.width * 0.5;
         let center_y = frame.origin.y + frame.size.height * 0.5;
@@ -110,13 +116,10 @@ impl DragSwapState {
                 let candidate_x = candidate.frame.origin.x + candidate.frame.size.width * 0.5;
                 let candidate_y = candidate.frame.origin.y + candidate.frame.size.height * 0.5;
                 let distance = f64::hypot(center_x - candidate_x, center_y - candidate_y);
-                let candidate_diagonal = f64::hypot(
-                    candidate.frame.size.width,
-                    candidate.frame.size.height,
-                )
-                .max(f64::EPSILON);
-                let proximity =
-                    1.0 - (distance / (diagonal + candidate_diagonal)).clamp(0.0, 1.0);
+                let candidate_diagonal =
+                    f64::hypot(candidate.frame.size.width, candidate.frame.size.height)
+                        .max(f64::EPSILON);
+                let proximity = 1.0 - (distance / (diagonal + candidate_diagonal)).clamp(0.0, 1.0);
                 Some(CandidateScore {
                     window: candidate.window,
                     overlap,
@@ -124,9 +127,8 @@ impl DragSwapState {
                 })
             })
             .collect::<Vec<_>>();
-        scores.sort_by(|left, right| {
-            right.score.partial_cmp(&left.score).unwrap_or(Ordering::Equal)
-        });
+        scores
+            .sort_by(|left, right| right.score.partial_cmp(&left.score).unwrap_or(Ordering::Equal));
 
         let Some(best) = scores.first().copied() else {
             self.target = None;
@@ -156,9 +158,7 @@ impl DragSwapState {
         swap
     }
 
-    pub fn reset(&mut self) {
-        *self = Self::default();
-    }
+    pub fn reset(&mut self) { *self = Self::default(); }
 }
 
 fn intersection(left: Rect, right: Rect) -> Option<Rect> {
@@ -180,22 +180,29 @@ mod tests {
         WindowId::new(ApplicationId(1), NonZeroU32::new(index).unwrap())
     }
 
-    fn rect(x: f64, width: f64) -> Rect {
-        Rect::new(x, 0.0, width, 100.0).unwrap()
-    }
+    fn rect(x: f64, width: f64) -> Rect { Rect::new(x, 0.0, width, 100.0).unwrap() }
 
     #[test]
     fn drag_candidate_uses_overlap_and_hysteresis() {
         let mut state = DragSwapState::default();
         let dragged = window(1);
-        let first = DragCandidate { window: window(2), frame: rect(0.0, 60.0) };
-        let second = DragCandidate { window: window(3), frame: rect(0.0, 40.0) };
+        let first = DragCandidate {
+            window: window(2),
+            frame: rect(0.0, 60.0),
+        };
+        let second = DragCandidate {
+            window: window(3),
+            frame: rect(0.0, 40.0),
+        };
         assert_eq!(
             state.update(dragged, rect(0.0, 100.0), &[first, second], 0.3),
             Some(first.window)
         );
 
-        let weaker_first = DragCandidate { window: first.window, frame: rect(20.0, 60.0) };
+        let weaker_first = DragCandidate {
+            window: first.window,
+            frame: rect(20.0, 60.0),
+        };
         assert_eq!(
             state.update(dragged, rect(0.0, 100.0), &[weaker_first, second], 0.3),
             Some(first.window)
@@ -208,8 +215,14 @@ mod tests {
     fn losing_overlap_clears_the_candidate() {
         let mut state = DragSwapState::default();
         let dragged = window(1);
-        let candidate = DragCandidate { window: window(2), frame: rect(0.0, 60.0) };
+        let candidate = DragCandidate {
+            window: window(2),
+            frame: rect(0.0, 60.0),
+        };
         state.update(dragged, rect(0.0, 100.0), &[candidate], 0.3);
-        assert_eq!(state.update(dragged, rect(200.0, 100.0), &[candidate], 0.3), None);
+        assert_eq!(
+            state.update(dragged, rect(200.0, 100.0), &[candidate], 0.3),
+            None
+        );
     }
 }

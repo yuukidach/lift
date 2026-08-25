@@ -11,8 +11,11 @@ use lift::sys::window_server::WindowServerId;
 use serde_json::Value;
 
 #[derive(Parser)]
-#[command(name = "lift-cli")]
-#[command(about = "Command-line interface for Lift window manager")]
+#[command(
+    name = "lift-cli",
+    version,
+    about = "Command-line interface for Lift window manager"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -650,16 +653,14 @@ fn map_workspace_command(cmd: WorkspaceCommands) -> Result<LiftCommand, String> 
             reactor::Command::Layout(LC::PrevWorkspace(skip_empty)),
         )),
         WorkspaceCommands::Switch { workspace_id } => {
-            let slot = workspace_number_to_global_slot(workspace_id).ok_or_else(|| {
-                format!("workspace number must be in 0..=9, got {workspace_id}")
-            })?;
+            let slot = workspace_number_to_global_slot(workspace_id)
+                .ok_or_else(|| format!("workspace number must be in 0..=9, got {workspace_id}"))?;
             let cmd = LC::SwitchToGlobalSlot(slot);
             Ok(LiftCommand::Reactor(reactor::Command::Layout(cmd)))
         }
         WorkspaceCommands::MoveWindow { workspace_id, window_id } => {
-            let slot = workspace_number_to_global_slot(workspace_id).ok_or_else(|| {
-                format!("workspace number must be in 0..=9, got {workspace_id}")
-            })?;
+            let slot = workspace_number_to_global_slot(workspace_id)
+                .ok_or_else(|| format!("workspace number must be in 0..=9, got {workspace_id}"))?;
             Ok(LiftCommand::Reactor(reactor::Command::Layout(
                 LC::MoveWindowToWorkspace { workspace: slot, window_id },
             )))

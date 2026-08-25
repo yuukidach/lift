@@ -1,6 +1,7 @@
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 
 use crate::actor::app::WindowId;
+use crate::common::config::MenuBarWorkspaceScope;
 use crate::core::snapshot::{CoreSnapshot, DisplaySnapshot, WindowSnapshot, WorkspaceSnapshot};
 use crate::model::server::{WindowData, WorkspaceData};
 use crate::sys::app::WindowInfo;
@@ -16,11 +17,7 @@ pub fn active_context_display(snapshot: &CoreSnapshot) -> Option<&DisplaySnapsho
                 .focused_window
                 .and_then(|window| snapshot.windows.iter().find(|item| item.id == window))
                 .and_then(|window| window.workspace)?;
-            let display = &snapshot
-                .workspaces
-                .iter()
-                .find(|item| item.id == workspace)?
-                .display;
+            let display = &snapshot.workspaces.iter().find(|item| item.id == workspace)?.display;
             snapshot.displays.iter().find(|item| &item.id == display)
         })
         .or_else(|| snapshot.displays.first())
@@ -37,7 +34,10 @@ pub fn window_data(snapshot: &CoreSnapshot, window: &WindowSnapshot) -> WindowDa
         .iter()
         .find(|application| application.id == window.id.application);
     WindowData {
-        id: WindowId { pid: window.id.application.0, idx: window.id.index },
+        id: WindowId {
+            pid: window.id.application.0,
+            idx: window.id.index,
+        },
         is_floating: window.floating,
         is_focused: snapshot.focused_window == Some(window.id),
         app_name: window.application_name.clone(),
@@ -105,6 +105,20 @@ pub fn grouped_workspace_data(
     (workspaces, display_starts)
 }
 
+pub fn menu_bar_workspace_data(
+    snapshot: &CoreSnapshot,
+    display: &DisplaySnapshot,
+    scope: MenuBarWorkspaceScope,
+    preferred_display_order: &[String],
+) -> (Vec<WorkspaceData>, Vec<usize>) {
+    match scope {
+        MenuBarWorkspaceScope::PerDisplay => {
+            (workspace_data_for_display(snapshot, display), Vec::new())
+        }
+        MenuBarWorkspaceScope::Global => grouped_workspace_data(snapshot, preferred_display_order),
+    }
+}
+
 pub fn workspace_data_for_display(
     snapshot: &CoreSnapshot,
     display: &DisplaySnapshot,
@@ -128,9 +142,7 @@ pub fn workspace_data_for_display(
                 .filter_map(|window| snapshot.windows.iter().find(|item| item.id == *window))
                 .map(|window| {
                     let mut data = window_data(snapshot, window);
-                    if !is_active
-                        && let Some(frame) = workspace.layout_frames.get(&window.id)
-                    {
+                    if !is_active && let Some(frame) = workspace.layout_frames.get(&window.id) {
                         data.info.frame = CGRect::new(
                             CGPoint::new(frame.origin.x, frame.origin.y),
                             CGSize::new(frame.size.width, frame.size.height),
@@ -172,8 +184,8 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::*;
-    use crate::core::geometry::Rect;
     use crate::core::bsp::Axis;
+    use crate::core::geometry::Rect;
     use crate::core::ids::{
         ApplicationId, DisplayId, GroupId, SpaceId, WorkspaceId, WorkspaceNumber,
     };
@@ -181,10 +193,8 @@ mod tests {
 
     #[test]
     fn workspace_views_follow_active_context_and_use_preview_frames() {
-        let window_id = crate::core::ids::WindowId::new(
-            ApplicationId(42),
-            NonZeroU32::new(1).unwrap(),
-        );
+        let window_id =
+            crate::core::ids::WindowId::new(ApplicationId(42), NonZeroU32::new(1).unwrap());
         let workspace_id = WorkspaceId(7);
         let display_id = DisplayId("main".into());
         let preview = Rect::new(50.0, 60.0, 400.0, 300.0).unwrap();
@@ -321,12 +331,74 @@ mod tests {
         );
 
         let configured_order = vec!["right".to_string(), "left".to_string()];
-        let (workspaces, display_starts) =
-            grouped_workspace_data(&snapshot, &configured_order);
+        let (workspaces, display_starts) = grouped_workspace_data(&snapshot, &configured_order);
         assert_eq!(display_starts, vec![1]);
         assert_eq!(
             workspaces.iter().map(|workspace| workspace.number).collect::<Vec<_>>(),
             vec![2, 1, 3]
         );
+    }
+
+    #[test]
+    fn menu_bar_workspace_scope_selects_current_display_or_global_groups() {
+        let left = DisplayId("left".into());
+        let right = DisplayId("right".into());
+        let workspace = |id, number, display: &DisplayId| WorkspaceSnapshot {
+            id: WorkspaceId(id),
+            number: WorkspaceNumber::try_from(number).unwrap(),
+            name: String::new(),
+            display: display.clone(),
+            groups: Vec::new(),
+            floating_windows: Vec::new(),
+            last_tiled_window: None,
+            last_floating_window: None,
+            layout_frames: BTreeMap::new(),
+        };
+        let snapshot = CoreSnapshot {
+            displays: vec![
+                DisplaySnapshot {
+                    id: left.clone(),
+                    frame: Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap(),
+                    space: Some(SpaceId(1)),
+                    is_active_context: true,
+                    active_workspace: Some(WorkspaceId(1)),
+                    last_workspace: None,
+                },
+                DisplaySnapshot {
+                    id: right.clone(),
+                    frame: Rect::new(1000.0, 0.0, 1000.0, 800.0).unwrap(),
+                    space: Some(SpaceId(2)),
+                    is_active_context: false,
+                    active_workspace: Some(WorkspaceId(2)),
+                    last_workspace: None,
+                },
+            ],
+            workspaces: vec![workspace(1, 1, &left), workspace(2, 2, &right)],
+            ..CoreSnapshot::default()
+        };
+
+        let (per_display, starts) = menu_bar_workspace_data(
+            &snapshot,
+            &snapshot.displays[0],
+            MenuBarWorkspaceScope::PerDisplay,
+            &[],
+        );
+        assert_eq!(
+            per_display.iter().map(|workspace| workspace.number).collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert!(starts.is_empty());
+
+        let (global, starts) = menu_bar_workspace_data(
+            &snapshot,
+            &snapshot.displays[0],
+            MenuBarWorkspaceScope::Global,
+            &[],
+        );
+        assert_eq!(
+            global.iter().map(|workspace| workspace.number).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(starts, vec![1]);
     }
 }

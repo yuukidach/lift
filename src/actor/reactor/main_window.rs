@@ -18,7 +18,9 @@ impl MainWindowTracker {
     #[must_use]
     pub fn handle_event(&mut self, event: &Event) -> Option<WindowId> {
         let (event_pid, quiet_edge) = match event {
-            &Event::ApplicationLaunched { pid, is_frontmost, main_window, .. } => {
+            &Event::ApplicationLaunched {
+                pid, is_frontmost, main_window, ..
+            } => {
                 self.apps.insert(pid, AppState {
                     is_frontmost,
                     frontmost_is_quiet: Quiet::No,
@@ -43,7 +45,9 @@ impl MainWindowTracker {
             }
             &Event::ApplicationGloballyActivated(pid) => {
                 self.global_frontmost = Some(pid);
-                let Some(app) = self.apps.get_mut(&pid) else { return None };
+                let Some(app) = self.apps.get_mut(&pid) else {
+                    return None;
+                };
                 app.is_frontmost = true;
                 (pid, app.frontmost_is_quiet)
             }
@@ -74,7 +78,11 @@ impl MainWindowTracker {
     pub fn main_window(&self) -> Option<WindowId> {
         let pid = self.global_frontmost?;
         match self.apps.get(&pid) {
-            Some(&AppState { is_frontmost: true, main_window: Some(window), .. }) => Some(window),
+            Some(&AppState {
+                is_frontmost: true,
+                main_window: Some(window),
+                ..
+            }) => Some(window),
             _ => None,
         }
     }

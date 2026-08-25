@@ -55,9 +55,9 @@ impl WindowId {
 pub struct WorkspaceNumber(u8);
 
 impl WorkspaceNumber {
-    pub const MIN: u8 = 0;
-    pub const MAX: u8 = 9;
     pub const COUNT: usize = 10;
+    pub const MAX: u8 = 9;
+    pub const MIN: u8 = 0;
     pub const ORDERED: [Self; Self::COUNT] = [
         Self(1),
         Self(2),
@@ -71,9 +71,7 @@ impl WorkspaceNumber {
         Self(0),
     ];
 
-    pub const fn get(self) -> u8 {
-        self.0
-    }
+    pub const fn get(self) -> u8 { self.0 }
 
     pub const fn from_global_slot(slot: usize) -> Option<Self> {
         if slot < 9 {
@@ -85,9 +83,7 @@ impl WorkspaceNumber {
         }
     }
 
-    pub const fn global_slot(self) -> usize {
-        if self.0 == 0 { 9 } else { self.0 as usize - 1 }
-    }
+    pub const fn global_slot(self) -> usize { if self.0 == 0 { 9 } else { self.0 as usize - 1 } }
 }
 
 impl Ord for WorkspaceNumber {
@@ -97,16 +93,12 @@ impl Ord for WorkspaceNumber {
 }
 
 impl PartialOrd for WorkspaceNumber {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
 }
 
 impl Serialize for WorkspaceNumber {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    where S: Serializer {
         serializer.serialize_u8(self.0)
     }
 }
@@ -125,9 +117,7 @@ impl TryFrom<u8> for WorkspaceNumber {
 
 impl<'de> Deserialize<'de> for WorkspaceNumber {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         let value = u8::deserialize(deserializer)?;
         Self::try_from(value).map_err(serde::de::Error::custom)
     }

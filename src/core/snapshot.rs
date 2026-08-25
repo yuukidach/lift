@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::bsp::Axis;
 use super::geometry::Rect;
 use super::ids::{
-    ApplicationId, DisplayId, Generation, GroupId, SpaceId, WindowId, WorkspaceId,
-    WorkspaceNumber,
+    ApplicationId, DisplayId, Generation, GroupId, SpaceId, WindowId, WorkspaceId, WorkspaceNumber,
 };
 use super::interaction::{DragSnapshot, MissionControlPhase};
 

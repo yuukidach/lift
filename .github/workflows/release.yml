@@ -13,8 +13,6 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       ASSET_BASENAME: lift-universal-macos
-      TAP_REPO: acsandmann/homebrew-tap
-      TAP_FILE_PATH: Formula/lift.rb
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -33,89 +31,53 @@ jobs:
           rustup target list --installed
           sw_vers
 
-      - name: Build release for both targets (both bins)
+      - name: Verify release version
+        run: |
+          set -euo pipefail
+          package_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          test "${GITHUB_REF_NAME#v}" = "$package_version"
+
+      - name: Build release binaries
         run: |
           set -euxo pipefail
-          # Build arm64
-          RUSTFLAGS="-C target-cpu=native" cargo build --release --locked --bins --target aarch64-apple-darwin
-          # Build x86_64
-          RUSTFLAGS="-C target-cpu=native" cargo build --release --locked --bins --target x86_64-apple-darwin
+          cargo build --release --locked --bin lift --bin lift-cli --target aarch64-apple-darwin
+          cargo build --release --locked --bin lift --bin lift-cli --target x86_64-apple-darwin
 
       - name: Create universal binaries with lipo
         run: |
           set -euxo pipefail
           mkdir -p dist
 
-          # Combine lift
           lipo -create \
             target/aarch64-apple-darwin/release/lift \
             target/x86_64-apple-darwin/release/lift \
             -output dist/lift
 
-          # Combine lift-cli
           lipo -create \
             target/aarch64-apple-darwin/release/lift-cli \
             target/x86_64-apple-darwin/release/lift-cli \
             -output dist/lift-cli
 
-          # Optional: strip symbols to reduce size
           strip -x dist/lift dist/lift-cli
 
       - name: Package tarball
         id: pkg
         run: |
           set -euxo pipefail
-          TAG="${GITHUB_REF_NAME}"      # e.g. v1.2.3 or 1.2.3
-          VERSION="${TAG#v}"            # strip leading 'v' if present
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
           ASSET="${ASSET_BASENAME}-${VERSION}.tar.gz"
 
           tar -C dist -czf "${ASSET}" lift lift-cli
-          sha256=$(shasum -a 256 "${ASSET}" | awk '{print $1}')
+          shasum -a 256 "${ASSET}" > "${ASSET}.sha256"
 
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "asset=${ASSET}" >> "$GITHUB_OUTPUT"
-          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload asset to the release
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.pkg.outputs.asset }}
+          files: |
+            ${{ steps.pkg.outputs.asset }}
+            ${{ steps.pkg.outputs.asset }}.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Checkout tap repo
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.TAP_REPO }}
-          path: tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }} # PAT with repo:push to the tap
-
-      - name: Update formula version & sha256
-        run: |
-          set -euxo pipefail
-          VERSION="${{ steps.pkg.outputs.version }}"
-          SHA256="${{ steps.pkg.outputs.sha256 }}"
-          FORMULA="tap/${TAP_FILE_PATH}"
-
-          # Update version "..."
-          /usr/bin/sed -i '' -E \
-            "s/^[[:space:]]*version[[:space:]]+\"[^\"]*\"/  version \"${VERSION}\"/" \
-            "${FORMULA}" || true
-
-          # Update sha256 "..."
-          /usr/bin/sed -i '' -E \
-            "s/^[[:space:]]*sha256[[:space:]]+\"[^\"]*\"/  sha256 \"${SHA256}\"/" \
-            "${FORMULA}"
-
-          echo "Updated ${FORMULA}: version=${VERSION}, sha256=${SHA256}"
-          echo "---- Formula preview ----"
-          sed -n '1,120p' "${FORMULA}"
-
-      - name: Commit & push formula update
-        run: |
-          set -euxo pipefail
-          git -C tap config user.name "github-actions[bot]"
-          git -C tap config user.email "github-actions[bot]@users.noreply.github.com"
-          git -C tap add "${TAP_FILE_PATH}"
-          git -C tap commit -m "chore(formula): lift ${{ steps.pkg.outputs.version }} (universal) - sha256 ${{ steps.pkg.outputs.sha256 }}"
-          git -C tap push origin HEAD

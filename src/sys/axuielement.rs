@@ -65,7 +65,6 @@ impl AXUIElement {
         Self::new(inner)
     }
 
-    // TODO: im not sure this works...
     #[inline]
     pub fn from_window_id(wid: WindowId) -> Self {
         const BUFSIZE: usize = 0x14;

@@ -1,6 +1,5 @@
-use std::fs;
-use std::io;
 use std::path::Path;
+use std::{fs, io};
 
 use serde::{Deserialize, Serialize};
 
@@ -75,7 +74,10 @@ pub fn load(path: &Path) -> io::Result<PersistedState> {
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
-    Ok(PersistedState { schema_version: CURRENT_SCHEMA_VERSION, workspaces })
+    Ok(PersistedState {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        workspaces,
+    })
 }
 
 #[cfg(test)]

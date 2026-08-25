@@ -1,4 +1,2 @@
-dev
 target
 lift.toml
-src/bin/dev.rs

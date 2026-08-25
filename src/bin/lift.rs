@@ -3,8 +3,6 @@ use std::path::PathBuf;
 use std::process;
 
 use clap::{Parser, Subcommand};
-use objc2::MainThreadMarker;
-use objc2_application_services::AXUIElement;
 use lift::actor::config::ConfigActor;
 use lift::actor::config_watcher::ConfigWatcher;
 use lift::actor::event_tap::EventTap;
@@ -31,12 +29,14 @@ use lift::sys::service::{ServiceCommands, handle_service_command};
 use lift::sys::skylight::{
     CGEnableEventStateCombining, CGSEventType, CGSetLocalEventsSuppressionInterval, KnownCGSEvent,
 };
+use objc2::MainThreadMarker;
+use objc2_application_services::AXUIElement;
 use tokio::join;
 
 embed_plist::embed_info_plist!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Info.plist"));
 
 #[derive(Parser)]
-#[command(name = "lift", about = "Lift window manager for macOS")]
+#[command(name = "lift", version, about = "Lift window manager for macOS")]
 struct Cli {
     /// Only run the window manager on the current space.
     #[arg(long)]
@@ -205,9 +205,7 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Lift
         }
     });
 
-    let wm_config = wm_controller::Config {
-        config: config.clone(),
-    };
+    let wm_config = wm_controller::Config { config: config.clone() };
     let (mc_tx, mc_rx) = lift::actor::channel();
     let (_mc_native_tx, mc_native_rx) = lift::actor::channel();
     let (wm_controller, wm_controller_sender) = WmController::new(

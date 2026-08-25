@@ -105,9 +105,7 @@ impl DiagnosticState {
     }
 }
 
-fn truncate_app_name(name: &str) -> String {
-    name.chars().take(MAX_APP_NAME_CHARS).collect()
-}
+fn truncate_app_name(name: &str) -> String { name.chars().take(MAX_APP_NAME_CHARS).collect() }
 
 struct PendingOperation {
     timestamp_ms: u128,
@@ -243,10 +241,7 @@ fn open_writer(settings: &DiagnosticsSettings, path: &Path) -> Option<RollingWri
 }
 
 fn timestamp_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis()
 }
 
 struct RollingWriter {
@@ -308,11 +303,7 @@ impl RollingWriter {
                 Err(error) => return Err(error),
             }
         }
-        self.file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.path)?;
+        self.file = OpenOptions::new().create(true).write(true).truncate(true).open(&self.path)?;
         self.len = 0;
         Ok(())
     }

@@ -52,10 +52,7 @@ fn plist_path() -> io::Result<PathBuf> {
     let home = env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "HOME not set"))?;
-    Ok(home
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{SERVICE_LABEL}.plist")))
+    Ok(home.join("Library").join("LaunchAgents").join(format!("{SERVICE_LABEL}.plist")))
 }
 
 fn find_lift_executable_in_path(path_env: &std::ffi::OsStr) -> io::Result<Option<PathBuf>> {

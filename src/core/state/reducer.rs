@@ -8,8 +8,7 @@ use crate::core::effect::{DomainEvent, Effect, EffectOutcome, LayoutRequest, Win
 use crate::core::error::CoreError;
 use crate::core::ids::{DisplayId, Generation, WindowId, WorkspaceId};
 use crate::core::input::{
-    DisplayObservation, DisplayTopologyObservation, Input, Observation,
-    PlatformSnapshotObservation,
+    DisplayObservation, DisplayTopologyObservation, Input, Observation, PlatformSnapshotObservation,
 };
 use crate::core::interaction::{DragObservation, MissionControlPhase};
 use crate::core::rules::{RuleDecision, RuleSet, WindowIdentity, WorkspaceTarget};
@@ -79,7 +78,13 @@ impl CoreState {
         effects.extend(layout_effects(&snapshot, &changes));
         events.push(DomainEvent::SnapshotPublished { revision: snapshot.revision });
         *self = next;
-        Ok(Transition { transaction, changes, effects, events, snapshot })
+        Ok(Transition {
+            transaction,
+            changes,
+            effects,
+            events,
+            snapshot,
+        })
     }
 
     fn apply_focus_observation(&mut self, window: Option<WindowId>) -> Result<(), CoreError> {
@@ -120,10 +125,7 @@ impl CoreState {
             ));
         }
         if let Some(window) = windows.values().find(|window| {
-            window
-                .display
-                .as_ref()
-                .is_some_and(|display| !displays.contains_key(display))
+            window.display.as_ref().is_some_and(|display| !displays.contains_key(display))
         }) {
             return Err(CoreError::IncompleteObservation(format!(
                 "window {:?} references an offline display",
@@ -138,12 +140,7 @@ impl CoreState {
             )));
         }
 
-        self.commit_display_topology(
-            generation,
-            displays,
-            display_order,
-            active_display,
-        )?;
+        self.commit_display_topology(generation, displays, display_order, active_display)?;
         for removed in self
             .platform
             .windows
@@ -157,12 +154,8 @@ impl CoreState {
             if self.focus.focused_window == Some(removed) {
                 self.focus.focused_window = None;
             }
-            self.focus
-                .last_tiled_by_workspace
-                .retain(|_, window| *window != removed);
-            self.focus
-                .last_floating_by_workspace
-                .retain(|_, window| *window != removed);
+            self.focus.last_tiled_by_workspace.retain(|_, window| *window != removed);
+            self.focus.last_floating_by_workspace.retain(|_, window| *window != removed);
         }
         self.platform.windows = windows;
         self.focus.focused_window = observation.focused_window;
@@ -177,7 +170,8 @@ impl CoreState {
             let Some(display) = self.workspaces.display_for_workspace(workspace) else {
                 continue;
             };
-            let Some(display_frame) = self.platform.displays.get(display).map(|display| display.frame)
+            let Some(display_frame) =
+                self.platform.displays.get(display).map(|display| display.frame)
             else {
                 continue;
             };
@@ -276,10 +270,8 @@ impl CoreState {
             });
         }
         let display_count = observations.len();
-        let display_order = observations
-            .iter()
-            .map(|display| display.id.clone())
-            .collect::<Vec<_>>();
+        let display_order =
+            observations.iter().map(|display| display.id.clone()).collect::<Vec<_>>();
         let displays = observations
             .into_iter()
             .map(|display| (display.id.clone(), display))
@@ -322,8 +314,7 @@ impl CoreState {
             .iter()
             .find(|display| displays.contains_key(*display))
             .or_else(|| display_order.first());
-        self.workspaces
-            .reconcile_displays(&display_order, migration_receiver)?;
+        self.workspaces.reconcile_displays(&display_order, migration_receiver)?;
         self.platform.generation = generation;
         self.platform.display_order = display_order;
         self.platform.active_display = active_display;
@@ -346,16 +337,18 @@ impl CoreState {
                     self.platform.managed.remove(&window.id);
                     self.workspaces.remove_window(window.id)?;
                 }
-                RuleDecision::Managed { workspace, floating, rule_index } => {
+                RuleDecision::Managed {
+                    workspace,
+                    floating,
+                    rule_index,
+                } => {
                     let display = window
                         .display
                         .clone()
                         .or_else(|| {
-                            self.workspaces
-                                .workspace_for_window(window.id)
-                                .and_then(|workspace| {
-                                    self.workspaces.display_for_workspace(workspace).cloned()
-                                })
+                            self.workspaces.workspace_for_window(window.id).and_then(|workspace| {
+                                self.workspaces.display_for_workspace(workspace).cloned()
+                            })
                         })
                         .ok_or_else(|| {
                             CoreError::IncompleteObservation(format!(
@@ -429,15 +422,12 @@ impl CoreState {
                 self.focus_window(window, effects, events)?;
             }
             Command::Workspace(WorkspaceCommand::Activate(number)) => {
-                let workspace = self
-                    .workspaces
-                    .workspace_by_number(number)
-                    .ok_or_else(|| {
-                        CoreError::InvalidCommand(format!(
-                            "workspace number {} does not exist",
-                            number.get()
-                        ))
-                    })?;
+                let workspace = self.workspaces.workspace_by_number(number).ok_or_else(|| {
+                    CoreError::InvalidCommand(format!(
+                        "workspace number {} does not exist",
+                        number.get()
+                    ))
+                })?;
                 let display = self
                     .workspaces
                     .display_for_workspace(workspace)
@@ -519,7 +509,7 @@ impl CoreState {
                     Some(target) => Some(target),
                     None => self.cross_display_focus_target(window, direction)?,
                 }
-                    .ok_or_else(|| CoreError::InvalidCommand("focus reached a boundary".into()))?;
+                .ok_or_else(|| CoreError::InvalidCommand("focus reached a boundary".into()))?;
                 self.focus_window(target, effects, events)?;
             }
             Command::Window(WindowCommand::Move { direction, window }) => {
@@ -542,15 +532,12 @@ impl CoreState {
                         .display_for_workspace(source)
                         .cloned()
                         .ok_or(CoreError::WorkspaceConflict(source))?;
-                    let target_display = self
-                        .adjacent_display(&source_display, direction)
-                        .ok_or_else(|| {
+                    let target_display =
+                        self.adjacent_display(&source_display, direction).ok_or_else(|| {
                             CoreError::InvalidCommand("move reached a boundary".into())
                         })?;
-                    let target = self
-                        .workspaces
-                        .active_workspace(&target_display)
-                        .ok_or_else(|| {
+                    let target =
+                        self.workspaces.active_workspace(&target_display).ok_or_else(|| {
                             CoreError::IncompleteObservation(format!(
                                 "display {target_display:?} has no active workspace"
                             ))
@@ -617,10 +604,7 @@ impl CoreState {
                     self.workspaces.assign_floating(workspace, window)?;
                 }
             }
-            Command::Window(WindowCommand::ToggleFullscreen {
-                window,
-                within_gaps,
-            }) => {
+            Command::Window(WindowCommand::ToggleFullscreen { window, within_gaps }) => {
                 let window = self.command_window(window)?;
                 self.workspaces.toggle_fullscreen(window, within_gaps)?;
             }
@@ -659,17 +643,13 @@ impl CoreState {
             Command::MissionControl(command) => {
                 self.interactions.mission_control = match command {
                     MissionControlCommand::ShowAll => MissionControlPhase::ShowAllRequested,
-                    MissionControlCommand::ShowCurrent => {
-                        MissionControlPhase::ShowCurrentRequested
-                    }
+                    MissionControlCommand::ShowCurrent => MissionControlPhase::ShowCurrentRequested,
                     MissionControlCommand::Dismiss => MissionControlPhase::DismissRequested,
                 };
             }
             Command::SaveAndExit => {
                 effects.push(Effect::Save(self.persisted_state()));
-                effects.push(Effect::Shutdown(
-                    crate::core::effect::ShutdownReason::Requested,
-                ));
+                effects.push(Effect::Shutdown(crate::core::effect::ShutdownReason::Requested));
             }
             unsupported => {
                 return Err(CoreError::UnsupportedCommand(format!("{unsupported:?}")));
@@ -860,14 +840,9 @@ impl CoreState {
         let Some(display) = self.adjacent_display(display, direction) else {
             return Ok(None);
         };
-        let target = self
-            .workspaces
-            .active_workspace(&display)
-            .ok_or_else(|| {
-                CoreError::IncompleteObservation(format!(
-                    "display {display:?} has no active workspace"
-                ))
-            })?;
+        let target = self.workspaces.active_workspace(&display).ok_or_else(|| {
+            CoreError::IncompleteObservation(format!("display {display:?} has no active workspace"))
+        })?;
         if let Some(window) = self.workspaces.selected_tiled_windows(target)?.into_iter().next() {
             return Ok(Some(window));
         }
@@ -933,7 +908,6 @@ impl CoreState {
         }
         Ok(())
     }
-
 }
 
 fn layout_effects(snapshot: &CoreSnapshot, changes: &ChangeSet) -> Vec<Effect> {
@@ -989,16 +963,10 @@ impl ChangeSet {
             .collect::<BTreeMap<_, _>>();
         let workspaces = changed_keys(&old_workspaces, &new_workspaces);
 
-        let old_windows = old
-            .windows
-            .iter()
-            .map(|window| (window.id, window))
-            .collect::<BTreeMap<_, _>>();
-        let new_windows = new
-            .windows
-            .iter()
-            .map(|window| (window.id, window))
-            .collect::<BTreeMap<_, _>>();
+        let old_windows =
+            old.windows.iter().map(|window| (window.id, window)).collect::<BTreeMap<_, _>>();
+        let new_windows =
+            new.windows.iter().map(|window| (window.id, window)).collect::<BTreeMap<_, _>>();
         let windows = changed_keys(&old_windows, &new_windows);
 
         let focus_changed = old.focused_window != new.focused_window;

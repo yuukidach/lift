@@ -16,19 +16,13 @@ impl SnapshotStore {
         }
     }
 
-    pub fn load(&self) -> Arc<CoreSnapshot> {
-        self.current.load_full()
-    }
+    pub fn load(&self) -> Arc<CoreSnapshot> { self.current.load_full() }
 
-    pub fn publish(&self, snapshot: CoreSnapshot) {
-        self.current.store(Arc::new(snapshot));
-    }
+    pub fn publish(&self, snapshot: CoreSnapshot) { self.current.store(Arc::new(snapshot)); }
 }
 
 impl Default for SnapshotStore {
-    fn default() -> Self {
-        Self::new(CoreSnapshot::default())
-    }
+    fn default() -> Self { Self::new(CoreSnapshot::default()) }
 }
 
 #[cfg(test)]

@@ -1,15 +1,11 @@
 [package]
 name = "lift"
-version = "0.1.0"
+version = "0.5.4"
 edition = "2024"
 build = "build.rs"
 
 [[bin]]
 name = "lift"
-test = false
-
-[[bin]]
-name = "dev"
 test = false
 
 [profile.dev]

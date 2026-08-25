@@ -136,7 +136,6 @@ impl WindowDiscoveryHandler {
                 .filter_map(|wsid| reactor.window_manager.tracked_window_id(wsid))
                 .any(|wid| wid.pid == pid && !known_visible_set.contains(&wid))
         };
-        // TODO: Rewrite it
         let skip_stale_cleanup = matches!(
             reactor.refocus_manager.stale_cleanup_state,
             crate::actor::reactor::StaleCleanupState::Suppressed
@@ -366,5 +365,4 @@ impl WindowDiscoveryHandler {
             reactor.send_layout_event(LayoutEvent::WindowFocused(main_window));
         }
     }
-
 }

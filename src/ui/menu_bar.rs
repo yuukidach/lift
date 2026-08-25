@@ -1,4 +1,3 @@
-// many ideas for how this works were taken from https://github.com/xiamaz/YabaiIndicator
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -7,9 +6,9 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSColor, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSFont,
-    NSFontAttributeName, NSFontWeightRegular, NSFontWeightSemibold,
-    NSForegroundColorAttributeName, NSGraphicsContext, NSMenu, NSMenuItem, NSImage,
-    NSRunningApplication, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSView,
+    NSFontAttributeName, NSFontWeightRegular, NSFontWeightSemibold, NSForegroundColorAttributeName,
+    NSGraphicsContext, NSImage, NSMenu, NSMenuItem, NSRunningApplication, NSStatusBar,
+    NSStatusItem, NSVariableStatusItemLength, NSView,
 };
 use objc2_core_foundation::{
     CFAttributedString, CFDictionary, CFRetained, CFString, CGFloat, CGPoint, CGRect, CGSize,
@@ -61,7 +60,6 @@ pub enum MenuAction {
     SwitchToWorkspace(usize),
     OpenGitHub,
     OpenDocumentation,
-    OpenMatrix,
     OpenConfig,
     ReloadConfig,
     QuitLift,
@@ -162,12 +160,12 @@ impl MenuIcon {
                 .into_iter()
                 .filter(|(_, ws)| settings.show_empty || ws.window_count > 0 || ws.is_active)
                 .map(|(display_group, ws)| WorkspaceRenderInput {
-                        workspace: ws,
-                        label: String::new(),
-                        show_windows: true,
-                        app_icon: None,
-                        display_group,
-                    })
+                    workspace: ws,
+                    label: String::new(),
+                    show_windows: true,
+                    app_icon: None,
+                    display_group,
+                })
                 .collect(),
             (MenuBarDisplayMode::All, WorkspaceDisplayStyle::Label) => grouped_workspaces
                 .into_iter()
@@ -189,11 +187,11 @@ impl MenuIcon {
                 .into_iter()
                 .filter(|(_, ws)| ws.is_active)
                 .map(|(display_group, ws)| WorkspaceRenderInput {
-                        workspace: ws,
-                        label: String::new(),
-                        show_windows: true,
-                        app_icon: None,
-                        display_group,
+                    workspace: ws,
+                    label: String::new(),
+                    show_windows: true,
+                    app_icon: None,
+                    display_group,
                 })
                 .collect(),
             (MenuBarDisplayMode::Active, WorkspaceDisplayStyle::Label) => grouped_workspaces
@@ -481,15 +479,6 @@ fn build_status_menu(
         None,
         None,
     ));
-    help_submenu.addItem(&make_menu_item(
-        mtm,
-        "Matrix",
-        Some(sel!(onOpenMatrix:)),
-        Some(handler),
-        None,
-        None,
-        None,
-    ));
     help_item.setSubmenu(Some(&help_submenu));
     menu.addItem(&help_item);
 
@@ -654,9 +643,7 @@ impl MenuActionHandler {
         unsafe { msg_send![super(this), init] }
     }
 
-    fn emit(&self, action: MenuAction) {
-        let _ = self.ivars().action_tx.send(action);
-    }
+    fn emit(&self, action: MenuAction) { let _ = self.ivars().action_tx.send(action); }
 }
 
 define_class!(
@@ -705,11 +692,6 @@ define_class!(
         #[unsafe(method(onOpenGitHub:))]
         fn on_open_github(&self, _sender: Option<&AnyObject>) {
             self.emit(MenuAction::OpenGitHub);
-        }
-
-        #[unsafe(method(onOpenMatrix:))]
-        fn on_open_matrix(&self, _sender: Option<&AnyObject>) {
-            self.emit(MenuAction::OpenMatrix);
         }
 
         #[unsafe(method(onReloadConfig:))]
@@ -773,14 +755,12 @@ fn build_cached_text_line(
 
 impl MenuIconView {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let active_font = NSFont::monospacedDigitSystemFontOfSize_weight(
-            FONT_SIZE,
-            unsafe { NSFontWeightSemibold },
-        );
-        let inactive_font = NSFont::monospacedDigitSystemFontOfSize_weight(
-            FONT_SIZE,
-            unsafe { NSFontWeightRegular },
-        );
+        let active_font = NSFont::monospacedDigitSystemFontOfSize_weight(FONT_SIZE, unsafe {
+            NSFontWeightSemibold
+        });
+        let inactive_font = NSFont::monospacedDigitSystemFontOfSize_weight(FONT_SIZE, unsafe {
+            NSFontWeightRegular
+        });
         let active_color = NSColor::labelColor();
         let inactive_color = NSColor::secondaryLabelColor();
         let empty_color = NSColor::tertiaryLabelColor();
@@ -858,10 +838,7 @@ fn build_layout(
                 0.0
             };
         let cell_width = label_cell_width(label_width, has_icon);
-        let bg_rect = CGRect::new(
-            CGPoint::new(next_x, 0.0),
-            CGSize::new(cell_width, CELL_HEIGHT),
-        );
+        let bg_rect = CGRect::new(CGPoint::new(next_x, 0.0), CGSize::new(cell_width, CELL_HEIGHT));
         let content_x = next_x + (cell_width - content_width) / 2.0;
         let (label_x, app_icon_x) = label_and_icon_positions(content_x, label_width, has_icon);
         let app_icon_rect = app_icon_x.map(|icon_x| {
@@ -927,7 +904,11 @@ fn label_cell_width(label_width: f64, has_icon: bool) -> f64 {
 }
 
 fn label_fill_alpha(is_active: bool) -> f64 {
-    if is_active { LABEL_ACTIVE_BACKGROUND_ALPHA } else { 0.0 }
+    if is_active {
+        LABEL_ACTIVE_BACKGROUND_ALPHA
+    } else {
+        0.0
+    }
 }
 
 fn label_and_icon_positions(
@@ -940,7 +921,11 @@ fn label_and_icon_positions(
 }
 
 fn inter_workspace_spacing(display_boundary: bool) -> f64 {
-    if display_boundary { DISPLAY_GROUP_SPACING } else { CELL_SPACING }
+    if display_boundary {
+        DISPLAY_GROUP_SPACING
+    } else {
+        CELL_SPACING
+    }
 }
 
 fn add_rounded_rect(ctx: &CGContext, x: f64, y: f64, w: f64, h: f64, r: f64) {

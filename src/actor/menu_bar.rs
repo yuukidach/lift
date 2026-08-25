@@ -212,9 +212,6 @@ impl Menu {
             MenuAction::OpenDocumentation => {
                 Self::open_path_or_url("https://github.com/yuukidach/lift#readme");
             }
-            MenuAction::OpenMatrix => {
-                Self::open_path_or_url("https://matrix.to/#/#rift:matrix.org");
-            }
             MenuAction::OpenConfig => {
                 Self::open_path_or_url(common::config::config_file());
             }
@@ -282,7 +279,6 @@ impl Menu {
     }
 }
 
-// this is kind of reinventing the wheel but oh well i am using my brain
 #[inline(always)]
 fn sig(
     active_space: u64,

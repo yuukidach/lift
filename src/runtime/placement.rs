@@ -14,7 +14,11 @@ pub fn frames_for_display(
         return Vec::new();
     };
     let all_displays = snapshot.displays.iter().map(|display| display.frame).collect::<Vec<_>>();
-    let windows = snapshot.windows.iter().map(|window| (window.id, window)).collect::<BTreeMap<_, _>>();
+    let windows = snapshot
+        .windows
+        .iter()
+        .map(|window| (window.id, window))
+        .collect::<BTreeMap<_, _>>();
     let bundles = snapshot
         .applications
         .iter()
@@ -22,16 +26,16 @@ pub fn frames_for_display(
         .collect::<BTreeMap<_, _>>();
     let mut frames = BTreeMap::new();
 
-    for workspace in snapshot.workspaces.iter().filter(|workspace| &workspace.display == display_id) {
-        let tiled = workspace
-            .groups
-            .iter()
-            .flat_map(|group| group.windows.iter().copied());
+    for workspace in snapshot.workspaces.iter().filter(|workspace| &workspace.display == display_id)
+    {
+        let tiled = workspace.groups.iter().flat_map(|group| group.windows.iter().copied());
         let members = tiled.chain(workspace.floating_windows.iter().copied());
         if display.active_workspace == Some(workspace.id) {
             for window in members {
                 let Some(observed) = windows.get(&window) else { continue };
-                if observed.platform_id.is_none() { continue; }
+                if observed.platform_id.is_none() {
+                    continue;
+                }
                 let frame = workspace.layout_frames.get(&window).copied().unwrap_or_else(|| {
                     if intersection_area(display.frame, observed.frame) > 9.0 {
                         observed.frame
@@ -44,7 +48,9 @@ pub fn frames_for_display(
         } else {
             for window in members {
                 let Some(observed) = windows.get(&window) else { continue };
-                if observed.platform_id.is_none() { continue; }
+                if observed.platform_id.is_none() {
+                    continue;
+                }
                 frames.insert(
                     window,
                     hidden_frame(
@@ -95,13 +101,17 @@ pub fn hidden_frame(
 
     for interval in breakpoints.windows(2) {
         let (x0, x1) = (interval[0], interval[1]);
-        if x1 - x0 <= f64::EPSILON { continue; }
+        if x1 - x0 <= f64::EPSILON {
+            continue;
+        }
         let anchor0 = intersection_area(display, at(x0));
         let anchor1 = intersection_area(display, at(x1));
         let delta = anchor1 - anchor0;
         if delta.abs() > f64::EPSILON {
             let x = x0 + (MIN_ANCHOR_AREA - anchor0) * (x1 - x0) / delta;
-            if (x0..=x1).contains(&x) { xs.push(x); }
+            if (x0..=x1).contains(&x) {
+                xs.push(x);
+            }
         }
         for (index, first) in other_displays.iter().enumerate() {
             let first0 = intersection_area(*first, at(x0));
@@ -110,9 +120,13 @@ pub fn hidden_frame(
                 let diff0 = first0 - intersection_area(*second, at(x0));
                 let diff1 = first1 - intersection_area(*second, at(x1));
                 let diff_delta = diff1 - diff0;
-                if diff_delta.abs() <= f64::EPSILON { continue; }
+                if diff_delta.abs() <= f64::EPSILON {
+                    continue;
+                }
                 let x = x0 - diff0 * (x1 - x0) / diff_delta;
-                if (x0..=x1).contains(&x) { xs.push(x); }
+                if (x0..=x1).contains(&x) {
+                    xs.push(x);
+                }
             }
         }
     }
@@ -122,8 +136,12 @@ pub fn hidden_frame(
         .chain(xs.into_iter().map(at))
         .enumerate()
         .min_by(|(left_preference, left), (right_preference, right)| {
-            hidden_score(display, *left, &other_displays, *left_preference)
-                .cmp(&hidden_score(display, *right, &other_displays, *right_preference))
+            hidden_score(display, *left, &other_displays, *left_preference).cmp(&hidden_score(
+                display,
+                *right,
+                &other_displays,
+                *right_preference,
+            ))
         })
         .map(|(_, frame)| frame)
         .expect("hidden frame candidates are never empty")
@@ -207,12 +225,9 @@ mod tests {
     fn hidden_frame_avoids_a_neighboring_portrait_display() {
         let owner = Rect::new(0.0, 0.0, 1440.0, 900.0).unwrap();
         let portrait = Rect::new(1440.0, -500.0, 900.0, 1600.0).unwrap();
-        let hidden = hidden_frame(
-            owner,
-            Size { width: 700.0, height: 500.0 },
-            None,
-            &[owner, portrait],
-        );
+        let hidden = hidden_frame(owner, Size { width: 700.0, height: 500.0 }, None, &[
+            owner, portrait,
+        ]);
         assert!(intersection_area(owner, hidden) >= MIN_ANCHOR_AREA);
         assert_eq!(intersection_area(portrait, hidden), 0.0);
     }
@@ -221,12 +236,7 @@ mod tests {
     fn hidden_frame_handles_negative_display_origins() {
         let left = Rect::new(-1920.0, 0.0, 1920.0, 1080.0).unwrap();
         let main = Rect::new(0.0, 0.0, 1728.0, 1117.0).unwrap();
-        let hidden = hidden_frame(
-            left,
-            Size { width: 800.0, height: 600.0 },
-            None,
-            &[left, main],
-        );
+        let hidden = hidden_frame(left, Size { width: 800.0, height: 600.0 }, None, &[left, main]);
         assert!(intersection_area(left, hidden) >= MIN_ANCHOR_AREA);
         assert_eq!(intersection_area(main, hidden), 0.0);
     }
@@ -235,12 +245,9 @@ mod tests {
     fn hidden_frame_does_not_leak_onto_a_tall_left_display() {
         let main = Rect::new(0.0, 0.0, 2560.0, 1440.0).unwrap();
         let portrait = Rect::new(-1440.0, -205.0, 1440.0, 2560.0).unwrap();
-        let hidden = hidden_frame(
-            main,
-            Size { width: 1278.0, height: 1402.0 },
-            None,
-            &[main, portrait],
-        );
+        let hidden = hidden_frame(main, Size { width: 1278.0, height: 1402.0 }, None, &[
+            main, portrait,
+        ]);
 
         assert!(intersection_area(main, hidden) >= MIN_ANCHOR_AREA);
         assert_eq!(intersection_area(portrait, hidden), 0.0);

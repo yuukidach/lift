@@ -64,14 +64,13 @@ impl RuleSet {
             let title_regex = match source.title_regex.as_deref() {
                 Some("") | None => None,
                 Some(pattern) => Some(
-                    regex::RegexBuilder::new(pattern)
-                        .case_insensitive(true)
-                        .build()
-                        .map_err(|error| {
+                    regex::RegexBuilder::new(pattern).case_insensitive(true).build().map_err(
+                        |error| {
                             CoreError::InvalidCommand(format!(
                                 "window rule {index} has invalid title regex: {error}"
                             ))
-                        })?,
+                        },
+                    )?,
                 ),
             };
             compiled.push(CompiledRule { source, title_regex });
@@ -85,8 +84,7 @@ impl RuleSet {
             .iter()
             .enumerate()
             .filter_map(|(index, rule)| {
-                rule.matches(identity)
-                    .then_some((index, rule, rule.specificity()))
+                rule.matches(identity).then_some((index, rule, rule.specificity()))
             })
             .collect::<Vec<_>>();
 
@@ -106,9 +104,8 @@ impl RuleSet {
         let candidates = matches.iter().filter(|(_, rule, _)| {
             grouped_app_id.is_none_or(|app_id| rule.source.app_id.as_deref() == Some(app_id))
         });
-        let best = candidates.max_by_key(|(index, _, specificity)| {
-            (*specificity, std::cmp::Reverse(*index))
-        });
+        let best = candidates
+            .max_by_key(|(index, _, specificity)| (*specificity, std::cmp::Reverse(*index)));
 
         let Some((index, rule, _)) = best else {
             return RuleDecision::Managed {
@@ -133,7 +130,11 @@ impl CompiledRule {
     fn matches(&self, identity: WindowIdentity<'_>) -> bool {
         matches_exact_ci(self.source.app_id.as_deref(), identity.app_id)
             && matches_name(self.source.app_name.as_deref(), identity.app_name)
-            && matches_regex(self.source.title_regex.as_deref(), self.title_regex.as_ref(), identity.title)
+            && matches_regex(
+                self.source.title_regex.as_deref(),
+                self.title_regex.as_ref(),
+                identity.title,
+            )
             && matches_substring(self.source.title_substring.as_deref(), identity.title)
             && matches_exact(self.source.ax_role.as_deref(), identity.ax_role)
             && matches_exact(self.source.ax_subrole.as_deref(), identity.ax_subrole)
@@ -160,8 +161,7 @@ fn matches_exact(expected: Option<&str>, actual: Option<&str>) -> bool {
 
 fn matches_exact_ci(expected: Option<&str>, actual: Option<&str>) -> bool {
     expected.is_none_or(|expected| {
-        !expected.is_empty()
-            && actual.is_some_and(|actual| expected.eq_ignore_ascii_case(actual))
+        !expected.is_empty() && actual.is_some_and(|actual| expected.eq_ignore_ascii_case(actual))
     })
 }
 
@@ -176,11 +176,7 @@ fn matches_name(expected: Option<&str>, actual: Option<&str>) -> bool {
     })
 }
 
-fn matches_regex(
-    source: Option<&str>,
-    compiled: Option<&Regex>,
-    actual: Option<&str>,
-) -> bool {
+fn matches_regex(source: Option<&str>, compiled: Option<&Regex>, actual: Option<&str>) -> bool {
     source.is_none_or(|source| {
         !source.is_empty()
             && compiled.is_some_and(|regex| actual.is_some_and(|actual| regex.is_match(actual)))
@@ -198,9 +194,7 @@ fn matches_substring(expected: Option<&str>, actual: Option<&str>) -> bool {
 mod tests {
     use super::*;
 
-    fn number(value: u8) -> WorkspaceNumber {
-        WorkspaceNumber::try_from(value).unwrap()
-    }
+    fn number(value: u8) -> WorkspaceNumber { WorkspaceNumber::try_from(value).unwrap() }
 
     fn rule() -> WindowRule {
         WindowRule {

@@ -90,13 +90,9 @@ impl ReactorHandle {
         Self { sender, snapshots }
     }
 
-    pub fn sender(&self) -> Sender {
-        self.sender.clone()
-    }
+    pub fn sender(&self) -> Sender { self.sender.clone() }
 
-    pub fn send(&self, event: Event) {
-        self.sender.send(event)
-    }
+    pub fn send(&self, event: Event) { self.sender.send(event) }
 
     pub fn try_send(
         &self,
@@ -109,9 +105,7 @@ impl ReactorHandle {
 impl std::ops::Deref for ReactorHandle {
     type Target = ReactorSnapshotHandle;
 
-    fn deref(&self) -> &Self::Target {
-        &self.snapshots
-    }
+    fn deref(&self) -> &Self::Target { &self.snapshots }
 }
 
 use display_topology::{DisplaySnapshot, DisplayTopologyManager, WindowSnapshot};
@@ -122,7 +116,6 @@ pub(crate) enum LayoutEvent {
     WindowAdded(SpaceId, WindowId),
     WindowFocused(WindowId),
 }
-
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
@@ -336,7 +329,11 @@ impl Reactor {
                     &persisted,
                 ) {
                     Ok(state) => {
-                        info!(?path, workspaces = persisted.workspaces.len(), "Restored Lift state");
+                        info!(
+                            ?path,
+                            workspaces = persisted.workspaces.len(),
+                            "Restored Lift state"
+                        );
                         Some(state)
                     }
                     Err(error) => {
@@ -359,10 +356,8 @@ impl Reactor {
         let diagnostic_settings = {
             let settings = config.settings.diagnostics.clone();
             #[cfg(test)]
-            let settings = crate::common::config::DiagnosticsSettings {
-                enabled: false,
-                ..settings
-            };
+            let settings =
+                crate::common::config::DiagnosticsSettings { enabled: false, ..settings };
             settings
         };
         let reactor = Reactor {
@@ -458,9 +453,7 @@ impl Reactor {
         }
     }
 
-    fn is_space_active(&self, space: SpaceId) -> bool {
-        self.active_spaces.contains(&space)
-    }
+    fn is_space_active(&self, space: SpaceId) -> bool { self.active_spaces.contains(&space) }
 
     fn iter_active_spaces(&self) -> impl Iterator<Item = SpaceId> + '_ {
         self.active_spaces.iter().copied()
@@ -482,9 +475,7 @@ impl Reactor {
         }
     }
 
-    fn screens_for_current_spaces(&self) -> Vec<ScreenInfo> {
-        self.space_manager.screens.clone()
-    }
+    fn screens_for_current_spaces(&self) -> Vec<ScreenInfo> { self.space_manager.screens.clone() }
 
     fn screens_for_spaces(&self, spaces: &[Option<SpaceId>]) -> Vec<ScreenInfo> {
         self.space_manager
@@ -809,8 +800,7 @@ impl Reactor {
 
     fn is_mission_control_active(&self) -> bool {
         self.core_state.as_ref().is_some_and(|core| {
-            core.snapshot().mission_control
-                == crate::core::interaction::MissionControlPhase::Active
+            core.snapshot().mission_control == crate::core::interaction::MissionControlPhase::Active
         })
     }
 
@@ -885,7 +875,10 @@ impl Reactor {
         Self::note_windowserver_activity(&event);
         self.handle_event(event);
         if let Err(error) = self.publish_core_snapshot() {
-            debug!(?error, "core snapshot publication deferred until runtime state stabilizes");
+            debug!(
+                ?error,
+                "core snapshot publication deferred until runtime state stabilizes"
+            );
         }
     }
 
@@ -946,20 +939,16 @@ impl Reactor {
             if previous_windows.get(&display_id) == current_windows.get(&display_id) {
                 continue;
             }
-            let Some(display) = current
-                .displays
-                .iter()
-                .find(|display| display.id == display_id)
+            let Some(display) = current.displays.iter().find(|display| display.id == display_id)
             else {
                 continue;
             };
-            let (Some(space), Some(workspace_id)) = (display.space, display.active_workspace) else {
+            let (Some(space), Some(workspace_id)) = (display.space, display.active_workspace)
+            else {
                 continue;
             };
-            let Some(workspace) = current
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id == workspace_id)
+            let Some(workspace) =
+                current.workspaces.iter().find(|workspace| workspace.id == workspace_id)
             else {
                 continue;
             };
@@ -1058,10 +1047,7 @@ impl Reactor {
     }
 
     fn core_drag_snapshot(&self) -> crate::core::interaction::DragSnapshot {
-        self.core_state
-            .as_ref()
-            .map(|core| core.snapshot().drag)
-            .unwrap_or_default()
+        self.core_state.as_ref().map(|core| core.snapshot().drag).unwrap_or_default()
     }
 
     fn core_snapshot(&self) -> std::sync::Arc<crate::core::snapshot::CoreSnapshot> {
@@ -1072,10 +1058,7 @@ impl Reactor {
     }
 
     fn core_window_id(window: WindowId) -> crate::core::ids::WindowId {
-        crate::core::ids::WindowId::new(
-            crate::core::ids::ApplicationId(window.pid),
-            window.idx,
-        )
+        crate::core::ids::WindowId::new(crate::core::ids::ApplicationId(window.pid), window.idx)
     }
 
     fn actor_window_id(window: crate::core::ids::WindowId) -> WindowId {
@@ -1100,10 +1083,7 @@ impl Reactor {
             .and_then(|candidate| candidate.workspace)
     }
 
-    fn space_for_workspace(
-        &self,
-        workspace: crate::core::ids::WorkspaceId,
-    ) -> Option<SpaceId> {
+    fn space_for_workspace(&self, workspace: crate::core::ids::WorkspaceId) -> Option<SpaceId> {
         let snapshot = self.core_snapshot();
         let display = snapshot
             .workspaces
@@ -1129,9 +1109,8 @@ impl Reactor {
     }
 
     fn is_window_in_active_workspace(&self, space: SpaceId, window: WindowId) -> bool {
-        self.active_workspace_for_space(space).is_some_and(|workspace| {
-            self.workspace_for_window(window) == Some(workspace)
-        })
+        self.active_workspace_for_space(space)
+            .is_some_and(|workspace| self.workspace_for_window(window) == Some(workspace))
     }
 
     fn windows_in_active_workspace(&self, space: SpaceId) -> Vec<WindowId> {
@@ -1179,10 +1158,7 @@ impl Reactor {
         workspace: crate::core::ids::WorkspaceId,
     ) -> Option<(u64, String)> {
         let snapshot = self.core_snapshot();
-        let item = snapshot
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == workspace)?;
+        let item = snapshot.workspaces.iter().find(|candidate| candidate.id == workspace)?;
         let mut siblings = snapshot
             .workspaces
             .iter()
@@ -1280,9 +1256,7 @@ impl Reactor {
             .fullscreen_by_space
             .values()
             .flat_map(|track| track.windows.iter().filter_map(|window| window.window_id))
-            .map(|window| {
-                crate::core::ids::WindowId::new(ApplicationId(window.pid), window.idx)
-            })
+            .map(|window| crate::core::ids::WindowId::new(ApplicationId(window.pid), window.idx))
             .collect::<HashSet<_>>();
         let windows = self
             .window_manager
@@ -1349,9 +1323,9 @@ impl Reactor {
                     "invalid window geometry in core observation: {error}"
                 ))
             })?;
-        let focused_window = self.main_window().map(|window| {
-            crate::core::ids::WindowId::new(ApplicationId(window.pid), window.idx)
-        });
+        let focused_window = self
+            .main_window()
+            .map(|window| crate::core::ids::WindowId::new(ApplicationId(window.pid), window.idx));
         let core = self.core_state.as_mut().ok_or_else(|| {
             crate::core::error::CoreError::IncompleteObservation(
                 "core state was not initialized".into(),
@@ -1374,12 +1348,12 @@ impl Reactor {
         Ok(snapshot)
     }
 
-    fn prepare_core_topology_transition(
-        &mut self,
-    ) -> Result<(), crate::core::error::CoreError> {
+    fn prepare_core_topology_transition(&mut self) -> Result<(), crate::core::error::CoreError> {
         use crate::core::geometry::Rect;
         use crate::core::ids::{DisplayId, Generation, SpaceId as CoreSpaceId};
-        use crate::core::input::{DisplayObservation, DisplayTopologyObservation, Input, Observation};
+        use crate::core::input::{
+            DisplayObservation, DisplayTopologyObservation, Input, Observation,
+        };
 
         if self.core_state.is_none() {
             self.publish_core_snapshot()?;
@@ -1692,10 +1666,7 @@ impl Reactor {
                             );
                         }
                     }
-                    if self
-                        .workspace_switch_manager
-                        .should_suppress_global_activation(pid)
-                    {
+                    if self.workspace_switch_manager.should_suppress_global_activation(pid) {
                         trace!(
                             pid,
                             "Skipping auto workspace switch for a Lift-initiated global activation"
@@ -2115,18 +2086,19 @@ impl Reactor {
             self.check_for_new_windows();
         }
 
-        if let Some(space) = spaces.iter().copied().flatten().find(|space| self.is_space_active(*space))
+        if let Some(space) =
+            spaces.iter().copied().flatten().find(|space| self.is_space_active(*space))
             && let Some(workspace_id) = self.active_workspace_for_space(space)
             && let Some((_, workspace_name)) = self.workspace_metadata(workspace_id)
         {
-                let display_uuid = self.display_uuid_for_space(space);
-                let broadcast_event = BroadcastEvent::WorkspaceChanged {
-                    workspace_id,
-                    workspace_name,
-                    space_id: space,
-                    display_uuid,
-                };
-                _ = self.communication_manager.event_broadcaster.send(broadcast_event);
+            let display_uuid = self.display_uuid_for_space(space);
+            let broadcast_event = BroadcastEvent::WorkspaceChanged {
+                workspace_id,
+                workspace_name,
+                space_id: space,
+                display_uuid,
+            };
+            _ = self.communication_manager.event_broadcaster.send(broadcast_event);
         }
     }
 
@@ -2414,12 +2386,9 @@ impl Reactor {
     }
 
     pub(crate) fn remember_recent_workspace_target(&mut self, wid: WindowId) {
-        let target = self
-            .workspace_for_window(wid)
-            .and_then(|workspace_id| {
-                self.space_for_workspace(workspace_id)
-                    .map(|space| (space, workspace_id))
-            });
+        let target = self.workspace_for_window(wid).and_then(|workspace_id| {
+            self.space_for_workspace(workspace_id).map(|space| (space, workspace_id))
+        });
         let Some((space, workspace_id)) = target else {
             return;
         };
@@ -2442,8 +2411,7 @@ impl Reactor {
                     .iter()
                     .find(|candidate| candidate.number == number)
                     .and_then(|candidate| {
-                        self.space_for_workspace(candidate.id)
-                            .map(|space| (space, candidate.id))
+                        self.space_for_workspace(candidate.id).map(|space| (space, candidate.id))
                     })
             });
         let Some((space, workspace_id)) = target else {
@@ -2722,9 +2690,9 @@ impl Reactor {
                 workspace,
                 window: Some(Self::core_window_id(window)),
             };
-            if let Err(error) = self.transition_core_command(
-                crate::core::command::Command::Workspace(command),
-            ) {
+            if let Err(error) =
+                self.transition_core_command(crate::core::command::Command::Workspace(command))
+            {
                 warn!(?error, ?window, "Core rejected a pending workspace target");
             }
         }
@@ -2866,15 +2834,18 @@ impl Reactor {
                 self.workspace_switch_manager
                     .start_workspace_switch(WorkspaceSwitchOrigin::Auto);
 
-                let transition = self.transition_core_command(
-                    crate::core::command::Command::Workspace(
+                let transition =
+                    self.transition_core_command(crate::core::command::Command::Workspace(
                         crate::core::command::WorkspaceCommand::Activate(number),
-                    ),
-                );
+                    ));
                 let mut response = match transition {
                     Ok(transition) => self.layout_response_for_transition(&transition),
                     Err(error) => {
-                        warn!(?error, ?app_window_id, "Core rejected automatic workspace switch");
+                        warn!(
+                            ?error,
+                            ?app_window_id,
+                            "Core rejected automatic workspace switch"
+                        );
                         return;
                     }
                 };
@@ -2900,9 +2871,10 @@ impl Reactor {
             None
         };
         if let Some(generation) = workspace_switch_generation
-            && let Err(e) = self.communication_manager.raise_manager_tx.try_send(
-                raise_manager::Event::WorkspaceSwitchStarted { generation },
-            )
+            && let Err(e) = self
+                .communication_manager
+                .raise_manager_tx
+                .try_send(raise_manager::Event::WorkspaceSwitchStarted { generation })
         {
             warn!("Failed to supersede stale workspace raises: {}", e);
         }
@@ -3181,10 +3153,8 @@ impl Reactor {
         let candidates = self.collect_drag_swap_candidates(wid, space);
 
         let previous_pending = self.get_pending_drag_swap();
-        let core_window = crate::core::ids::WindowId::new(
-            crate::core::ids::ApplicationId(wid.pid),
-            wid.idx,
-        );
+        let core_window =
+            crate::core::ids::WindowId::new(crate::core::ids::ApplicationId(wid.pid), wid.idx);
         let core_frame = match crate::core::geometry::Rect::new(
             new_frame.origin.x,
             new_frame.origin.y,
@@ -3412,7 +3382,11 @@ impl Reactor {
 
     fn consume_focus_next_window_for(&mut self, wid: WindowId) -> bool {
         if let Err(error) = self.advance_core_state() {
-            debug!(?error, ?wid, "Deferring exec-window focus until core observation succeeds");
+            debug!(
+                ?error,
+                ?wid,
+                "Deferring exec-window focus until core observation succeeds"
+            );
             return false;
         }
         let Some(deadline) = self.refocus_manager.focus_next_window_deadline else {
@@ -3442,10 +3416,14 @@ impl Reactor {
                 workspace,
                 window: Some(Self::core_window_id(wid)),
             };
-            if let Err(error) = self.transition_core_command(
-                crate::core::command::Command::Workspace(command),
-            ) {
-                debug!(?error, ?wid, "Failed to assign exec window to its command workspace");
+            if let Err(error) =
+                self.transition_core_command(crate::core::command::Command::Workspace(command))
+            {
+                debug!(
+                    ?error,
+                    ?wid,
+                    "Failed to assign exec window to its command workspace"
+                );
                 return false;
             }
         }
@@ -3456,9 +3434,7 @@ impl Reactor {
         let Some(space) = self.intended_space_for_window_state(wid, window) else {
             return false;
         };
-        if !self.is_space_active(space)
-            || !self.is_window_in_active_workspace(space, wid)
-        {
+        if !self.is_space_active(space) || !self.is_window_in_active_workspace(space, wid) {
             return false;
         }
 
@@ -3474,9 +3450,7 @@ impl Reactor {
     }
 
     fn consume_focus_next_window_from<I>(&mut self, windows: I) -> bool
-    where
-        I: IntoIterator<Item = WindowId>,
-    {
+    where I: IntoIterator<Item = WindowId> {
         for wid in windows {
             if self.consume_focus_next_window_for(wid) {
                 return true;
@@ -3546,9 +3520,7 @@ impl Reactor {
         self.maybe_send_menu_update();
     }
 
-    fn force_refresh_all_windows(&mut self) {
-        self.request_visible_windows_for_apps(true);
-    }
+    fn force_refresh_all_windows(&mut self) { self.request_visible_windows_for_apps(true); }
 
     fn request_close_window(&mut self, wid: WindowId) {
         if let Some(app) = self.app_manager.apps.get(&wid.pid) {
@@ -3558,9 +3530,7 @@ impl Reactor {
         }
     }
 
-    fn main_window(&self) -> Option<WindowId> {
-        self.main_window_tracker.main_window()
-    }
+    fn main_window(&self) -> Option<WindowId> { self.main_window_tracker.main_window() }
 
     fn main_window_space(&self) -> Option<SpaceId> {
         // TODO: Optimize this with a cache or something.

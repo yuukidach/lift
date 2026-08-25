@@ -44,10 +44,7 @@ fn project_display_groups(
 ) -> Option<(SpaceId, Vec<GroupInfo>, bool)> {
     let space = SpaceId::new(display.space?.0);
     let workspace_id = display.active_workspace?;
-    let workspace = snapshot
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.id == workspace_id)?;
+    let workspace = snapshot.workspaces.iter().find(|workspace| workspace.id == workspace_id)?;
     let workspace_has_fullscreen = workspace
         .groups
         .iter()
@@ -399,7 +396,7 @@ impl StackLine {
         }
     }
 
-    // this is very hacky but we don't use nswindow so we have to roll this ourselves
+    // The indicator is not backed by NSWindow, so cursor state is tracked explicitly.
     fn handle_mouse_moved(&mut self, _screen_point: CGPoint, hits_indicator: bool) {
         let over_indicator = self.is_enabled() && hits_indicator;
 
@@ -507,7 +504,6 @@ impl StackLine {
         );
     }
 
-    // TODO: We should just pass in the coordinates from the layout calculation.
     fn calculate_indicator_frame(
         group_frame: CGRect,
         group_kind: GroupKind,
@@ -574,8 +570,12 @@ mod tests {
 
     use super::*;
     use crate::core::geometry::Rect;
-    use crate::core::ids::{ApplicationId, DisplayId, SpaceId as CoreSpaceId, WorkspaceId, WorkspaceNumber};
-    use crate::core::snapshot::{DisplaySnapshot, GroupSnapshot, WindowSnapshot, WorkspaceSnapshot};
+    use crate::core::ids::{
+        ApplicationId, DisplayId, SpaceId as CoreSpaceId, WorkspaceId, WorkspaceNumber,
+    };
+    use crate::core::snapshot::{
+        DisplaySnapshot, GroupSnapshot, WindowSnapshot, WorkspaceSnapshot,
+    };
 
     #[test]
     fn test_group_info_fields() {
@@ -586,14 +586,9 @@ mod tests {
 
     #[test]
     fn snapshot_groups_project_stable_ids_orientation_and_preview_frames() {
-        let first = crate::core::ids::WindowId::new(
-            ApplicationId(12),
-            NonZeroU32::new(1).unwrap(),
-        );
-        let second = crate::core::ids::WindowId::new(
-            ApplicationId(12),
-            NonZeroU32::new(2).unwrap(),
-        );
+        let first = crate::core::ids::WindowId::new(ApplicationId(12), NonZeroU32::new(1).unwrap());
+        let second =
+            crate::core::ids::WindowId::new(ApplicationId(12), NonZeroU32::new(2).unwrap());
         let group_id = GroupId(55);
         let workspace_id = WorkspaceId(7);
         let display_id = DisplayId("main".into());

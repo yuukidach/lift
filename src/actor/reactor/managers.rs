@@ -1,5 +1,6 @@
-use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use std::time::{Duration, Instant};
+
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use tracing::trace;
 
 use super::replay::Record;
@@ -36,9 +37,7 @@ pub struct AppManager {
 }
 
 impl AppManager {
-    pub fn new() -> Self {
-        AppManager { apps: HashMap::default() }
-    }
+    pub fn new() -> Self { AppManager { apps: HashMap::default() } }
 }
 
 /// Manages space and screen state
@@ -57,9 +56,7 @@ impl SpaceManager {
         self.screens.iter().filter_map(|screen| screen.space)
     }
 
-    pub fn first_known_space(&self) -> Option<SpaceId> {
-        self.iter_known_spaces().next()
-    }
+    pub fn first_known_space(&self) -> Option<SpaceId> { self.iter_known_spaces().next() }
 }
 
 /// Manages drag operations and window swapping
@@ -164,97 +161,94 @@ pub struct RecordingManager {
 pub type LayoutResult = Vec<(SpaceId, Vec<(WindowId, CGRect)>)>;
 
 pub fn update_layout(
-        reactor: &mut Reactor,
-        is_resize: bool,
-        is_workspace_switch: bool,
-    ) -> Result<bool, crate::model::reactor::ReactorError> {
-        let layout_result = calculate_layout(reactor);
-        apply_layout(reactor, layout_result, is_resize, is_workspace_switch)
-    }
+    reactor: &mut Reactor,
+    is_resize: bool,
+    is_workspace_switch: bool,
+) -> Result<bool, crate::model::reactor::ReactorError> {
+    let layout_result = calculate_layout(reactor);
+    apply_layout(reactor, layout_result, is_resize, is_workspace_switch)
+}
 
 fn calculate_layout(reactor: &mut Reactor) -> LayoutResult {
-        let core_snapshot = reactor
-            .advance_core_state()
-            .map_err(|error| {
-                tracing::warn!(?error, "Core layout planning deferred");
-                error
-            })
-            .ok();
-        let live_windows: HashSet<WindowId> =
-            reactor.window_manager.iter_windows().map(|(wid, _)| wid).collect();
-        if live_windows.is_empty() {
-            return LayoutResult::new();
-        }
-
-        let screens = reactor.space_manager.screens.clone();
-        let mut layout_result = LayoutResult::new();
-
-        for screen in screens {
-            let Some(space) = screen.space else {
-                continue;
-            };
-            if !reactor.is_space_active(space) {
-                continue;
-            }
-            let layout: Vec<(WindowId, CGRect)> = core_snapshot
-                .as_ref()
-                .map(|snapshot| {
-                    crate::runtime::placement::frames_for_display(
-                        snapshot,
-                        &crate::core::ids::DisplayId(screen.display_uuid.clone()),
-                    )
-                })
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(window, frame)| {
-                    (
-                        WindowId::new(window.application.0, window.index.get()),
-                        CGRect::new(
-                            CGPoint::new(frame.origin.x, frame.origin.y),
-                            CGSize::new(frame.size.width, frame.size.height),
-                        ),
-                    )
-                })
-                .collect();
-            layout_result.push((space, layout));
-        }
-
-        layout_result
+    let core_snapshot = reactor
+        .advance_core_state()
+        .map_err(|error| {
+            tracing::warn!(?error, "Core layout planning deferred");
+            error
+        })
+        .ok();
+    let live_windows: HashSet<WindowId> =
+        reactor.window_manager.iter_windows().map(|(wid, _)| wid).collect();
+    if live_windows.is_empty() {
+        return LayoutResult::new();
     }
 
-fn apply_layout(
-        reactor: &mut Reactor,
-        layout_result: LayoutResult,
-        is_resize: bool,
-        is_workspace_switch: bool,
-    ) -> Result<bool, crate::model::reactor::ReactorError> {
-        let main_window = reactor.main_window();
-        trace!(?main_window);
-        let skip_wid = reactor
-            .drag_manager
-            .skip_layout_for_window
-            .take()
-            .or_else(|| {
-                reactor.core_drag_snapshot().window.map(|window| {
-                    WindowId::new(window.application.0, window.index.get())
-                })
-            });
-        let mut any_frame_changed = false;
+    let screens = reactor.space_manager.screens.clone();
+    let mut layout_result = LayoutResult::new();
 
-        for (space, layout) in layout_result {
-            let suppress_animation = is_workspace_switch
-                || reactor.workspace_switch_manager.active_workspace_switch.is_some();
-            if suppress_animation {
-                any_frame_changed |=
-                    AnimationManager::instant_layout(reactor, space, &layout, skip_wid);
-            } else {
-                any_frame_changed |=
-                    AnimationManager::animate_layout(reactor, space, &layout, is_resize, skip_wid);
-            }
+    for screen in screens {
+        let Some(space) = screen.space else {
+            continue;
+        };
+        if !reactor.is_space_active(space) {
+            continue;
         }
+        let layout: Vec<(WindowId, CGRect)> = core_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                crate::runtime::placement::frames_for_display(
+                    snapshot,
+                    &crate::core::ids::DisplayId(screen.display_uuid.clone()),
+                )
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(window, frame)| {
+                (
+                    WindowId::new(window.application.0, window.index.get()),
+                    CGRect::new(
+                        CGPoint::new(frame.origin.x, frame.origin.y),
+                        CGSize::new(frame.size.width, frame.size.height),
+                    ),
+                )
+            })
+            .collect();
+        layout_result.push((space, layout));
+    }
 
-        reactor.maybe_send_menu_update();
-        Ok(any_frame_changed)
+    layout_result
+}
+
+fn apply_layout(
+    reactor: &mut Reactor,
+    layout_result: LayoutResult,
+    is_resize: bool,
+    is_workspace_switch: bool,
+) -> Result<bool, crate::model::reactor::ReactorError> {
+    let main_window = reactor.main_window();
+    trace!(?main_window);
+    let skip_wid = reactor.drag_manager.skip_layout_for_window.take().or_else(|| {
+        reactor
+            .core_drag_snapshot()
+            .window
+            .map(|window| WindowId::new(window.application.0, window.index.get()))
+    });
+    let mut any_frame_changed = false;
+
+    for (space, layout) in layout_result {
+        let suppress_animation = is_workspace_switch
+            || reactor.workspace_switch_manager.active_workspace_switch.is_some();
+        if suppress_animation {
+            any_frame_changed |=
+                AnimationManager::instant_layout(reactor, space, &layout, skip_wid);
+        } else {
+            any_frame_changed |=
+                AnimationManager::animate_layout(reactor, space, &layout, is_resize, skip_wid);
+        }
+    }
+
+    reactor.maybe_send_menu_update();
+    Ok(any_frame_changed)
 }
 
 /// Manages pending space changes

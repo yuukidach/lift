@@ -56,24 +56,12 @@ pub enum ConfigCommand {
     ReloadConfig,
 }
 
-pub fn data_dir() -> PathBuf {
-    data_dir_for(&dirs::home_dir().unwrap())
-}
-fn data_dir_for(home: &Path) -> PathBuf {
-    home.join(".lift")
-}
-pub fn restore_file() -> PathBuf {
-    data_dir().join("layout.ron")
-}
-pub fn diagnostics_file() -> PathBuf {
-    data_dir().join("diagnostics").join("operations.jsonl")
-}
-pub fn config_file() -> PathBuf {
-    config_file_for(&dirs::home_dir().unwrap())
-}
-fn config_file_for(home: &Path) -> PathBuf {
-    home.join(".config").join("lift").join("config.toml")
-}
+pub fn data_dir() -> PathBuf { data_dir_for(&dirs::home_dir().unwrap()) }
+fn data_dir_for(home: &Path) -> PathBuf { home.join(".lift") }
+pub fn restore_file() -> PathBuf { data_dir().join("layout.ron") }
+pub fn diagnostics_file() -> PathBuf { data_dir().join("diagnostics").join("operations.jsonl") }
+pub fn config_file() -> PathBuf { config_file_for(&dirs::home_dir().unwrap()) }
+fn config_file_for(home: &Path) -> PathBuf { home.join(".config").join("lift").join("config.toml") }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(deny_unknown_fields)]
@@ -347,9 +335,7 @@ pub struct Config {
 
 impl<'de> Deserialize<'de> for Config {
     fn deserialize<D>(deserializer: D) -> Result<Config, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
+    where D: serde::Deserializer<'de> {
         #[derive(Deserialize)]
         struct ConfigSerde {
             settings: Settings,
@@ -571,6 +557,14 @@ pub enum WorkspaceDisplayStyle {
     Label,
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MenuBarWorkspaceScope {
+    #[default]
+    PerDisplay,
+    Global,
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct MenuBarSettings {
@@ -584,6 +578,8 @@ pub struct MenuBarSettings {
     pub active_label: ActiveWorkspaceLabel,
     #[serde(default)]
     pub display_style: WorkspaceDisplayStyle,
+    #[serde(default)]
+    pub workspace_scope: MenuBarWorkspaceScope,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
@@ -614,13 +610,9 @@ pub struct MissionControlSettings {
     pub fade_duration_ms: f64,
 }
 
-fn default_mission_control_fade_duration_ms() -> f64 {
-    180.0
-}
+fn default_mission_control_fade_duration_ms() -> f64 { 180.0 }
 
-fn default_drag_swap_fraction() -> f64 {
-    0.3
-}
+fn default_drag_swap_fraction() -> f64 { 0.3 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
@@ -639,9 +631,7 @@ pub enum VerticalPlacement {
 }
 
 impl StackLineSettings {
-    pub fn thickness(&self) -> f64 {
-        if self.enabled { self.thickness } else { 0.0 }
-    }
+    pub fn thickness(&self) -> f64 { if self.enabled { self.thickness } else { 0.0 } }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
@@ -754,9 +744,7 @@ impl Settings {
 }
 
 impl LayoutSettings {
-    pub fn validate(&self) -> Vec<String> {
-        self.gaps.validate()
-    }
+    pub fn validate(&self) -> Vec<String> { self.gaps.validate() }
 }
 
 impl GapSettings {
@@ -859,48 +847,26 @@ impl InnerGaps {
     }
 }
 
-fn yes() -> bool {
-    true
-}
+fn yes() -> bool { true }
 
-fn default_animation_duration() -> f64 {
-    0.3
-}
+fn default_animation_duration() -> f64 { 0.3 }
 
-fn default_animation_fps() -> f64 {
-    100.0
-}
+fn default_animation_fps() -> f64 { 100.0 }
 
-fn default_diagnostic_file_size_mb() -> u64 {
-    4
-}
+fn default_diagnostic_file_size_mb() -> u64 { 4 }
 
-fn default_diagnostic_retained_files() -> usize {
-    3
-}
+fn default_diagnostic_retained_files() -> usize { 3 }
 
 #[allow(dead_code)]
-fn no() -> bool {
-    false
-}
+fn no() -> bool { false }
 
 // Interpreted as normalized fraction when <= 1.0. If > 1.0 and <= 100.0,
 // it is treated as a percentage (e.g. 40.0 -> 0.40).
-fn default_swipe_vertical_tolerance() -> f64 {
-    0.4
-}
-fn default_swipe_fingers() -> usize {
-    3
-}
-fn default_distance_pct() -> f64 {
-    0.08
-}
-fn default_stack_line_spacing() -> f64 {
-    1.0
-}
-fn default_stack_line_thickness() -> f64 {
-    20.0
-}
+fn default_swipe_vertical_tolerance() -> f64 { 0.4 }
+fn default_swipe_fingers() -> usize { 3 }
+fn default_distance_pct() -> f64 { 0.08 }
+fn default_stack_line_spacing() -> f64 { 1.0 }
+fn default_stack_line_thickness() -> f64 { 20.0 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
@@ -917,9 +883,7 @@ impl Config {
         Self::parse(&buf)
     }
 
-    pub fn default() -> Config {
-        Self::parse(include_str!("../../lift.default.toml")).unwrap()
-    }
+    pub fn default() -> Config { Self::parse(include_str!("../../lift.default.toml")).unwrap() }
 
     /// Save the current config to a file
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
@@ -1279,24 +1243,35 @@ mod tests {
         )
         .unwrap();
         let issues = invalid.validate();
-        assert_eq!(issues.iter().filter(|issue| issue.contains("outside 0..=9")).count(), 2);
+        assert_eq!(
+            issues.iter().filter(|issue| issue.contains("outside 0..=9")).count(),
+            2
+        );
     }
 
     #[test]
     fn display_migration_priority_defaults_to_empty() {
-        assert!(VirtualWorkspaceSettings::default()
-            .display_migration_priority
-            .is_empty());
+        assert!(VirtualWorkspaceSettings::default().display_migration_priority.is_empty());
+    }
+
+    #[test]
+    fn menu_bar_workspace_scope_defaults_to_per_display() {
+        assert_eq!(
+            MenuBarSettings::default().workspace_scope,
+            MenuBarWorkspaceScope::PerDisplay
+        );
+        let global: MenuBarSettings = toml::from_str("workspace_scope = \"global\"").unwrap();
+        assert_eq!(global.workspace_scope, MenuBarWorkspaceScope::Global);
     }
 
     #[test]
     fn display_order_preserves_configured_order_and_rejects_invalid_uuids() {
         let settings: VirtualWorkspaceSettings =
             toml::from_str(r#"display_order = ["display-left", "display-right"]"#).unwrap();
-        assert_eq!(
-            settings.display_order,
-            vec!["display-left".to_string(), "display-right".to_string()]
-        );
+        assert_eq!(settings.display_order, vec![
+            "display-left".to_string(),
+            "display-right".to_string()
+        ]);
 
         let mut invalid = VirtualWorkspaceSettings::default();
         invalid.display_order = vec!["display-left".into(), "".into(), "display-left".into()];
@@ -1307,24 +1282,19 @@ mod tests {
 
     #[test]
     fn display_migration_priority_preserves_configured_order() {
-        let settings: VirtualWorkspaceSettings = toml::from_str(
-            r#"display_migration_priority = ["display-b", "display-a"]"#,
-        )
-        .unwrap();
-        assert_eq!(
-            settings.display_migration_priority,
-            vec!["display-b".to_string(), "display-a".to_string()]
-        );
+        let settings: VirtualWorkspaceSettings =
+            toml::from_str(r#"display_migration_priority = ["display-b", "display-a"]"#).unwrap();
+        assert_eq!(settings.display_migration_priority, vec![
+            "display-b".to_string(),
+            "display-a".to_string()
+        ]);
     }
 
     #[test]
     fn display_migration_priority_rejects_empty_and_duplicate_uuids() {
         let mut settings = VirtualWorkspaceSettings::default();
-        settings.display_migration_priority = vec![
-            "display-a".into(),
-            "".into(),
-            "display-a".into(),
-        ];
+        settings.display_migration_priority =
+            vec!["display-a".into(), "".into(), "display-a".into()];
         let issues = settings.validate();
         assert!(issues.iter().any(|issue| issue.contains("empty display UUID")));
         assert!(issues.iter().any(|issue| issue.contains("duplicate display UUID")));

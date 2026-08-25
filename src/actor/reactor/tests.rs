@@ -5,9 +5,7 @@ use super::testing::*;
 use super::*;
 use crate::model::layout::LayoutCommand;
 
-fn screen(x: f64) -> CGRect {
-    CGRect::new(CGPoint::new(x, 0.0), CGSize::new(1000.0, 1000.0))
-}
+fn screen(x: f64) -> CGRect { CGRect::new(CGPoint::new(x, 0.0), CGSize::new(1000.0, 1000.0)) }
 
 #[test]
 fn publishes_stable_immutable_core_snapshots() {
@@ -26,10 +24,12 @@ fn publishes_stable_immutable_core_snapshots() {
     assert_eq!(first.displays.len(), 1);
     assert_eq!(first.workspaces.len(), 1);
     assert_eq!(first.windows.len(), 2);
-    assert!(first
-        .windows
-        .iter()
-        .all(|window| window.workspace == Some(first.workspaces[0].id)));
+    assert!(
+        first
+            .windows
+            .iter()
+            .all(|window| window.workspace == Some(first.workspaces[0].id))
+    );
 
     reactor.publish_core_snapshot().unwrap();
     let second = reactor.snapshot_store.load();
@@ -80,26 +80,13 @@ fn workspace_move_command_changes_the_authoritative_assignment() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test();
     let space = SpaceId::new(1);
-    reactor.handle_event(screen_params_event(
-        vec![screen(0.0)],
-        vec![Some(space)],
-        vec![],
-    ));
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
     let window = WindowId::new(7, 1);
-    reactor.handle_events(apps.make_app_with_opts(
-        7,
-        make_windows(1),
-        Some(window),
-        true,
-        true,
-    ));
+    reactor.handle_events(apps.make_app_with_opts(7, make_windows(1), Some(window), true, true));
     apps.simulate_until_quiet(&mut reactor);
 
     reactor.handle_event(Event::Command(Command::Layout(
-        LayoutCommand::MoveWindowToWorkspace {
-            workspace: 1,
-            window_id: None,
-        },
+        LayoutCommand::MoveWindowToWorkspace { workspace: 1, window_id: None },
     )));
 
     let snapshot = reactor.core_snapshot();
@@ -121,20 +108,11 @@ fn cross_display_workspace_move_survives_the_next_platform_observation() {
         vec![],
     ));
     let window = WindowId::new(7, 1);
-    reactor.handle_events(apps.make_app_with_opts(
-        7,
-        make_windows(1),
-        Some(window),
-        true,
-        true,
-    ));
+    reactor.handle_events(apps.make_app_with_opts(7, make_windows(1), Some(window), true, true));
     apps.simulate_until_quiet(&mut reactor);
 
     reactor.handle_event(Event::Command(Command::Layout(
-        LayoutCommand::MoveWindowToWorkspace {
-            workspace: 1,
-            window_id: None,
-        },
+        LayoutCommand::MoveWindowToWorkspace { workspace: 1, window_id: None },
     )));
     let target = reactor
         .core_snapshot()
@@ -155,11 +133,7 @@ fn cross_display_workspace_move_survives_the_next_platform_observation() {
 fn global_slot_command_creates_and_activates_the_requested_workspace() {
     let mut reactor = Reactor::new_for_test();
     let space = SpaceId::new(1);
-    reactor.handle_event(screen_params_event(
-        vec![screen(0.0)],
-        vec![Some(space)],
-        vec![],
-    ));
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
 
     reactor.handle_event(Event::Command(Command::Layout(
         LayoutCommand::SwitchToGlobalSlot(7),
@@ -197,15 +171,10 @@ fn removing_a_display_migrates_workspaces_by_display_identity() {
     let before = reactor.core_snapshot();
     assert_eq!(before.workspaces.len(), 2);
 
-    reactor.space_manager.screens = make_screen_snapshots(
-        vec![screen(0.0)],
-        vec![Some(SpaceId::new(1))],
-    );
+    reactor.space_manager.screens =
+        make_screen_snapshots(vec![screen(0.0)], vec![Some(SpaceId::new(1))]);
     reactor.prepare_core_topology_transition().unwrap();
     let after = reactor.core_snapshot();
     assert_eq!(after.workspaces.len(), 2);
-    assert!(after
-        .workspaces
-        .iter()
-        .all(|workspace| workspace.display.0 == "test-display-0"));
+    assert!(after.workspaces.iter().all(|workspace| workspace.display.0 == "test-display-0"));
 }

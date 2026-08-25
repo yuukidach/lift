@@ -186,10 +186,8 @@ impl SpaceEventHandler {
                 .pending_removed_display_uuids
                 .extend(dead_uuids);
         }
-        let migration_pending = !reactor
-            .pending_space_change_manager
-            .pending_removed_display_uuids
-            .is_empty();
+        let migration_pending =
+            !reactor.pending_space_change_manager.pending_removed_display_uuids.is_empty();
         if should_trigger_topology || migration_pending {
             reactor.pending_space_change_manager.topology_relayout_pending = true;
         }
@@ -258,10 +256,9 @@ impl SpaceEventHandler {
             let migration_completed = if migration_pending {
                 complete_pending_display_migrations_if_ready(reactor)
             } else {
-                let allow_space_remap = reactor
-                    .pending_space_change_manager
-                    .topology_relayout_pending
-                    && complete_unique_snapshot;
+                let allow_space_remap =
+                    reactor.pending_space_change_manager.topology_relayout_pending
+                        && complete_unique_snapshot;
                 reactor.reconcile_spaces_with_display_history(&spaces, allow_space_remap);
                 true
             };
@@ -293,11 +290,7 @@ impl SpaceEventHandler {
             }
         }
         reactor.try_apply_pending_space_change();
-        if reactor
-            .pending_space_change_manager
-            .pending_removed_display_uuids
-            .is_empty()
-        {
+        if reactor.pending_space_change_manager.pending_removed_display_uuids.is_empty() {
             let topology_commit_owned_refresh = reactor.maybe_commit_display_topology_snapshot();
             finish_pending_topology_relayout_if_ready(reactor, topology_commit_owned_refresh);
         } else {
@@ -346,7 +339,7 @@ impl SpaceEventHandler {
             return;
         }
         if reactor.is_mission_control_active() {
-            // dont process whilst mc is active
+            // Defer space changes until Mission Control closes.
             reactor.pending_space_change_manager.pending_space_change =
                 Some(PendingSpaceChange { spaces });
             return;
@@ -375,10 +368,8 @@ impl SpaceEventHandler {
         let screens = reactor.screens_for_spaces(&spaces);
         reactor.space_activation_policy.on_spaces_updated(cfg, &screens);
 
-        let migration_pending = !reactor
-            .pending_space_change_manager
-            .pending_removed_display_uuids
-            .is_empty();
+        let migration_pending =
+            !reactor.pending_space_change_manager.pending_removed_display_uuids.is_empty();
         if migration_pending {
             reactor.set_screen_spaces(&spaces);
             if !complete_pending_display_migrations_if_ready(reactor) {
@@ -395,11 +386,7 @@ impl SpaceEventHandler {
         let ws_info = reactor.authoritative_window_snapshot_for_active_spaces();
         reactor.finalize_space_change(&spaces, ws_info);
 
-        if reactor
-            .pending_space_change_manager
-            .pending_removed_display_uuids
-            .is_empty()
-        {
+        if reactor.pending_space_change_manager.pending_removed_display_uuids.is_empty() {
             let topology_commit_owned_refresh = reactor.maybe_commit_display_topology_snapshot();
             finish_pending_topology_relayout_if_ready(reactor, topology_commit_owned_refresh);
         } else {
@@ -517,11 +504,7 @@ fn handle_window_server_info_appeared(
 }
 
 fn complete_pending_display_migrations_if_ready(reactor: &mut Reactor) -> bool {
-    if reactor
-        .pending_space_change_manager
-        .pending_removed_display_uuids
-        .is_empty()
-    {
+    if reactor.pending_space_change_manager.pending_removed_display_uuids.is_empty() {
         return true;
     }
     if reactor.space_manager.screens.is_empty()
@@ -545,10 +528,7 @@ fn complete_pending_display_migrations_if_ready(reactor: &mut Reactor) -> bool {
         warn!(?error, "Core rejected display topology snapshot");
         return false;
     }
-    reactor
-        .pending_space_change_manager
-        .pending_removed_display_uuids
-        .clear();
+    reactor.pending_space_change_manager.pending_removed_display_uuids.clear();
     true
 }
 
@@ -557,10 +537,7 @@ fn finish_pending_topology_relayout_if_ready(
     topology_commit_owned_refresh: bool,
 ) -> bool {
     if !reactor.pending_space_change_manager.topology_relayout_pending
-        || !reactor
-            .pending_space_change_manager
-            .pending_removed_display_uuids
-            .is_empty()
+        || !reactor.pending_space_change_manager.pending_removed_display_uuids.is_empty()
         || reactor.display_topology_manager.is_churning_or_awaiting_commit()
         || reactor.space_manager.screens.is_empty()
         || reactor.space_manager.screens.iter().any(|screen| screen.space.is_none())

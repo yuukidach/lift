@@ -12,14 +12,9 @@ use crate::sys::screen::SpaceId;
 use crate::sys::window_server::{WindowServerId, WindowServerInfo};
 
 impl Reactor {
-    pub fn new_for_test() -> Reactor {
-        Self::new_for_test_with_broadcast().0
-    }
+    pub fn new_for_test() -> Reactor { Self::new_for_test_with_broadcast().0 }
 
-    pub fn new_for_test_with_broadcast() -> (
-        Reactor,
-        crate::actor::broadcast::BroadcastReceiver,
-    ) {
+    pub fn new_for_test_with_broadcast() -> (Reactor, crate::actor::broadcast::BroadcastReceiver) {
         let mut config = Config::default();
         config.settings.default_disable = false;
         config.settings.animate = false;

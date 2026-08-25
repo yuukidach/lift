@@ -4,9 +4,7 @@ Lift is a focused macOS window manager built around one deterministic domain
 state. The actor runtime collects platform observations and executes effects;
 it does not maintain a second workspace or layout model.
 
-The detailed redesign record is in
-[`docs/design/2026-08-25-lift-core-architecture-design.md`](docs/design/2026-08-25-lift-core-architecture-design.md).
-This file describes the implementation that exists now.
+This document describes the implementation that exists now.
 
 ## Boundaries
 

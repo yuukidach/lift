@@ -1,9 +1,10 @@
+use serde::Serialize;
+
 use crate::actor::app::WindowId as ActorWindowId;
 use crate::core::geometry::Rect;
 use crate::core::ids::{SpaceId, WindowId, WorkspaceId, WorkspaceNumber};
 use crate::core::snapshot::{CoreSnapshot, WorkspaceSnapshot};
 use crate::model::server::{WindowData, WorkspaceData};
-use serde::Serialize;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct WorkspaceLayoutView {
@@ -50,14 +51,12 @@ pub fn workspaces(
     display: Option<&str>,
 ) -> Vec<WorkspaceData> {
     let display = match (space, display) {
-        (Some(space), _) => snapshot
-            .displays
-            .iter()
-            .find(|candidate| candidate.space == Some(space)),
-        (None, Some(display)) => snapshot
-            .displays
-            .iter()
-            .find(|candidate| candidate.id.0 == display),
+        (Some(space), _) => {
+            snapshot.displays.iter().find(|candidate| candidate.space == Some(space))
+        }
+        (None, Some(display)) => {
+            snapshot.displays.iter().find(|candidate| candidate.id.0 == display)
+        }
         (None, None) => crate::interfaces::ui::active_context_display(snapshot),
     };
     display
@@ -223,8 +222,8 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::*;
-    use crate::core::geometry::Rect;
     use crate::core::bsp::Axis;
+    use crate::core::geometry::Rect;
     use crate::core::ids::{ApplicationId, DisplayId, Generation, GroupId, WorkspaceNumber};
     use crate::core::snapshot::{
         ApplicationSnapshot, DisplaySnapshot, GroupSnapshot, WindowSnapshot,
@@ -294,15 +293,12 @@ mod tests {
 
         let layouts = workspace_layouts(&snapshot, Some(SpaceId(9)), Some(WorkspaceId(7)));
 
-        assert_eq!(
-            layouts,
-            vec![WorkspaceLayoutView {
-                id: WorkspaceId(7),
-                number: 1,
-                name: "Main".into(),
-                is_active: true,
-            }]
-        );
+        assert_eq!(layouts, vec![WorkspaceLayoutView {
+            id: WorkspaceId(7),
+            number: 1,
+            name: "Main".into(),
+            is_active: true,
+        }]);
         assert!(workspace_layouts(&snapshot, Some(SpaceId(99)), None).is_empty());
     }
 

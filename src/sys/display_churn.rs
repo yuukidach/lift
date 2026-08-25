@@ -37,7 +37,7 @@ pub fn flags() -> DisplayReconfigFlags {
 
 pub fn completed_flags() -> DisplayReconfigFlags {
     DisplayReconfigFlags::from_bits_truncate(
-        DISPLAY_CHURN_COMPLETED_FLAGS.load(Ordering::SeqCst) as u32,
+        DISPLAY_CHURN_COMPLETED_FLAGS.load(Ordering::SeqCst) as u32
     )
 }
 

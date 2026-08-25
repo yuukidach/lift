@@ -24,10 +24,11 @@ type Receiver = actor::Receiver<WmEvent>;
 use self::WmCmd::*;
 use crate::actor::app::AppInfo;
 use crate::actor::{self, event_tap, mission_control, reactor};
+use crate::model::layout;
 use crate::model::tx_store::WindowTxStore;
+use crate::sys;
 use crate::sys::dispatch::DispatchExt;
 use crate::sys::screen::{CoordinateConverter, ScreenInfo, SpaceId};
-use crate::{model::layout, sys};
 
 #[derive(Debug)]
 pub enum WmEvent {
@@ -103,15 +104,11 @@ static BUILTIN_WM_CMD_VARIANTS: Lazy<Vec<String>> = Lazy::new(|| {
 });
 
 impl WmCmd {
-    pub fn snake_case_variants() -> &'static [String] {
-        &BUILTIN_WM_CMD_VARIANTS
-    }
+    pub fn snake_case_variants() -> &'static [String] { &BUILTIN_WM_CMD_VARIANTS }
 }
 
 impl WmCommand {
-    pub fn builtin_candidates() -> &'static [String] {
-        WmCmd::snake_case_variants()
-    }
+    pub fn builtin_candidates() -> &'static [String] { WmCmd::snake_case_variants() }
 }
 
 pub struct Config {

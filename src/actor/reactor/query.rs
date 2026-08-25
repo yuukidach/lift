@@ -9,9 +9,7 @@ pub struct ReactorSnapshotHandle {
 }
 
 impl ReactorSnapshotHandle {
-    pub(super) fn new(snapshots: SnapshotStore) -> Self {
-        Self { snapshots }
-    }
+    pub(super) fn new(snapshots: SnapshotStore) -> Self { Self { snapshots } }
 
     pub fn snapshot(&self) -> std::sync::Arc<crate::core::snapshot::CoreSnapshot> {
         self.snapshots.load()
@@ -39,8 +37,10 @@ impl Reactor {
             return;
         };
 
-        let (workspaces, display_starts) = crate::interfaces::ui::grouped_workspace_data(
+        let (workspaces, display_starts) = crate::interfaces::ui::menu_bar_workspace_data(
             &snapshot,
+            display,
+            self.config.settings.ui.menu_bar.workspace_scope,
             &self.config.virtual_workspaces.display_order,
         );
         let active_space_is_activated = self.is_space_active(active_space);

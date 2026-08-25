@@ -68,10 +68,6 @@ impl WindowEventHandler {
                 reactor.consume_focus_next_window_for(wid);
             }
         }
-        // TODO: drag state is maybe managed by ensure_active_drag
-        // if mouse_state == MouseState::Down {
-        //     reactor.drag_manager.drag_state = DragState::Active { ... };
-        // }
     }
 
     pub fn handle_window_destroyed(reactor: &mut Reactor, wid: WindowId) -> bool {
@@ -110,7 +106,10 @@ impl WindowEventHandler {
             WindowId::new(window.application.0, window.index.get())
         };
         if drag.window.map(to_actor) == Some(wid) || drag.target.map(to_actor) == Some(wid) {
-            trace!(?wid, "Clearing drag swap because a participant window was destroyed");
+            trace!(
+                ?wid,
+                "Clearing drag swap because a participant window was destroyed"
+            );
             let _ = reactor.transition_core_input(crate::core::input::Input::Observation(
                 crate::core::input::Observation::Drag(
                     crate::core::interaction::DragObservation::Cancelled,
@@ -333,9 +332,9 @@ impl WindowEventHandler {
                     reactor.send_layout_event(LayoutEvent::Changed);
                     if let Some(space) = new_space {
                         if reactor.is_space_active(space) {
-                            if let Some(active_ws) = reactor.active_workspace_for_space(space)
-                            {
-                                let assigned = reactor.move_core_window_to_space(wid, space).is_ok();
+                            if let Some(active_ws) = reactor.active_workspace_for_space(space) {
+                                let assigned =
+                                    reactor.move_core_window_to_space(wid, space).is_ok();
                                 if !assigned {
                                     warn!(
                                         "Failed to assign window {:?} to workspace {:?}",
@@ -437,10 +436,8 @@ fn maybe_dispatch_window_added_in_space(reactor: &mut Reactor, wid: WindowId, sp
 
 fn handle_mouse_up_if_needed(reactor: &mut Reactor, mouse_state: Option<MouseState>) {
     if mouse_state == Some(MouseState::Up)
-        && (matches!(
-            reactor.drag_manager.drag_state,
-            DragState::Active { .. }
-        ) || reactor.drag_manager.skip_layout_for_window.is_some())
+        && (matches!(reactor.drag_manager.drag_state, DragState::Active { .. })
+            || reactor.drag_manager.skip_layout_for_window.is_some())
     {
         DragEventHandler::handle_mouse_up(reactor);
     }

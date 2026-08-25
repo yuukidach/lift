@@ -53,7 +53,8 @@ impl Record {
     pub(super) fn start(&mut self, config: &Config) {
         let Some(file) = self.file() else { return };
         let config = ron::ser::to_string(&config).unwrap();
-        let snapshot = ron::ser::to_string(&crate::core::snapshot::CoreSnapshot::default()).unwrap();
+        let snapshot =
+            ron::ser::to_string(&crate::core::snapshot::CoreSnapshot::default()).unwrap();
         write!(file, "{config}\n{snapshot}\n").unwrap();
     }
 

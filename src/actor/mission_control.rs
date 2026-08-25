@@ -215,11 +215,10 @@ impl MissionControlActor {
 
     fn refresh_all_workspaces_highlight(&mut self) {
         let snapshot = self.reactor.snapshot();
-        let active_workspace = crate::interfaces::ui::active_workspace(&snapshot)
-            .map(|workspace| workspace.id);
+        let active_workspace =
+            crate::interfaces::ui::active_workspace(&snapshot).map(|workspace| workspace.id);
         if let Some(overlay) = self.overlay.as_ref() {
             overlay.refresh_active_workspace(active_workspace);
         }
     }
-
 }

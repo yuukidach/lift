@@ -181,9 +181,7 @@ impl GestureTap {
         }
     }
 
-    fn gesture_handlers_enabled(&self) -> bool {
-        self.swipe.borrow().is_some()
-    }
+    fn gesture_handlers_enabled(&self) -> bool { self.swipe.borrow().is_some() }
 
     fn create_and_install_tap(self: &Rc<Self>) {
         let mask = gesture_event_mask();

@@ -54,18 +54,15 @@ impl WorkspaceCatalog {
 
             catalog.next_workspace_id = catalog.next_workspace_id.max(persisted.id.0);
             catalog.by_number.insert(persisted.number, persisted.id);
-            catalog.workspaces.insert(
-                persisted.id,
-                Workspace {
-                    id: persisted.id,
-                    number: persisted.number,
-                    name: format!("Workspace {}", persisted.number.get()),
-                    display: persisted.display.clone(),
-                    tiled: BspTree::default(),
-                    floating: BTreeSet::new(),
-                    floating_positions: BTreeMap::new(),
-                },
-            );
+            catalog.workspaces.insert(persisted.id, Workspace {
+                id: persisted.id,
+                number: persisted.number,
+                name: format!("Workspace {}", persisted.number.get()),
+                display: persisted.display.clone(),
+                tiled: BspTree::default(),
+                floating: BTreeSet::new(),
+                floating_positions: BTreeMap::new(),
+            });
 
             let display = catalog.displays.entry(persisted.display.clone()).or_default();
             let should_activate = display.active.is_none_or(|active| {
@@ -198,18 +195,15 @@ impl WorkspaceCatalog {
         }
         self.next_workspace_id += 1;
         let id = WorkspaceId(self.next_workspace_id);
-        self.workspaces.insert(
+        self.workspaces.insert(id, Workspace {
             id,
-            Workspace {
-                id,
-                number,
-                name: format!("Workspace {}", number.get()),
-                display: display.clone(),
-                tiled: BspTree::default(),
-                floating: BTreeSet::new(),
-                floating_positions: BTreeMap::new(),
-            },
-        );
+            number,
+            name: format!("Workspace {}", number.get()),
+            display: display.clone(),
+            tiled: BspTree::default(),
+            floating: BTreeSet::new(),
+            floating_positions: BTreeMap::new(),
+        });
         self.by_number.insert(number, id);
         let display_state = self.displays.entry(display).or_default();
         if display_state.active.is_none() {
@@ -316,11 +310,10 @@ impl WorkspaceCatalog {
         window: WindowId,
         frame: Rect,
     ) -> Result<bool, CoreError> {
-        let workspace = self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
-        let state = self
-            .workspaces
-            .get(&workspace)
-            .ok_or(CoreError::WorkspaceConflict(workspace))?;
+        let workspace =
+            self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
+        let state =
+            self.workspaces.get(&workspace).ok_or(CoreError::WorkspaceConflict(workspace))?;
         if !state.floating.contains(&window)
             || self.active_workspace(&state.display) != Some(workspace)
         {
@@ -374,10 +367,7 @@ impl WorkspaceCatalog {
             .is_some_and(|workspace| workspace.floating.contains(&window))
     }
 
-    pub fn floating_windows(
-        &self,
-        workspace: WorkspaceId,
-    ) -> Result<Vec<WindowId>, CoreError> {
+    pub fn floating_windows(&self, workspace: WorkspaceId) -> Result<Vec<WindowId>, CoreError> {
         Ok(self
             .workspaces
             .get(&workspace)
@@ -490,7 +480,8 @@ impl WorkspaceCatalog {
     }
 
     pub fn select_tiled_window(&mut self, window: WindowId) -> Result<(), CoreError> {
-        let workspace = self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
+        let workspace =
+            self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
         self.workspaces
             .get_mut(&workspace)
             .expect("window assignments reference live workspaces")
@@ -515,7 +506,8 @@ impl WorkspaceCatalog {
     }
 
     pub fn resize(&mut self, window: WindowId, amount: f64) -> Result<bool, CoreError> {
-        let workspace = self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
+        let workspace =
+            self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
         self.workspaces
             .get_mut(&workspace)
             .expect("window assignments reference live workspaces")
@@ -525,7 +517,8 @@ impl WorkspaceCatalog {
     }
 
     pub fn toggle_orientation(&mut self, window: WindowId) -> Result<bool, CoreError> {
-        let workspace = self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
+        let workspace =
+            self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
         self.workspaces
             .get_mut(&workspace)
             .expect("window assignments reference live workspaces")
@@ -539,7 +532,8 @@ impl WorkspaceCatalog {
         window: WindowId,
         within_gaps: bool,
     ) -> Result<bool, CoreError> {
-        let workspace = self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
+        let workspace =
+            self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
         self.workspaces
             .get_mut(&workspace)
             .expect("window assignments reference live workspaces")
@@ -557,11 +551,7 @@ impl WorkspaceCatalog {
     }
 
     pub fn snapshots(&self) -> Result<Vec<WorkspaceSnapshot>, CoreError> {
-        self.snapshots_with_layout(
-            &BTreeMap::new(),
-            &LayoutConfig::default(),
-            &BTreeMap::new(),
-        )
+        self.snapshots_with_layout(&BTreeMap::new(), &LayoutConfig::default(), &BTreeMap::new())
     }
 
     pub fn snapshots_with_layout(
@@ -584,10 +574,7 @@ impl WorkspaceCatalog {
                     .transpose()?
                     .unwrap_or_default();
                 layout_frames.extend(
-                    workspace
-                        .floating_positions
-                        .iter()
-                        .map(|(window, frame)| (*window, *frame)),
+                    workspace.floating_positions.iter().map(|(window, frame)| (*window, *frame)),
                 );
                 Ok(WorkspaceSnapshot {
                     id: workspace.id,
@@ -680,7 +667,6 @@ impl WorkspaceCatalog {
         }
         workspace.tiled.remove(window).map_err(map_bsp_error)
     }
-
 }
 
 fn map_bsp_error(error: BspError) -> CoreError {
@@ -705,9 +691,7 @@ mod tests {
     use super::*;
     use crate::core::ids::ApplicationId;
 
-    fn number(value: u8) -> WorkspaceNumber {
-        WorkspaceNumber::try_from(value).unwrap()
-    }
+    fn number(value: u8) -> WorkspaceNumber { WorkspaceNumber::try_from(value).unwrap() }
 
     fn window(index: u32) -> WindowId {
         WindowId::new(ApplicationId(7), NonZeroU32::new(index).unwrap())
@@ -788,5 +772,4 @@ mod tests {
         catalog.remove_window(window(3)).unwrap();
         catalog.validate().unwrap();
     }
-
 }

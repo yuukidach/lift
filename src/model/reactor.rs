@@ -84,9 +84,7 @@ pub struct DragSession {
 #[derive(Debug, Clone)]
 pub enum DragState {
     Inactive,
-    Active {
-        session: DragSession,
-    },
+    Active { session: DragSession },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

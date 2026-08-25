@@ -67,7 +67,10 @@ pub fn core_config(config: &Config) -> Result<CoreConfig, CoreError> {
             .map(DisplayId)
             .collect(),
         window_rules,
-        layout: LayoutConfig { gaps: default_gaps, gaps_by_display },
+        layout: LayoutConfig {
+            gaps: default_gaps,
+            gaps_by_display,
+        },
         animation: AnimationConfig {
             enabled: config.settings.animate,
             duration_seconds: config.settings.animation_duration,
@@ -97,8 +100,14 @@ mod tests {
     fn default_config_translates_to_valid_core_config() {
         let config = Config::default();
         let translated = core_config(&config).unwrap();
-        assert_eq!(translated.focus_follows_mouse, config.settings.focus_follows_mouse);
-        assert_eq!(translated.window_rules.len(), config.virtual_workspaces.app_rules.len());
+        assert_eq!(
+            translated.focus_follows_mouse,
+            config.settings.focus_follows_mouse
+        );
+        assert_eq!(
+            translated.window_rules.len(),
+            config.virtual_workspaces.app_rules.len()
+        );
         assert!(translated.display_migration_priority.is_empty());
     }
 
@@ -119,6 +128,9 @@ mod tests {
 
         let translated = core_config(&config).unwrap();
         assert_eq!(translated.layout.gaps.left, 8.0);
-        assert_eq!(translated.layout.gaps_for(&DisplayId("external".into())).left, 24.0);
+        assert_eq!(
+            translated.layout.gaps_for(&DisplayId("external".into())).left,
+            24.0
+        );
     }
 }

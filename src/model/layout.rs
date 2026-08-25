@@ -44,7 +44,9 @@ pub enum LayoutCommand {
     ToggleFullscreenWithinGaps,
     ResizeWindowGrow,
     ResizeWindowShrink,
-    ResizeWindowBy { amount: f64 },
+    ResizeWindowBy {
+        amount: f64,
+    },
     NextWorkspace(Option<bool>),
     PrevWorkspace(Option<bool>),
     SwitchToWorkspace(usize),

@@ -56,12 +56,6 @@ diagnostics = { enabled = true, max_file_size_mb = 4, retained_files = 3 }
 #   LIFT_WINDOW_TITLE          # new title (window_title_changed only)
 #   LIFT_EVENT_JSON            # full JSON payload of the event
 #
-# Example (sketchybar integration):
-# run_on_start = [
-#   "lift-cli subscribe cli --event workspace_changed --command sh --args -c --args 'sketchybar --trigger lift_workspace_changed LIFT_WORKSPACE_NAME=\"$LIFT_WORKSPACE_NAME\" LIFT_WORKSPACE_ID=\"$LIFT_WORKSPACE_ID\"'",
-#   "lift-cli subscribe cli --event windows_changed --command sh --args -c --args 'sketchybar --trigger lift_windows_changed LIFT_WORKSPACE_NAME=\"$LIFT_WORKSPACE_NAME\" LIFT_WINDOW_COUNT=\"$LIFT_WINDOW_COUNT\"'"
-# ]
-
 run_on_start = []
 
 # Hot Reloading
@@ -103,8 +97,7 @@ vertical = 0
 [settings.ui.menu_bar]
 # enable menu bar workspace indicators
 enabled = false
-# if enabled, it will show all workspaces including empty ones. disabled because this
-# tends to take up too much room in the menubar and then is auto hidden by macos
+# show empty workspaces
 show_empty = false
 # choose between drawing every workspace or only the active workspace
 mode = "all"
@@ -113,6 +106,9 @@ active_label = "index"
 # when displaying workspaces, choose either a layout preview or labels with the primary app icon
 # options are "layout" or "label"
 display_style = "layout"
+# show only the current display's workspaces, or combine every display with separators
+# options are "per_display" (default) or "global"
+workspace_scope = "per_display"
 
 [settings.ui.stack_line]
 # experimental stack line indicator (defaults to off)

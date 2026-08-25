@@ -81,9 +81,7 @@ impl Drop for LiftMachSubscription {
 }
 
 impl LiftMachClient {
-    pub fn connect() -> Result<Self, String> {
-        Ok(LiftMachClient { connected: true })
-    }
+    pub fn connect() -> Result<Self, String> { Ok(LiftMachClient { connected: true }) }
 
     fn parse_response_buffer(response_buf: &[u8]) -> Result<LiftResponse, String> {
         let json_bytes = CStr::from_bytes_until_nul(response_buf)

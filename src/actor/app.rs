@@ -1250,7 +1250,6 @@ impl State {
     }
 
     fn on_activation_changed(&mut self) -> Result<(), AxError> {
-        // TODO: this prolly isnt needed
         let is_frontmost = trace("is_frontmost", &self.app, || self.app.frontmost())?;
         let old_frontmost = std::mem::replace(&mut self.is_frontmost, is_frontmost);
         debug!(

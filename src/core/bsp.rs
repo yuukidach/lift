@@ -30,9 +30,7 @@ impl Ratio {
         }
     }
 
-    pub const fn get(self) -> f64 {
-        self.0
-    }
+    pub const fn get(self) -> f64 { self.0 }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -81,13 +79,9 @@ pub enum BspError {
 // The reducer owns this tree; platform adapters only observe its snapshots.
 #[allow(dead_code)]
 impl BspTree {
-    pub fn contains(&self, window: WindowId) -> bool {
-        self.window_nodes.contains_key(&window)
-    }
+    pub fn contains(&self, window: WindowId) -> bool { self.window_nodes.contains_key(&window) }
 
-    pub fn is_empty(&self) -> bool {
-        self.root.is_none()
-    }
+    pub fn is_empty(&self) -> bool { self.root.is_none() }
 
     pub fn insert_after(
         &mut self,
@@ -216,11 +210,8 @@ impl BspTree {
     }
 
     pub fn select(&mut self, window: WindowId) -> Result<(), BspError> {
-        let group = self
-            .window_nodes
-            .get(&window)
-            .copied()
-            .ok_or(BspError::MissingWindow(window))?;
+        let group =
+            self.window_nodes.get(&window).copied().ok_or(BspError::MissingWindow(window))?;
         let Some(BspNode::Group { windows, selected, .. }) = self.nodes.get_mut(&group) else {
             return Err(BspError::InvariantViolation(
                 "window index points to a split".into(),
@@ -234,16 +225,10 @@ impl BspTree {
     }
 
     pub fn swap(&mut self, first: WindowId, second: WindowId) -> Result<bool, BspError> {
-        let first_group = self
-            .window_nodes
-            .get(&first)
-            .copied()
-            .ok_or(BspError::MissingWindow(first))?;
-        let second_group = self
-            .window_nodes
-            .get(&second)
-            .copied()
-            .ok_or(BspError::MissingWindow(second))?;
+        let first_group =
+            self.window_nodes.get(&first).copied().ok_or(BspError::MissingWindow(first))?;
+        let second_group =
+            self.window_nodes.get(&second).copied().ok_or(BspError::MissingWindow(second))?;
         if first == second {
             return Ok(false);
         }
@@ -279,16 +264,15 @@ impl BspTree {
         if !amount.is_finite() {
             return Err(BspError::InvalidRatio(amount));
         }
-        let node = self
-            .window_nodes
-            .get(&window)
-            .copied()
-            .ok_or(BspError::MissingWindow(window))?;
+        let node =
+            self.window_nodes.get(&window).copied().ok_or(BspError::MissingWindow(window))?;
         let Some(parent) = self.parent_of(node) else {
             return Ok(false);
         };
         let Some(BspNode::Split { ratio, first, .. }) = self.nodes.get_mut(&parent) else {
-            return Err(BspError::InvariantViolation("window parent is not a split".into()));
+            return Err(BspError::InvariantViolation(
+                "window parent is not a split".into(),
+            ));
         };
         let delta = if *first == node { amount } else { -amount };
         *ratio = Ratio::new((ratio.get() + delta).clamp(0.05, 0.95))?;
@@ -296,16 +280,15 @@ impl BspTree {
     }
 
     pub fn toggle_orientation(&mut self, window: WindowId) -> Result<bool, BspError> {
-        let node = self
-            .window_nodes
-            .get(&window)
-            .copied()
-            .ok_or(BspError::MissingWindow(window))?;
+        let node =
+            self.window_nodes.get(&window).copied().ok_or(BspError::MissingWindow(window))?;
         let group_has_stack = matches!(
             self.nodes.get(&node),
             Some(BspNode::Group { windows, .. }) if windows.len() > 1
         );
-        let target = if group_has_stack { node } else if let Some(parent) = self.parent_of(node) {
+        let target = if group_has_stack {
+            node
+        } else if let Some(parent) = self.parent_of(node) {
             parent
         } else {
             return Ok(false);
@@ -333,9 +316,10 @@ impl BspTree {
         if !self.contains(window) {
             return Err(BspError::MissingWindow(window));
         }
-        self.fullscreen = if self.fullscreen.is_some_and(|(current, mode)| {
-            current == window && mode == within_gaps
-        }) {
+        self.fullscreen = if self
+            .fullscreen
+            .is_some_and(|(current, mode)| current == window && mode == within_gaps)
+        {
             None
         } else {
             Some((window, within_gaps))
@@ -353,11 +337,8 @@ impl BspTree {
             return Ok(BTreeMap::new());
         };
         if let Some((window, within_gaps)) = self.fullscreen {
-            let group = self
-                .window_nodes
-                .get(&window)
-                .copied()
-                .ok_or(BspError::MissingWindow(window))?;
+            let group =
+                self.window_nodes.get(&window).copied().ok_or(BspError::MissingWindow(window))?;
             let frame = if within_gaps {
                 inset_frame(frame, gaps)
             } else {
@@ -627,26 +608,31 @@ impl BspTree {
             }
             Some(BspNode::Split { axis, ratio, first, second }) => {
                 let horizontal = *axis == Axis::Horizontal;
-                let gap = if horizontal { gaps.horizontal } else { gaps.vertical };
-                let usable = ((if horizontal { frame.size.width } else { frame.size.height })
-                    - gap)
+                let gap = if horizontal {
+                    gaps.horizontal
+                } else {
+                    gaps.vertical
+                };
+                let usable = ((if horizontal {
+                    frame.size.width
+                } else {
+                    frame.size.height
+                }) - gap)
                     .max(0.0);
-                let first_constraints = self.subtree_axis_constraints(
-                    *first,
-                    horizontal,
-                    constraints,
-                    gaps,
-                )?;
-                let second_constraints = self.subtree_axis_constraints(
-                    *second,
-                    horizontal,
-                    constraints,
-                    gaps,
-                )?;
+                let first_constraints =
+                    self.subtree_axis_constraints(*first, horizontal, constraints, gaps)?;
+                let second_constraints =
+                    self.subtree_axis_constraints(*second, horizontal, constraints, gaps)?;
                 let lengths = solve_axis_lengths(
                     &[
-                        AxisConstraints { weight: ratio.get(), ..first_constraints },
-                        AxisConstraints { weight: 1.0 - ratio.get(), ..second_constraints },
+                        AxisConstraints {
+                            weight: ratio.get(),
+                            ..first_constraints
+                        },
+                        AxisConstraints {
+                            weight: 1.0 - ratio.get(),
+                            ..second_constraints
+                        },
                     ],
                     usable,
                 );
@@ -686,7 +672,11 @@ impl BspTree {
                 let second =
                     self.subtree_axis_constraints(*second, horizontal, constraints, gaps)?;
                 if (*axis == Axis::Horizontal) == horizontal {
-                    let gap = if horizontal { gaps.horizontal } else { gaps.vertical };
+                    let gap = if horizontal {
+                        gaps.horizontal
+                    } else {
+                        gaps.vertical
+                    };
                     Ok(AxisConstraints {
                         min: first.min + second.min + gap,
                         fixed: first.fixed.zip(second.fixed).map(|(a, b)| a + b + gap),
@@ -778,30 +768,44 @@ fn split_frame(
     gap: f64,
 ) -> (Rect, Rect) {
     match axis {
-        Axis::Horizontal => {
-            (
-                Rect { size: Size { width: first_length, ..frame.size }, ..frame },
-                Rect {
-                    origin: Point {
-                        x: frame.origin.x + first_length + gap,
-                        ..frame.origin
-                    },
-                    size: Size { width: second_length, ..frame.size },
+        Axis::Horizontal => (
+            Rect {
+                size: Size {
+                    width: first_length,
+                    ..frame.size
                 },
-            )
-        }
-        Axis::Vertical => {
-            (
-                Rect { size: Size { height: first_length, ..frame.size }, ..frame },
-                Rect {
-                    origin: Point {
-                        y: frame.origin.y + first_length + gap,
-                        ..frame.origin
-                    },
-                    size: Size { height: second_length, ..frame.size },
+                ..frame
+            },
+            Rect {
+                origin: Point {
+                    x: frame.origin.x + first_length + gap,
+                    ..frame.origin
                 },
-            )
-        }
+                size: Size {
+                    width: second_length,
+                    ..frame.size
+                },
+            },
+        ),
+        Axis::Vertical => (
+            Rect {
+                size: Size {
+                    height: first_length,
+                    ..frame.size
+                },
+                ..frame
+            },
+            Rect {
+                origin: Point {
+                    y: frame.origin.y + first_length + gap,
+                    ..frame.origin
+                },
+                size: Size {
+                    height: second_length,
+                    ..frame.size
+                },
+            },
+        ),
     }
 }
 
@@ -815,10 +819,7 @@ fn constrain_frame(mut frame: Rect, constraints: WindowConstraints) -> Rect {
 
 fn constrained_length(available: f64, constraints: AxisConstraints) -> f64 {
     let desired = constraints.fixed.unwrap_or(available).max(constraints.min);
-    desired
-        .min(constraints.max.unwrap_or(desired))
-        .min(available)
-        .max(0.0)
+    desired.min(constraints.max.unwrap_or(desired)).min(available).max(0.0)
 }
 
 #[cfg(test)]
@@ -841,30 +842,28 @@ mod tests {
 
         assert!(tree.join(window(3), window(1)).unwrap());
         tree.validate().unwrap();
-        assert_eq!(
-            tree.groups().unwrap(),
-            vec![
-                GroupSnapshot {
-                    id: GroupId(1),
-                    axis: Axis::Horizontal,
-                    windows: vec![window(1), window(3)],
-                    selected: 1,
-                },
-                GroupSnapshot {
-                    id: GroupId(2),
-                    axis: Axis::Horizontal,
-                    windows: vec![window(2)],
-                    selected: 0,
-                },
-            ]
-        );
+        assert_eq!(tree.groups().unwrap(), vec![
+            GroupSnapshot {
+                id: GroupId(1),
+                axis: Axis::Horizontal,
+                windows: vec![window(1), window(3)],
+                selected: 1,
+            },
+            GroupSnapshot {
+                id: GroupId(2),
+                axis: Axis::Horizontal,
+                windows: vec![window(2)],
+                selected: 0,
+            },
+        ]);
 
         assert!(tree.unjoin(window(3)).unwrap());
         tree.validate().unwrap();
-        assert_eq!(
-            tree.windows().collect::<Vec<_>>(),
-            vec![window(1), window(2), window(3)]
-        );
+        assert_eq!(tree.windows().collect::<Vec<_>>(), vec![
+            window(1),
+            window(2),
+            window(3)
+        ]);
     }
 
     #[test]
@@ -939,15 +938,12 @@ mod tests {
         let mut tree = BspTree::default();
         tree.insert_after(None, window(1)).unwrap();
         tree.insert_after(Some(window(1)), window(2)).unwrap();
-        let constraints = BTreeMap::from([(
-            window(1),
-            WindowConstraints {
-                resizable: false,
-                preferred_size: Size { width: 300.0, height: 200.0 },
-                min_size: None,
-                max_size: None,
-            },
-        )]);
+        let constraints = BTreeMap::from([(window(1), WindowConstraints {
+            resizable: false,
+            preferred_size: Size { width: 300.0, height: 200.0 },
+            min_size: None,
+            max_size: None,
+        })]);
 
         let frames = tree
             .layout(

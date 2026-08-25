@@ -87,9 +87,7 @@ impl CoreState {
         })
     }
 
-    pub fn config(&self) -> &CoreConfig {
-        &self.config
-    }
+    pub fn config(&self) -> &CoreConfig { &self.config }
 
     pub fn snapshot(&self) -> Arc<CoreSnapshot> {
         let displays = self
@@ -120,23 +118,13 @@ impl CoreState {
             .collect();
         let mut workspaces = self
             .workspaces
-            .snapshots_with_layout(
-                &display_frames,
-                &self.config.layout,
-                &window_constraints,
-            )
+            .snapshots_with_layout(&display_frames, &self.config.layout, &window_constraints)
             .expect("committed workspace state must satisfy BSP invariants");
         for workspace in &mut workspaces {
-            workspace.last_tiled_window = self
-                .focus
-                .last_tiled_by_workspace
-                .get(&workspace.id)
-                .copied();
-            workspace.last_floating_window = self
-                .focus
-                .last_floating_by_workspace
-                .get(&workspace.id)
-                .copied();
+            workspace.last_tiled_window =
+                self.focus.last_tiled_by_workspace.get(&workspace.id).copied();
+            workspace.last_floating_window =
+                self.focus.last_floating_by_workspace.get(&workspace.id).copied();
         }
         let windows = self
             .platform
@@ -193,7 +181,6 @@ impl CoreState {
                 .collect(),
         }
     }
-
 }
 
 pub fn transition(state: &mut CoreState, input: Input) -> Result<Transition, CoreError> {
@@ -227,20 +214,20 @@ mod tests {
     use crate::core::command::{
         Command, DisplayCommand, MissionControlCommand, WindowCommand, WorkspaceCommand,
     };
-    use crate::core::effect::{Effect, EffectCompletion, EffectOutcome};
     use crate::core::constraints::WindowConstraints;
+    use crate::core::effect::{Effect, EffectCompletion, EffectOutcome};
     use crate::core::geometry::{Rect, Size};
-    use crate::core::ids::{ApplicationId, EffectId, Generation, SpaceId, TransactionId, WorkspaceNumber};
+    use crate::core::ids::{
+        ApplicationId, EffectId, Generation, SpaceId, TransactionId, WorkspaceNumber,
+    };
     use crate::core::input::{
-        DisplayObservation, DisplayTopologyObservation, Observation,
-        PlatformSnapshotObservation, WindowObservation,
+        DisplayObservation, DisplayTopologyObservation, Observation, PlatformSnapshotObservation,
+        WindowObservation,
     };
     use crate::core::interaction::{DragCandidate, DragObservation};
     use crate::core::rules::{WindowRule, WorkspaceTarget};
 
-    fn number(value: u8) -> WorkspaceNumber {
-        WorkspaceNumber::try_from(value).unwrap()
-    }
+    fn number(value: u8) -> WorkspaceNumber { WorkspaceNumber::try_from(value).unwrap() }
 
     fn window(index: u32) -> WindowId {
         WindowId::new(ApplicationId(42), NonZeroU32::new(index).unwrap())
@@ -347,10 +334,10 @@ mod tests {
 
     #[test]
     fn persisted_state_rejects_unknown_schema() {
-        let error = CoreState::from_persisted(
-            CoreConfig::default(),
-            &PersistedState { schema_version: 3, workspaces: Vec::new() },
-        )
+        let error = CoreState::from_persisted(CoreConfig::default(), &PersistedState {
+            schema_version: 3,
+            workspaces: Vec::new(),
+        })
         .err()
         .unwrap();
         assert!(matches!(error, CoreError::InvalidCommand(_)));
@@ -365,7 +352,10 @@ mod tests {
                 generation: Generation(1),
                 displays: vec![display("main", 9)],
                 active_display: Some(DisplayId("main".into())),
-                windows: vec![observed_window(first, "main"), observed_window(second, "main")],
+                windows: vec![
+                    observed_window(first, "main"),
+                    observed_window(second, "main"),
+                ],
                 focused_window: Some(first),
             })),
             Input::Command(Command::Window(WindowCommand::ToggleFloating {
@@ -428,12 +418,10 @@ mod tests {
             manage: true,
         });
         let mut state = CoreState::new(config);
-        let first = observe(
-            &mut state,
-            1,
-            vec![display("main", 9)],
-            vec![observed_window(window(1), "main")],
-        )
+        let first = observe(&mut state, 1, vec![display("main", 9)], vec![observed_window(
+            window(1),
+            "main",
+        )])
         .unwrap();
 
         let managed = &first.snapshot.windows[0];
@@ -449,11 +437,14 @@ mod tests {
 
         let removed = observe(&mut state, 2, vec![display("main", 9)], Vec::new()).unwrap();
         assert!(removed.snapshot.windows.is_empty());
-        assert!(removed
-            .snapshot
-            .workspaces
-            .iter()
-            .all(|workspace| workspace.groups.is_empty() && workspace.floating_windows.is_empty()));
+        assert!(
+            removed
+                .snapshot
+                .workspaces
+                .iter()
+                .all(|workspace| workspace.groups.is_empty()
+                    && workspace.floating_windows.is_empty())
+        );
     }
 
     #[test]
@@ -472,12 +463,9 @@ mod tests {
         });
         let mut state = CoreState::new(config);
         let tracked = window(1);
-        let initial = observe(
-            &mut state,
-            1,
-            vec![display("main", 9)],
-            vec![observed_window(tracked, "main")],
-        )
+        let initial = observe(&mut state, 1, vec![display("main", 9)], vec![observed_window(
+            tracked, "main",
+        )])
         .unwrap();
         let original_workspace = initial.snapshot.windows[0].workspace.unwrap();
 
@@ -489,13 +477,11 @@ mod tests {
                 },
             )))
             .unwrap();
-        let observed_after_switch = observe(
-            &mut state,
-            2,
-            vec![display("main", 9)],
-            vec![observed_window(tracked, "main")],
-        )
-        .unwrap();
+        let observed_after_switch =
+            observe(&mut state, 2, vec![display("main", 9)], vec![observed_window(
+                tracked, "main",
+            )])
+            .unwrap();
 
         assert_eq!(
             observed_after_switch.snapshot.windows[0].workspace,
@@ -559,34 +545,29 @@ mod tests {
     #[test]
     fn repeated_identical_observation_has_an_empty_change_set() {
         let mut state = CoreState::new(CoreConfig::default());
-        let initial = observe(
-            &mut state,
-            1,
-            vec![display("main", 9)],
-            vec![observed_window(window(1), "main")],
-        )
+        let initial = observe(&mut state, 1, vec![display("main", 9)], vec![observed_window(
+            window(1),
+            "main",
+        )])
         .unwrap();
         assert_eq!(
             initial.snapshot.workspaces[0].layout_frames[&window(1)],
             Rect::new(0.0, 0.0, 1200.0, 800.0).unwrap()
         );
-        assert_eq!(
-            initial.effects,
-            vec![Effect::ApplyLayout(crate::core::effect::LayoutRequest {
+        assert_eq!(initial.effects, vec![Effect::ApplyLayout(
+            crate::core::effect::LayoutRequest {
                 workspace: initial.snapshot.workspaces[0].id,
                 frames: vec![crate::core::effect::WindowFrame {
                     window: window(1),
                     frame: Rect::new(0.0, 0.0, 1200.0, 800.0).unwrap(),
                 }],
-            })]
-        );
+            }
+        )]);
 
-        let repeated = observe(
-            &mut state,
-            1,
-            vec![display("main", 9)],
-            vec![observed_window(window(1), "main")],
-        )
+        let repeated = observe(&mut state, 1, vec![display("main", 9)], vec![observed_window(
+            window(1),
+            "main",
+        )])
         .unwrap();
 
         assert!(repeated.changes.displays.is_empty());
@@ -612,12 +593,10 @@ mod tests {
             manage: false,
         });
         let mut state = CoreState::new(config);
-        let transition = observe(
-            &mut state,
-            1,
-            vec![display("main", 9)],
-            vec![observed_window(window(1), "main")],
-        )
+        let transition = observe(&mut state, 1, vec![display("main", 9)], vec![observed_window(
+            window(1),
+            "main",
+        )])
         .unwrap();
 
         assert!(transition.snapshot.windows.is_empty());
@@ -749,14 +728,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(focused.snapshot.focused_window, Some(second));
-        assert!(focused.effects.iter().all(|effect| !matches!(
-            effect,
-            Effect::FocusWindow(_) | Effect::RaiseWindow(_)
-        )));
-        assert_eq!(
-            focused.snapshot.workspaces[0].last_tiled_window,
-            Some(second)
+        assert!(
+            focused
+                .effects
+                .iter()
+                .all(|effect| !matches!(effect, Effect::FocusWindow(_) | Effect::RaiseWindow(_)))
         );
+        assert_eq!(focused.snapshot.workspaces[0].last_tiled_window, Some(second));
     }
 
     #[test]
@@ -835,16 +813,10 @@ mod tests {
             .unwrap();
 
         let moved = state.snapshot();
-        let workspace_two = moved
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.number == number(2))
-            .unwrap();
-        let workspace_one = moved
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.number == number(1))
-            .unwrap();
+        let workspace_two =
+            moved.workspaces.iter().find(|workspace| workspace.number == number(2)).unwrap();
+        let workspace_one =
+            moved.workspaces.iter().find(|workspace| workspace.number == number(1)).unwrap();
         assert_eq!(
             moved.windows.iter().find(|window| window.id == focused).unwrap().workspace,
             Some(workspace_two.id)
@@ -852,15 +824,10 @@ mod tests {
 
         // A later platform observation must not undo an explicit workspace move
         // merely because the window has no matching application rule.
-        observe(
-            &mut state,
-            2,
-            vec![display("main", 9)],
-            vec![
-                observed_window(focused, "main"),
-                observed_window(window(2), "main"),
-            ],
-        )
+        observe(&mut state, 2, vec![display("main", 9)], vec![
+            observed_window(focused, "main"),
+            observed_window(window(2), "main"),
+        ])
         .unwrap();
         assert_eq!(
             state
@@ -902,7 +869,10 @@ mod tests {
                 display: DisplayId("main".into()),
             })))
             .unwrap();
-        assert_eq!(last.snapshot.displays[0].active_workspace, Some(workspace_one.id));
+        assert_eq!(
+            last.snapshot.displays[0].active_workspace,
+            Some(workspace_one.id)
+        );
     }
 
     #[test]
@@ -968,9 +938,11 @@ mod tests {
             })))
             .unwrap();
         assert_eq!(focused.snapshot.focused_window, Some(second));
-        assert!(focused.effects.iter().any(|effect| {
-            matches!(effect, Effect::FocusWindow(window) if *window == second)
-        }));
+        assert!(
+            focused.effects.iter().any(|effect| {
+                matches!(effect, Effect::FocusWindow(window) if *window == second)
+            })
+        );
 
         let before = focused.snapshot.workspaces[0].layout_frames.clone();
         let resized = state
@@ -1012,9 +984,9 @@ mod tests {
             )))
             .unwrap();
         state
-            .transition(Input::Command(Command::Window(
-                WindowCommand::ToggleFloating { window: Some(floating) },
-            )))
+            .transition(Input::Command(Command::Window(WindowCommand::ToggleFloating {
+                window: Some(floating),
+            })))
             .unwrap();
 
         let to_floating = state
@@ -1049,9 +1021,9 @@ mod tests {
             )))
             .unwrap();
         state
-            .transition(Input::Command(Command::Window(
-                WindowCommand::ToggleFloating { window: Some(id) },
-            )))
+            .transition(Input::Command(Command::Window(WindowCommand::ToggleFloating {
+                window: Some(id),
+            })))
             .unwrap();
 
         let mut moved = initial;
@@ -1068,10 +1040,7 @@ mod tests {
             )))
             .unwrap();
         assert!(refreshed.snapshot.windows[0].floating);
-        assert_eq!(
-            refreshed.snapshot.workspaces[0].layout_frames[&id],
-            moved.frame
-        );
+        assert_eq!(refreshed.snapshot.workspaces[0].layout_frames[&id], moved.frame);
     }
 
     #[test]
@@ -1091,12 +1060,10 @@ mod tests {
             .unwrap();
 
         let moved = state
-            .transition(Input::Command(Command::Display(
-                DisplayCommand::MoveWindowTo {
-                    display: DisplayId("right".into()),
-                    window: Some(id),
-                },
-            )))
+            .transition(Input::Command(Command::Display(DisplayCommand::MoveWindowTo {
+                display: DisplayId("right".into()),
+                window: Some(id),
+            })))
             .unwrap();
 
         let workspace = moved.snapshot.windows[0].workspace.unwrap();
@@ -1127,10 +1094,11 @@ mod tests {
 
         let transition = state.transition(Input::Command(Command::SaveAndExit)).unwrap();
 
-        assert!(matches!(
-            transition.effects.as_slice(),
-            [Effect::Save(PersistedState { schema_version: 2, .. }), Effect::Shutdown(_), ..]
-        ));
+        assert!(matches!(transition.effects.as_slice(), [
+            Effect::Save(PersistedState { schema_version: 2, .. }),
+            Effect::Shutdown(_),
+            ..
+        ]));
     }
 
     #[test]
@@ -1161,13 +1129,14 @@ mod tests {
         let second_frame = state.snapshot().workspaces[0].layout_frames[&second];
 
         let updated = state
-            .transition(Input::Observation(Observation::Drag(
-                DragObservation::Updated {
-                    window: first,
+            .transition(Input::Observation(Observation::Drag(DragObservation::Updated {
+                window: first,
+                frame: second_frame,
+                candidates: vec![DragCandidate {
+                    window: second,
                     frame: second_frame,
-                    candidates: vec![DragCandidate { window: second, frame: second_frame }],
-                },
-            )))
+                }],
+            })))
             .unwrap();
         assert_eq!(updated.snapshot.drag.target, Some(second));
 
@@ -1183,8 +1152,14 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(after, before.into_iter().rev().collect::<Vec<_>>());
         assert_eq!(committed.snapshot.drag, Default::default());
-        assert_eq!(committed.snapshot.workspaces[0].layout_frames[&first], second_frame);
-        assert_eq!(committed.snapshot.workspaces[0].layout_frames[&second], first_frame);
+        assert_eq!(
+            committed.snapshot.workspaces[0].layout_frames[&first],
+            second_frame
+        );
+        assert_eq!(
+            committed.snapshot.workspaces[0].layout_frames[&second],
+            first_frame
+        );
     }
 
     #[test]
