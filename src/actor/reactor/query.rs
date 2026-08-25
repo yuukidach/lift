@@ -39,12 +39,15 @@ impl Reactor {
             return;
         };
 
-        let workspaces = crate::interfaces::ui::workspace_data(&snapshot);
+        let (workspaces, display_starts) =
+            crate::interfaces::ui::grouped_workspace_data(&snapshot);
         let active_space_is_activated = self.is_space_active(active_space);
         let active_workspace = display.active_workspace;
         let active_workspace_idx = workspaces
             .iter()
-            .position(|workspace| workspace.is_active)
+            .position(|workspace| {
+                active_workspace.is_some_and(|active| workspace.id == active.0.to_string())
+            })
             .map(|index| index as u64);
         let windows = crate::interfaces::ui::active_workspace_windows(&snapshot);
 
@@ -52,6 +55,7 @@ impl Reactor {
             active_space,
             active_space_is_activated,
             workspaces,
+            display_starts,
             active_workspace_idx,
             active_workspace,
             windows,

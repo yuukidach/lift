@@ -45,6 +45,8 @@ const FONT_SIZE: f64 = 12.0;
 const LABEL_HORIZONTAL_INSET: f64 = 4.0;
 const APP_ICON_SIZE: f64 = 13.0;
 const APP_ICON_SPACING: f64 = 3.0;
+const DISPLAY_GROUP_SPACING: f64 = 10.0;
+const DISPLAY_SEPARATOR_HEIGHT: f64 = 11.0;
 
 #[derive(Debug, Clone, Copy)]
 pub enum MenuAction {
@@ -81,6 +83,7 @@ impl MenuIcon {
             SpaceId::new(0),
             true,
             &[],
+            &[],
             &MenuShortcuts::default(),
         );
         status_item.setMenu(Some(&menu));
@@ -105,6 +108,7 @@ impl MenuIcon {
         active_space: SpaceId,
         active_space_is_activated: bool,
         workspaces: &[WorkspaceData],
+        display_starts: &[usize],
         _active_workspace: Option<WorkspaceId>,
         _windows: &[WindowData],
         settings: &MenuBarSettings,
@@ -117,6 +121,7 @@ impl MenuIcon {
             active_space,
             active_space_is_activated,
             workspaces,
+            display_starts,
             &shortcuts,
         );
         self.status_item.setMenu(Some(&menu));
@@ -134,33 +139,35 @@ impl MenuIcon {
                 }
             }
         };
+        let mut display_group = 0;
+        let grouped_workspaces = workspaces
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, workspace)| {
+                if display_starts.binary_search(&index).is_ok() {
+                    display_group += 1;
+                }
+                (display_group, workspace)
+            })
+            .collect::<Vec<_>>();
 
-        let render_inputs = match (mode, style) {
-            (MenuBarDisplayMode::All, WorkspaceDisplayStyle::Layout) => {
-                let filtered = if settings.show_empty {
-                    workspaces.to_vec()
-                } else {
-                    workspaces
-                        .iter()
-                        .cloned()
-                        .filter(|w| w.window_count > 0 || w.is_active)
-                        .collect::<Vec<_>>()
-                };
-                filtered
-                    .into_iter()
-                    .map(|ws| WorkspaceRenderInput {
+        let render_inputs: Vec<WorkspaceRenderInput> = match (mode, style) {
+            (MenuBarDisplayMode::All, WorkspaceDisplayStyle::Layout) => grouped_workspaces
+                .into_iter()
+                .filter(|(_, ws)| settings.show_empty || ws.window_count > 0 || ws.is_active)
+                .map(|(display_group, ws)| WorkspaceRenderInput {
                         workspace: ws,
                         label: String::new(),
                         show_windows: true,
                         app_icon: None,
+                        display_group,
                     })
-                    .collect()
-            }
-            (MenuBarDisplayMode::All, WorkspaceDisplayStyle::Label) => workspaces
-                .iter()
-                .cloned()
-                .filter(|w| settings.show_empty || w.window_count > 0 || w.is_active)
-                .map(|ws| {
+                .collect(),
+            (MenuBarDisplayMode::All, WorkspaceDisplayStyle::Label) => grouped_workspaces
+                .into_iter()
+                .filter(|(_, ws)| settings.show_empty || ws.window_count > 0 || ws.is_active)
+                .map(|(display_group, ws)| {
                     let app_icon = primary_app_icon(&ws);
                     let mut clone = ws.clone();
                     clone.windows.clear();
@@ -170,39 +177,38 @@ impl MenuIcon {
                         label: label_for(&ws),
                         show_windows: false,
                         app_icon,
+                        display_group,
                     }
                 })
                 .collect(),
-            (MenuBarDisplayMode::Active, WorkspaceDisplayStyle::Layout) => workspaces
-                .iter()
-                .cloned()
-                .find(|w| w.is_active)
-                .map(|ws| {
-                    vec![WorkspaceRenderInput {
+            (MenuBarDisplayMode::Active, WorkspaceDisplayStyle::Layout) => grouped_workspaces
+                .into_iter()
+                .filter(|(_, ws)| ws.is_active)
+                .map(|(display_group, ws)| WorkspaceRenderInput {
                         workspace: ws,
                         label: String::new(),
                         show_windows: true,
                         app_icon: None,
-                    }]
+                        display_group,
                 })
-                .unwrap_or_default(),
-            (MenuBarDisplayMode::Active, WorkspaceDisplayStyle::Label) => workspaces
-                .iter()
-                .cloned()
-                .find(|w| w.is_active)
-                .map(|ws| {
+                .collect(),
+            (MenuBarDisplayMode::Active, WorkspaceDisplayStyle::Label) => grouped_workspaces
+                .into_iter()
+                .filter(|(_, ws)| ws.is_active)
+                .map(|(display_group, ws)| {
                     let app_icon = primary_app_icon(&ws);
                     let mut clone = ws.clone();
                     clone.windows.clear();
                     clone.window_count = 0;
-                    vec![WorkspaceRenderInput {
+                    WorkspaceRenderInput {
                         workspace: clone,
                         label: label_for(&ws),
                         show_windows: false,
                         app_icon,
-                    }]
+                        display_group,
+                    }
                 })
-                .unwrap_or_default(),
+                .collect(),
         };
 
         if render_inputs.is_empty() {
@@ -260,6 +266,7 @@ struct MenuIconLayout {
     total_width: f64,
     total_height: f64,
     workspaces: Vec<WorkspaceRenderData>,
+    separators: Vec<f64>,
 }
 
 struct WorkspaceRenderData {
@@ -278,6 +285,7 @@ struct WorkspaceRenderInput {
     label: String,
     show_windows: bool,
     app_icon: Option<Retained<NSImage>>,
+    display_group: usize,
 }
 
 fn primary_app_icon(workspace: &WorkspaceData) -> Option<Retained<NSImage>> {
@@ -352,6 +360,7 @@ fn build_status_menu(
     _active_space: SpaceId,
     active_space_is_activated: bool,
     workspaces: &[WorkspaceData],
+    display_starts: &[usize],
     shortcuts: &MenuShortcuts,
 ) -> Retained<NSMenu> {
     let title = NSString::from_str("Lift");
@@ -382,7 +391,10 @@ fn build_status_menu(
     ));
     add_separator(&ws_submenu);
 
-    for ws in workspaces {
+    for (workspace_index, ws) in workspaces.iter().enumerate() {
+        if display_starts.binary_search(&workspace_index).is_ok() {
+            add_separator(&ws_submenu);
+        }
         let ws_label = if ws.name.is_empty() {
             format!("Workspace {}", ws.number)
         } else {
@@ -400,7 +412,7 @@ fn build_status_menu(
             Some(handler),
             Some(ws.is_active),
             ws_shortcut,
-            Some(ws.index as isize),
+            workspace_number_to_global_slot(ws.number).map(|slot| slot as isize),
         );
         ws_submenu.addItem(&ws_item);
     }
@@ -784,6 +796,7 @@ fn build_layout(
     let total_height = CELL_HEIGHT;
 
     let mut workspaces = Vec::with_capacity(inputs.len());
+    let mut separators = Vec::new();
     let mut next_x = 0.0;
     for (i, input) in inputs.iter().enumerate() {
         let workspace = &input.workspace;
@@ -813,7 +826,11 @@ fn build_layout(
         };
 
         if i > 0 {
-            next_x += CELL_SPACING;
+            let display_boundary = input.display_group != inputs[i - 1].display_group;
+            if display_boundary {
+                separators.push(next_x + DISPLAY_GROUP_SPACING / 2.0);
+            }
+            next_x += inter_workspace_spacing(display_boundary);
         }
         let label_width = label_line.as_ref().map_or(0.0, |line| line.width);
         let has_icon = input.app_icon.is_some();
@@ -883,6 +900,7 @@ fn build_layout(
         total_width: next_x,
         total_height,
         workspaces,
+        separators,
     }
 }
 
@@ -893,6 +911,10 @@ fn label_cell_width(label_width: f64, has_icon: bool) -> f64 {
         0.0
     };
     CELL_WIDTH.max(label_width + icon_width + LABEL_HORIZONTAL_INSET * 2.0)
+}
+
+fn inter_workspace_spacing(display_boundary: bool) -> f64 {
+    if display_boundary { DISPLAY_GROUP_SPACING } else { CELL_SPACING }
 }
 
 fn add_rounded_rect(ctx: &CGContext, x: f64, y: f64, w: f64, h: f64, r: f64) {
@@ -931,6 +953,15 @@ define_class!(
                 CGContext::clear_rect(Some(cg), bounds);
 
                 let y_offset = (bounds.size.height - layout.total_height) / 2.0;
+
+                CGContext::set_rgb_fill_color(Some(cg), 1.0, 1.0, 1.0, 0.4);
+                for separator_x in &layout.separators {
+                    let separator = CGRect::new(
+                        CGPoint::new(*separator_x - 0.5, y_offset + 2.0),
+                        CGSize::new(1.0, DISPLAY_SEPARATOR_HEIGHT),
+                    );
+                    CGContext::fill_rect(Some(cg), separator);
+                }
 
                 for workspace in layout.workspaces.iter() {
                     let rect = workspace.bg_rect;
@@ -1033,7 +1064,10 @@ define_class!(
 
 #[cfg(test)]
 mod tests {
-    use super::{APP_ICON_SIZE, APP_ICON_SPACING, LABEL_HORIZONTAL_INSET, label_cell_width};
+    use super::{
+        APP_ICON_SIZE, APP_ICON_SPACING, CELL_SPACING, DISPLAY_GROUP_SPACING,
+        LABEL_HORIZONTAL_INSET, inter_workspace_spacing, label_cell_width,
+    };
 
     #[test]
     fn label_cells_reserve_space_for_the_primary_app_icon() {
@@ -1043,5 +1077,12 @@ mod tests {
             label_cell_width(label_width, true),
             label_width + APP_ICON_SIZE + APP_ICON_SPACING + LABEL_HORIZONTAL_INSET * 2.0
         );
+    }
+
+    #[test]
+    fn display_boundaries_are_wider_than_workspace_spacing() {
+        assert_eq!(inter_workspace_spacing(false), CELL_SPACING);
+        assert_eq!(inter_workspace_spacing(true), DISPLAY_GROUP_SPACING);
+        assert!(DISPLAY_GROUP_SPACING > CELL_SPACING);
     }
 }

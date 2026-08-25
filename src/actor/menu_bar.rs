@@ -19,6 +19,7 @@ pub struct Update {
     pub active_space: SpaceId,
     pub active_space_is_activated: bool,
     pub workspaces: Vec<WorkspaceData>,
+    pub display_starts: Vec<usize>,
     pub active_workspace_idx: Option<u64>,
     pub active_workspace: Option<crate::core::ids::WorkspaceId>,
     pub windows: Vec<WindowData>,
@@ -151,6 +152,7 @@ impl Menu {
             update.active_space_is_activated,
             update.active_workspace_idx,
             &update.workspaces,
+            &update.display_starts,
             &update.windows,
         );
         if self.last_signature == Some(sig) {
@@ -163,6 +165,7 @@ impl Menu {
             update.active_space,
             update.active_space_is_activated,
             &update.workspaces,
+            &update.display_starts,
             update.active_workspace,
             &update.windows,
             menu_bar_settings,
@@ -196,7 +199,7 @@ impl Menu {
                 self.send_layout_command(LayoutCommand::PrevWorkspace(None));
             }
             MenuAction::SwitchToWorkspace(workspace) => {
-                self.send_layout_command(LayoutCommand::SwitchToWorkspace(workspace));
+                self.send_layout_command(LayoutCommand::SwitchToGlobalSlot(workspace));
             }
             MenuAction::ToggleSpaceActivated => {
                 self.reactor_tx.send(reactor::Event::Command(reactor::Command::Reactor(
@@ -286,6 +289,7 @@ fn sig(
     active_space_is_activated: bool,
     active_workspace: Option<u64>,
     workspaces: &[WorkspaceData],
+    display_starts: &[usize],
     windows: &[WindowData],
 ) -> u64 {
     let mut x = active_space
@@ -307,6 +311,12 @@ fn sig(
     for ws in workspaces {
         let v = workspace_sig(ws);
         x ^= v.rotate_left(9);
+        s = s.wrapping_add(v);
+    }
+
+    for &start in display_starts {
+        let v = (start as u64).rotate_left(41);
+        x ^= v;
         s = s.wrapping_add(v);
     }
 
@@ -379,9 +389,19 @@ mod tests {
         let base = vec![workspace("main")];
         let changed = vec![workspace("coding")];
 
-        let before = sig(1, true, Some(0), &base, &[]);
-        let after = sig(1, true, Some(0), &changed, &[]);
+        let before = sig(1, true, Some(0), &base, &[], &[]);
+        let after = sig(1, true, Some(0), &changed, &[], &[]);
 
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn signature_changes_when_display_boundary_changes() {
+        let workspaces = vec![workspace("one"), workspace("two")];
+
+        let single_display = sig(1, true, Some(0), &workspaces, &[], &[]);
+        let two_displays = sig(1, true, Some(0), &workspaces, &[1], &[]);
+
+        assert_ne!(single_display, two_displays);
     }
 }

@@ -69,6 +69,22 @@ pub fn workspace_data(snapshot: &CoreSnapshot) -> Vec<WorkspaceData> {
     workspace_data_for_display(snapshot, display)
 }
 
+pub fn grouped_workspace_data(snapshot: &CoreSnapshot) -> (Vec<WorkspaceData>, Vec<usize>) {
+    let mut workspaces = Vec::new();
+    let mut display_starts = Vec::new();
+    for display in &snapshot.displays {
+        let display_workspaces = workspace_data_for_display(snapshot, display);
+        if display_workspaces.is_empty() {
+            continue;
+        }
+        if !workspaces.is_empty() {
+            display_starts.push(workspaces.len());
+        }
+        workspaces.extend(display_workspaces);
+    }
+    (workspaces, display_starts)
+}
+
 pub fn workspace_data_for_display(
     snapshot: &CoreSnapshot,
     display: &DisplaySnapshot,
@@ -232,6 +248,56 @@ mod tests {
         assert_eq!(
             workspaces.iter().map(|workspace| workspace.number).collect::<Vec<_>>(),
             vec![1, 9, 0]
+        );
+    }
+
+    #[test]
+    fn grouped_workspace_views_mark_display_boundaries_and_keep_each_active_workspace() {
+        let left = DisplayId("left".into());
+        let right = DisplayId("right".into());
+        let workspace = |id, number, display: &DisplayId| WorkspaceSnapshot {
+            id: WorkspaceId(id),
+            number: WorkspaceNumber::try_from(number).unwrap(),
+            name: format!("Workspace {number}"),
+            display: display.clone(),
+            groups: Vec::new(),
+            floating_windows: Vec::new(),
+            last_tiled_window: None,
+            last_floating_window: None,
+            layout_frames: BTreeMap::new(),
+        };
+        let display = |id: &DisplayId, active_workspace| DisplaySnapshot {
+            id: id.clone(),
+            frame: Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap(),
+            space: Some(SpaceId(active_workspace)),
+            is_active_context: id == &left,
+            active_workspace: Some(WorkspaceId(active_workspace)),
+            last_workspace: None,
+        };
+        let snapshot = CoreSnapshot {
+            displays: vec![display(&left, 1), display(&right, 2)],
+            workspaces: vec![
+                workspace(1, 1, &left),
+                workspace(3, 3, &left),
+                workspace(2, 2, &right),
+            ],
+            ..CoreSnapshot::default()
+        };
+
+        let (workspaces, display_starts) = grouped_workspace_data(&snapshot);
+
+        assert_eq!(display_starts, vec![2]);
+        assert_eq!(
+            workspaces.iter().map(|workspace| workspace.number).collect::<Vec<_>>(),
+            vec![1, 3, 2]
+        );
+        assert_eq!(
+            workspaces
+                .iter()
+                .filter(|workspace| workspace.is_active)
+                .map(|workspace| workspace.number)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
         );
     }
 }
