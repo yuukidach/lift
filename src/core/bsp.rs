@@ -52,6 +52,13 @@ enum BspNode {
     },
 }
 
+#[derive(Clone, Copy, Debug)]
+enum SplitRatioChange {
+    GrowSelectedBy(f64),
+    MoveBoundaryBy(f64),
+    SetSelectedLength { old: f64, new: f64 },
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct BspTree {
     root: Option<NodeId>,
@@ -281,13 +288,7 @@ impl BspTree {
         let Some(parent) = self.parent_of(node) else {
             return Ok(false);
         };
-        let Some(BspNode::Split { ratio, first, .. }) = self.nodes.get_mut(&parent) else {
-            return Err(BspError::InvariantViolation(
-                "window parent is not a split".into(),
-            ));
-        };
-        let delta = if *first == node { amount } else { -amount };
-        *ratio = Ratio::new((ratio.get() + delta).clamp(0.05, 0.95))?;
+        self.update_split_ratio(parent, node, SplitRatioChange::GrowSelectedBy(amount))?;
         Ok(true)
     }
 
@@ -295,30 +296,128 @@ impl BspTree {
         &mut self,
         window: WindowId,
         axis: Axis,
-        amount: f64,
+        boundary_delta: f64,
     ) -> Result<bool, BspError> {
-        if !amount.is_finite() {
-            return Err(BspError::InvalidRatio(amount));
+        if !boundary_delta.is_finite() {
+            return Err(BspError::InvalidRatio(boundary_delta));
         }
-        let mut child =
+        let child =
             self.window_nodes.get(&window).copied().ok_or(BspError::MissingWindow(window))?;
+        self.update_nearest_axis_ratio(
+            child,
+            axis,
+            SplitRatioChange::MoveBoundaryBy(boundary_delta),
+            true,
+        )
+    }
+
+    pub fn resize_from_frames(
+        &mut self,
+        window: WindowId,
+        old_frame: Rect,
+        new_frame: Rect,
+    ) -> Result<bool, BspError> {
+        let node =
+            self.window_nodes.get(&window).copied().ok_or(BspError::MissingWindow(window))?;
+        let width_changed = (new_frame.size.width - old_frame.size.width).abs() > 0.5;
+        let height_changed = (new_frame.size.height - old_frame.size.height).abs() > 0.5;
+        let mut changed = false;
+        if width_changed {
+            changed |= self.update_nearest_axis_ratio(
+                node,
+                Axis::Horizontal,
+                SplitRatioChange::SetSelectedLength {
+                    old: old_frame.size.width,
+                    new: new_frame.size.width,
+                },
+                false,
+            )?;
+        }
+        if height_changed {
+            changed |= self.update_nearest_axis_ratio(
+                node,
+                Axis::Vertical,
+                SplitRatioChange::SetSelectedLength {
+                    old: old_frame.size.height,
+                    new: new_frame.size.height,
+                },
+                false,
+            )?;
+        }
+        Ok(changed)
+    }
+
+    fn update_nearest_axis_ratio(
+        &mut self,
+        mut child: NodeId,
+        axis: Axis,
+        change: SplitRatioChange,
+        continue_when_limited: bool,
+    ) -> Result<bool, BspError> {
         while let Some(parent) = self.parent_of(child) {
-            let Some(BspNode::Split {
-                axis: split_axis, ratio, first, ..
-            }) = self.nodes.get_mut(&parent)
-            else {
+            let Some(BspNode::Split { axis: split_axis, .. }) = self.nodes.get(&parent) else {
                 return Err(BspError::InvariantViolation(
                     "window ancestor is not a split".into(),
                 ));
             };
             if *split_axis == axis {
-                let delta = if *first == child { amount } else { -amount };
-                *ratio = Ratio::new((ratio.get() + delta).clamp(0.05, 0.95))?;
-                return Ok(true);
+                let changed = self.update_split_ratio(parent, child, change)?;
+                if changed || !continue_when_limited {
+                    return Ok(changed);
+                }
             }
             child = parent;
         }
         Ok(false)
+    }
+
+    fn update_split_ratio(
+        &mut self,
+        split: NodeId,
+        selected_child: NodeId,
+        change: SplitRatioChange,
+    ) -> Result<bool, BspError> {
+        let Some(BspNode::Split { ratio, first, .. }) = self.nodes.get_mut(&split) else {
+            return Err(BspError::InvariantViolation(
+                "ratio update target is not a split".into(),
+            ));
+        };
+        let current = ratio.get();
+        let is_first = *first == selected_child;
+        let requested = match change {
+            SplitRatioChange::GrowSelectedBy(amount) => {
+                current + if is_first { amount } else { -amount }
+            }
+            // Directional resize moves the divider in screen coordinates.
+            // Moving it right/down grows first and shrinks second; moving it
+            // left/up does the inverse.
+            SplitRatioChange::MoveBoundaryBy(delta) => current + delta,
+            SplitRatioChange::SetSelectedLength { old, new } => {
+                if !old.is_finite() || !new.is_finite() || old <= 0.0 {
+                    return Ok(false);
+                }
+                let selected_ratio = if is_first { current } else { 1.0 - current };
+                if selected_ratio <= f64::EPSILON {
+                    return Ok(false);
+                }
+                let parent_length = old / selected_ratio;
+                if !parent_length.is_finite() || parent_length <= 0.0 {
+                    return Ok(false);
+                }
+                let resized_selected_ratio = new / parent_length;
+                if is_first {
+                    resized_selected_ratio
+                } else {
+                    1.0 - resized_selected_ratio
+                }
+            }
+        };
+        let next = requested.clamp(0.05, 0.95);
+        if next == current {
+            return Ok(false);
+        }
+        *ratio = Ratio::new(next)?;
+        Ok(true)
     }
 
     pub fn toggle_orientation(&mut self, window: WindowId) -> Result<bool, BspError> {
@@ -956,23 +1055,99 @@ mod tests {
     }
 
     #[test]
-    fn directional_resize_uses_the_nearest_split_on_the_requested_axis() {
+    fn directional_resize_moves_the_boundary_in_screen_coordinates() {
         let mut tree = BspTree::default();
         tree.insert_after(None, window(1)).unwrap();
         tree.insert_after(Some(window(1)), window(2)).unwrap();
-        tree.insert_after(Some(window(2)), window(3)).unwrap();
         let frame = Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap();
         let gaps = Gaps::default();
         let balanced = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
 
-        assert!(tree.resize_axis(window(3), Axis::Horizontal, 0.1).unwrap());
-        let wider = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
-        assert!(wider[&window(3)].size.width > balanced[&window(3)].size.width);
-        assert_eq!(wider[&window(3)].size.height, balanced[&window(3)].size.height);
+        assert!(tree.resize_axis(window(1), Axis::Horizontal, 0.1).unwrap());
+        let moved_right_for_left_window = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+        assert!(
+            moved_right_for_left_window[&window(1)].size.width > balanced[&window(1)].size.width
+        );
 
-        assert!(tree.resize_axis(window(3), Axis::Vertical, -0.1).unwrap());
-        let shorter = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
-        assert!(shorter[&window(3)].size.height < wider[&window(3)].size.height);
+        assert!(tree.resize_axis(window(2), Axis::Horizontal, -0.1).unwrap());
+        let moved_left_for_right_window = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+        assert!(
+            moved_left_for_right_window[&window(2)].size.width
+                > moved_right_for_left_window[&window(2)].size.width
+        );
+
+        assert!(tree.resize_axis(window(2), Axis::Horizontal, 0.1).unwrap());
+        let moved_right_for_right_window = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+        assert!(
+            moved_right_for_right_window[&window(2)].size.width
+                < moved_left_for_right_window[&window(2)].size.width
+        );
+        tree.validate().unwrap();
+    }
+
+    #[test]
+    fn vertical_directional_resize_accounts_for_top_and_bottom_position() {
+        let mut tree = BspTree::default();
+        tree.insert_after(None, window(1)).unwrap();
+        tree.insert_after(Some(window(1)), window(2)).unwrap();
+        tree.toggle_orientation(window(1)).unwrap();
+        let frame = Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap();
+        let gaps = Gaps::default();
+        let balanced = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+
+        assert!(tree.resize_axis(window(1), Axis::Vertical, 0.1).unwrap());
+        let moved_down_for_top_window = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+        assert!(
+            moved_down_for_top_window[&window(1)].size.height > balanced[&window(1)].size.height
+        );
+
+        assert!(tree.resize_axis(window(2), Axis::Vertical, -0.1).unwrap());
+        let moved_up_for_bottom_window = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+        assert!(
+            moved_up_for_bottom_window[&window(2)].size.height
+                > moved_down_for_top_window[&window(2)].size.height
+        );
+        tree.validate().unwrap();
+    }
+
+    #[test]
+    fn directional_resize_uses_an_outer_split_when_the_nearest_is_saturated() {
+        let mut tree = BspTree::default();
+        tree.insert_after(None, window(1)).unwrap();
+        tree.insert_after(Some(window(1)), window(2)).unwrap();
+        tree.insert_after(Some(window(2)), window(3)).unwrap();
+        tree.toggle_orientation(window(2)).unwrap();
+        let frame = Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap();
+        let gaps = Gaps::default();
+
+        assert!(tree.resize_axis(window(3), Axis::Horizontal, -0.9).unwrap());
+        let nearest_saturated = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+
+        assert!(tree.resize_axis(window(3), Axis::Horizontal, -0.1).unwrap());
+        let outer_resized = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+
+        assert!(outer_resized[&window(3)].size.width > nearest_saturated[&window(3)].size.width);
+        assert!(outer_resized[&window(1)].size.width < nearest_saturated[&window(1)].size.width);
+        tree.validate().unwrap();
+    }
+
+    #[test]
+    fn dragged_window_width_updates_the_bsp_ratio() {
+        let mut tree = BspTree::default();
+        tree.insert_after(None, window(1)).unwrap();
+        tree.insert_after(Some(window(1)), window(2)).unwrap();
+        let frame = Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap();
+        let gaps = Gaps::default();
+        let balanced = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+        let old = balanced[&window(2)];
+        let dragged =
+            Rect::new(old.origin.x - 200.0, old.origin.y, 700.0, old.size.height).unwrap();
+
+        assert!(tree.resize_from_frames(window(2), old, dragged).unwrap());
+        let resized = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+
+        assert!((resized[&window(2)].size.width - 700.0).abs() < 0.001);
+        assert!((resized[&window(1)].size.width - 300.0).abs() < 0.001);
         tree.validate().unwrap();
     }
 

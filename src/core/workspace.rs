@@ -627,7 +627,7 @@ impl WorkspaceCatalog {
     ) -> Result<bool, CoreError> {
         let workspace =
             self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
-        let (axis, amount) = match direction {
+        let (axis, boundary_delta) = match direction {
             Direction::Left => (Axis::Horizontal, -0.05),
             Direction::Right => (Axis::Horizontal, 0.05),
             Direction::Up => (Axis::Vertical, -0.05),
@@ -637,7 +637,30 @@ impl WorkspaceCatalog {
             .get_mut(&workspace)
             .expect("window assignments reference live workspaces")
             .tiled
-            .resize_axis(window, axis, amount)
+            .resize_axis(window, axis, boundary_delta)
+            .map_err(map_bsp_error)
+    }
+
+    pub fn resize_from_frames(
+        &mut self,
+        window: WindowId,
+        old_frame: Rect,
+        new_frame: Rect,
+    ) -> Result<bool, CoreError> {
+        let workspace =
+            self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
+        let state = self
+            .workspaces
+            .get_mut(&workspace)
+            .expect("window assignments reference live workspaces");
+        if state.floating.contains(&window) {
+            return Err(CoreError::InvalidCommand(
+                "floating windows do not belong to BSP groups".into(),
+            ));
+        }
+        state
+            .tiled
+            .resize_from_frames(window, old_frame, new_frame)
             .map_err(map_bsp_error)
     }
 

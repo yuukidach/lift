@@ -1348,6 +1348,47 @@ mod tests {
     }
 
     #[test]
+    fn dragged_resize_is_committed_to_the_workspace_layout() {
+        let mut state = CoreState::new(CoreConfig::default());
+        let first = window(1);
+        let second = window(2);
+        state
+            .transition(Input::Observation(Observation::PlatformSnapshot(
+                PlatformSnapshotObservation {
+                    generation: Generation(1),
+                    displays: vec![display("main", 9)],
+                    active_display: Some(DisplayId("main".into())),
+                    windows: vec![
+                        observed_window(first, "main"),
+                        observed_window(second, "main"),
+                    ],
+                    focused_window: Some(second),
+                },
+            )))
+            .unwrap();
+        let old = state.snapshot().workspaces[0].layout_frames[&second];
+        let dragged = Rect::new(
+            old.origin.x - 200.0,
+            old.origin.y,
+            old.size.width + 200.0,
+            old.size.height,
+        )
+        .unwrap();
+
+        let resized = state
+            .transition(Input::Observation(Observation::Drag(DragObservation::Resized {
+                window: second,
+                old_frame: old,
+                new_frame: dragged,
+            })))
+            .unwrap();
+
+        assert!(resized.snapshot.workspaces[0].layout_frames[&second].size.width > old.size.width);
+        assert!(resized.snapshot.workspaces[0].layout_frames[&first].size.width < old.size.width);
+        assert_eq!(resized.snapshot.drag, Default::default());
+    }
+
+    #[test]
     fn mission_control_requests_and_native_observations_share_one_state_machine() {
         let mut state = CoreState::new(CoreConfig::default());
         let requested = state

@@ -202,6 +202,14 @@ impl CoreState {
 
     fn apply_drag_observation(&mut self, observation: DragObservation) -> Result<(), CoreError> {
         match observation {
+            DragObservation::Resized { window, old_frame, new_frame } => {
+                if self.workspaces.is_floating(window) {
+                    return Err(CoreError::InvalidCommand(
+                        "floating windows cannot resize the BSP tree".into(),
+                    ));
+                }
+                self.workspaces.resize_from_frames(window, old_frame, new_frame)?;
+            }
             DragObservation::Updated { window, frame, candidates } => {
                 let workspace = self
                     .workspaces

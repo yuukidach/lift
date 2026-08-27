@@ -30,6 +30,11 @@ pub struct DragCandidate {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DragObservation {
+    Resized {
+        window: WindowId,
+        old_frame: Rect,
+        new_frame: Rect,
+    },
     Updated {
         window: WindowId,
         frame: Rect,

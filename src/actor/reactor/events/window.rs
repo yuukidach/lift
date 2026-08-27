@@ -346,6 +346,33 @@ impl WindowEventHandler {
                 let is_resize = !old_frame.size.same_as(new_frame.size);
                 if is_resize {
                     if active_space_for_window(reactor, &new_frame, server_id).is_some() {
+                        let old_frame = crate::core::geometry::Rect::new(
+                            old_frame.origin.x,
+                            old_frame.origin.y,
+                            old_frame.size.width,
+                            old_frame.size.height,
+                        );
+                        let new_frame = crate::core::geometry::Rect::new(
+                            new_frame.origin.x,
+                            new_frame.origin.y,
+                            new_frame.size.width,
+                            new_frame.size.height,
+                        );
+                        if let (Ok(old_frame), Ok(new_frame)) = (old_frame, new_frame)
+                            && let Err(error) = reactor.transition_core_input(
+                                crate::core::input::Input::Observation(
+                                    crate::core::input::Observation::Drag(
+                                        crate::core::interaction::DragObservation::Resized {
+                                            window: Reactor::core_window_id(wid),
+                                            old_frame,
+                                            new_frame,
+                                        },
+                                    ),
+                                ),
+                            )
+                        {
+                            warn!(?error, ?wid, "Core rejected dragged window resize");
+                        }
                         reactor.send_layout_event(LayoutEvent::Changed);
                     }
                 } else {

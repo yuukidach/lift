@@ -4,6 +4,7 @@ use test_log::test;
 use super::testing::*;
 use super::*;
 use crate::model::layout::LayoutCommand;
+use crate::sys::geometry::SameAs;
 
 fn screen(x: f64) -> CGRect { CGRect::new(CGPoint::new(x, 0.0), CGSize::new(1000.0, 1000.0)) }
 
@@ -143,6 +144,42 @@ fn destroying_the_focused_main_window_reflows_the_remaining_window() {
     assert_eq!(reactor.core_snapshot().focused_window, None);
     assert!(after.size.width > before.size.width);
     assert!(after.size.height >= before.size.height);
+}
+
+#[test]
+fn mouse_dragged_resize_persists_after_mouse_up() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let first = WindowId::new(7, 1);
+    let second = WindowId::new(7, 2);
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0)],
+        vec![Some(SpaceId::new(1))],
+        vec![],
+    ));
+    reactor.handle_events(apps.make_app_with_opts(7, make_windows(2), Some(second), true, true));
+    apps.simulate_until_quiet(&mut reactor);
+    let first_tiled = apps.windows[&first].frame;
+    let second_tiled = apps.windows[&second].frame;
+    let dragged = CGRect::new(
+        CGPoint::new(second_tiled.origin.x - 200.0, second_tiled.origin.y),
+        CGSize::new(second_tiled.size.width + 200.0, second_tiled.size.height),
+    );
+    apps.windows.get_mut(&second).unwrap().frame = dragged;
+
+    reactor.handle_event(Event::WindowFrameChanged(
+        second,
+        dragged,
+        None,
+        Requested(false),
+        Some(crate::sys::event::MouseState::Down),
+    ));
+    reactor.handle_event(Event::MouseUp);
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert!(apps.windows[&second].frame.size.width > second_tiled.size.width);
+    assert!(apps.windows[&first].frame.size.width < first_tiled.size.width);
+    assert!(apps.windows[&second].frame.same_as(dragged));
 }
 
 #[test]
