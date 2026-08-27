@@ -69,6 +69,7 @@ type Receiver = actor::Receiver<Event>;
 pub use query::ReactorSnapshotHandle;
 
 const FOCUS_NEXT_WINDOW_TIMEOUT: Duration = Duration::from_secs(8);
+const AUXILIARY_WINDOW_EXPANSION_TIMEOUT: Duration = Duration::from_secs(3);
 const RECENT_WORKSPACE_TARGET_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) use crate::model::reactor::{
@@ -204,6 +205,12 @@ pub enum Event {
     /// FIXME: This can be interleaved incorrectly with the MouseState in app
     /// actor events.
     MouseUp,
+    /// The left mouse button was pressed. The hit window and click location are
+    /// captured before an auxiliary controller can disappear in response.
+    MouseDown(
+        Option<WindowServerId>,
+        #[serde(with = "crate::sys::geometry::CGPointDef")] CGPoint,
+    ),
     /// The mouse cursor moved over a new window. Only sent if focus-follows-
     /// mouse is enabled.
     MouseMoved(#[serde(with = "crate::sys::geometry::CGPointDef")] CGPoint),
@@ -250,9 +257,11 @@ fn untracked_window_is_focusable(info: &WindowServerInfo) -> bool { info.layer =
 fn lifecycle_activation_suppression(event: &Event) -> Option<bool> {
     match event {
         Event::SystemWoke | Event::SessionDidBecomeActive => Some(true),
-        Event::MouseUp | Event::MouseMoved(_) | Event::UserInput(_) | Event::Command(_) => {
-            Some(false)
-        }
+        Event::MouseDown(..)
+        | Event::MouseUp
+        | Event::MouseMoved(_)
+        | Event::UserInput(_)
+        | Event::Command(_) => Some(false),
         _ => None,
     }
 }
@@ -433,6 +442,7 @@ impl Reactor {
                 refocus_state: RefocusState::None,
                 focus_next_window_deadline: None,
                 focus_next_window_target: None,
+                auxiliary_window_workspace_target: None,
                 recent_workspace_targets: HashMap::default(),
             },
             pending_space_change_manager: managers::PendingSpaceChangeManager {
@@ -1519,6 +1529,7 @@ impl Reactor {
             Event::WindowDestroyed(wid) => Some(wid.idx.get()),
             Event::WindowMinimized(wid) => Some(wid.idx.get()),
             Event::WindowDeminiaturized(wid) => Some(wid.idx.get()),
+            Event::MouseDown(wsid, _) => wsid.map(WindowServerId::as_u32),
             Event::MouseMoved(_) => None,
             Event::ResyncAppForWindow(wsid) => Some(wsid.as_u32()),
             Event::WindowServerDestroyed(wsid, _) => Some(wsid.as_u32()),
@@ -1532,7 +1543,10 @@ impl Reactor {
 
     fn log_event(&self, event: &Event) {
         match event {
-            Event::WindowFrameChanged(..) | Event::MouseUp | Event::MouseMoved(..) => {
+            Event::WindowFrameChanged(..)
+            | Event::MouseDown(..)
+            | Event::MouseUp
+            | Event::MouseMoved(..) => {
                 trace!(?event, "Event")
             }
             _ => debug!(?event, "Event"),
@@ -1736,16 +1750,10 @@ impl Reactor {
                 self.clear_menu_state_for_pid(pid);
             }
             Event::ApplicationMainWindowChanged(pid, window, quiet) => {
-                // Some apps keep a small always-on-top controller visible while their
-                // real window remains assigned to an inactive Lift workspace. Expanding
-                // that controller changes the frontmost app's main window without
-                // re-activating the app, so the regular activation path never restores
-                // the window's workspace.
                 if quiet == Quiet::No
                     && let Some(window) = window
-                    && raised_window == Some(window)
                 {
-                    self.handle_app_activation_workspace_switch_for_window(pid, Some(window));
+                    self.move_window_to_auxiliary_click_workspace(pid, window);
                 }
             }
             Event::ApplicationGloballyDeactivated(pid) => {
@@ -1781,7 +1789,12 @@ impl Reactor {
                             );
                         }
                     }
-                    if self.workspace_switch_manager.should_suppress_global_activation(pid) {
+                    if self.auxiliary_window_workspace_target(pid).is_some() {
+                        trace!(
+                            pid,
+                            "Skipping auto workspace switch for auxiliary-window expansion"
+                        );
+                    } else if self.workspace_switch_manager.should_suppress_global_activation(pid) {
                         trace!(
                             pid,
                             "Skipping auto workspace switch for a Lift-initiated global activation"
@@ -1839,6 +1852,9 @@ impl Reactor {
             }
             Event::SpaceChanged(spaces) => {
                 SpaceEventHandler::handle_space_changed(self, spaces);
+            }
+            Event::MouseDown(wsid, point) => {
+                self.capture_auxiliary_window_workspace_target(wsid, point);
             }
             Event::MouseUp => {
                 DragEventHandler::handle_mouse_up(self);
@@ -3467,6 +3483,144 @@ impl Reactor {
             };
             self.active_workspace_for_space(space) != Some(window_workspace)
         })
+    }
+
+    fn capture_auxiliary_window_workspace_target(
+        &mut self,
+        wsid: Option<WindowServerId>,
+        point: CGPoint,
+    ) {
+        self.refocus_manager.auxiliary_window_workspace_target = None;
+        let Some(wsid) = wsid else {
+            return;
+        };
+
+        let pid = if let Some(wid) = self.window_manager.tracked_window_id(wsid) {
+            let Some(window) = self.window_manager.window(wid) else {
+                return;
+            };
+            if window.matches_filter(WindowFilter::EffectivelyManageable) {
+                return;
+            }
+            wid.pid
+        } else {
+            let info = self
+                .window_manager
+                .get_window_server_info(wsid)
+                .or_else(|| window_server::get_window(wsid));
+            let Some(info) = info else { return };
+            if !untracked_window_is_focusable(&info) {
+                return;
+            }
+            info.pid
+        };
+
+        if !self.app_manager.apps.contains_key(&pid) {
+            return;
+        }
+
+        let Some(space) = self.space_for_point(point) else {
+            return;
+        };
+        let Some(workspace_id) = self.active_workspace_for_space(space) else {
+            return;
+        };
+
+        debug!(
+            ?wsid,
+            pid,
+            ?space,
+            ?workspace_id,
+            "Auxiliary window clicked; remembering its expansion workspace"
+        );
+        self.refocus_manager.auxiliary_window_workspace_target =
+            Some(managers::AuxiliaryWindowWorkspaceTarget {
+                pid,
+                space,
+                workspace_id,
+                expires_at: Instant::now() + AUXILIARY_WINDOW_EXPANSION_TIMEOUT,
+            });
+    }
+
+    fn auxiliary_window_workspace_target(
+        &mut self,
+        pid: pid_t,
+    ) -> Option<managers::AuxiliaryWindowWorkspaceTarget> {
+        let target = self.refocus_manager.auxiliary_window_workspace_target?;
+        if Instant::now() > target.expires_at
+            || self.active_workspace_for_space(target.space) != Some(target.workspace_id)
+        {
+            self.refocus_manager.auxiliary_window_workspace_target = None;
+            return None;
+        }
+        if target.pid != pid {
+            return None;
+        }
+        Some(target)
+    }
+
+    fn take_auxiliary_window_workspace_target(
+        &mut self,
+        pid: pid_t,
+    ) -> Option<managers::AuxiliaryWindowWorkspaceTarget> {
+        self.auxiliary_window_workspace_target(pid)?;
+        self.refocus_manager.auxiliary_window_workspace_target.take()
+    }
+
+    pub(crate) fn prepare_new_window_for_auxiliary_click_workspace(
+        &mut self,
+        window: WindowId,
+    ) -> bool {
+        let Some(target) = self.take_auxiliary_window_workspace_target(window.pid) else {
+            return false;
+        };
+        self.remember_recent_workspace_target_for(window, target.space, target.workspace_id)
+    }
+
+    fn move_window_to_auxiliary_click_workspace(&mut self, pid: pid_t, window: WindowId) -> bool {
+        let Some(target) = self.take_auxiliary_window_workspace_target(pid) else {
+            return false;
+        };
+        if !self
+            .window_manager
+            .window(window)
+            .is_some_and(|state| state.matches_filter(WindowFilter::EffectivelyManageable))
+        {
+            return false;
+        }
+
+        let _ =
+            self.remember_recent_workspace_target_for(window, target.space, target.workspace_id);
+        if self.workspace_for_window(window) == Some(target.workspace_id) {
+            return true;
+        }
+        let Some(workspace) = self.workspace_number(target.workspace_id) else {
+            return false;
+        };
+        let command = crate::core::command::WorkspaceCommand::MoveWindow {
+            workspace,
+            window: Some(Self::core_window_id(window)),
+        };
+        match self.transition_core_command(crate::core::command::Command::Workspace(command)) {
+            Ok(_) => {
+                debug!(
+                    ?window,
+                    ?target.space,
+                    ?target.workspace_id,
+                    "Moved expanded auxiliary window to its click workspace"
+                );
+                true
+            }
+            Err(error) => {
+                warn!(
+                    ?error,
+                    ?window,
+                    ?target.workspace_id,
+                    "Core rejected auxiliary expansion workspace assignment"
+                );
+                false
+            }
+        }
     }
 
     fn focus_untracked_window_under_cursor(&mut self) -> bool {

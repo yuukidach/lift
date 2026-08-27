@@ -31,6 +31,10 @@ fn lifecycle_events_control_activation_suppression() {
         lifecycle_activation_suppression(&Event::SessionDidBecomeActive),
         Some(true)
     );
+    assert_eq!(
+        lifecycle_activation_suppression(&Event::MouseDown(None, CGPoint::ZERO)),
+        Some(false)
+    );
     assert_eq!(lifecycle_activation_suppression(&Event::MouseUp), Some(false));
     assert_eq!(
         lifecycle_activation_suppression(&Event::ApplicationGloballyActivated(7)),
@@ -443,7 +447,7 @@ fn workspace_move_command_changes_the_authoritative_assignment() {
 }
 
 #[test]
-fn frontmost_main_window_change_restores_its_inactive_workspace() {
+fn frontmost_main_window_change_without_auxiliary_click_does_not_switch_workspaces() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test();
     let pid = 7;
@@ -473,7 +477,8 @@ fn frontmost_main_window_change_restores_its_inactive_workspace() {
     ));
     apps.simulate_until_quiet(&mut reactor);
 
-    assert_eq!(reactor.active_workspace_for_space(space), Some(target));
+    assert_eq!(reactor.active_workspace_for_space(space), Some(original));
+    assert_eq!(reactor.workspace_for_window(expanded), Some(target));
     assert_eq!(
         reactor.core_snapshot().focused_window,
         Some(Reactor::core_window_id(expanded))
@@ -539,6 +544,99 @@ fn inactive_manageable_window_allows_unmanageable_controller_activation() {
 
     assert_eq!(reactor.active_workspace_for_space(space), Some(target));
     assert!(!reactor.has_manageable_window_on_inactive_workspace(pid));
+}
+
+#[test]
+fn auxiliary_window_expansion_moves_main_window_to_click_workspace() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let pid = 7;
+    let window = WindowId::new(pid, 1);
+    let space = SpaceId::new(1);
+    let mut controller = make_window(2);
+    controller.is_standard = false;
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(
+        pid,
+        vec![make_window(1), controller],
+        Some(window),
+        true,
+        true,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace {
+            workspace: 1,
+            window_id: Some(window.idx.get()),
+        },
+    )));
+    let target = reactor.workspace_for_window(window).unwrap();
+    let origin = reactor.active_workspace_for_space(space).unwrap();
+    assert_ne!(origin, target);
+
+    let controller_wsid = WindowServerId::new(pid as u32 * 10_000 + 2);
+    reactor.handle_event(Event::MouseDown(Some(controller_wsid), CGPoint::new(10.0, 10.0)));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    assert_eq!(reactor.active_workspace_for_space(space), Some(origin));
+    reactor.handle_event(Event::ApplicationMainWindowChanged(pid, Some(window), Quiet::No));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(reactor.active_workspace_for_space(space), Some(origin));
+    assert_eq!(reactor.workspace_for_window(window), Some(origin));
+}
+
+#[test]
+fn auxiliary_window_expansion_places_new_window_in_click_workspace() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    reactor.config.virtual_workspaces =
+        toml::from_str(r#"app_rules = [{ app_id = "com.testapp7", workspace = 2, focus = true }]"#)
+            .unwrap();
+    let core_config = crate::interfaces::config::core_config(&reactor.config).unwrap();
+    reactor.window_rules = RuleSet::compile(core_config.window_rules.clone()).unwrap();
+    reactor.core_state = Some(crate::core::state::CoreState::new(core_config));
+
+    let pid = 7;
+    let space = SpaceId::new(1);
+    let controller = WindowId::new(pid, 1);
+    let expanded = WindowId::new(pid, 2);
+    let mut controller_info = make_window(1);
+    controller_info.is_standard = false;
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(
+        pid,
+        vec![controller_info],
+        Some(controller),
+        true,
+        true,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+    let origin = reactor.active_workspace_for_space(space).unwrap();
+
+    let controller_wsid = WindowServerId::new(pid as u32 * 10_000 + 1);
+    reactor.handle_event(Event::MouseDown(Some(controller_wsid), CGPoint::new(10.0, 10.0)));
+
+    let mut expanded_info = make_window(2);
+    let expanded_wsid = WindowServerId::new(pid as u32 * 10_000 + 2);
+    expanded_info.sys_id = Some(expanded_wsid);
+    let expanded_ws_info = WindowServerInfo {
+        pid,
+        id: expanded_wsid,
+        layer: 0,
+        frame: expanded_info.frame,
+        min_frame: CGSize::ZERO,
+        max_frame: CGSize::ZERO,
+    };
+    reactor.handle_event(Event::WindowCreated(
+        expanded,
+        expanded_info,
+        Some(expanded_ws_info),
+        None,
+    ));
+
+    assert_eq!(reactor.active_workspace_for_space(space), Some(origin));
+    assert_eq!(reactor.workspace_for_window(expanded), Some(origin));
 }
 
 #[test]

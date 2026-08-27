@@ -592,6 +592,11 @@ impl EventTap {
             state.show_mouse();
         }
         match event_type {
+            CGEventType::LeftMouseDown => {
+                let loc = CGEvent::location(Some(event));
+                let window = window_server::get_window_at_point(loc);
+                _ = self.events_tx.send(Event::MouseDown(window, loc));
+            }
             CGEventType::RightMouseUp | CGEventType::LeftMouseUp => {
                 _ = self.events_tx.send(Event::MouseUp);
             }

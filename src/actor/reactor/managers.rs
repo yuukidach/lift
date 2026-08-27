@@ -31,6 +31,14 @@ pub struct RecentWorkspaceTarget {
     pub expires_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuxiliaryWindowWorkspaceTarget {
+    pub pid: pid_t,
+    pub space: SpaceId,
+    pub workspace_id: WorkspaceId,
+    pub expires_at: Instant,
+}
+
 /// Manages application state and rules
 pub struct AppManager {
     pub apps: HashMap<pid_t, AppState>,
@@ -147,6 +155,7 @@ pub struct RefocusManager {
     pub refocus_state: super::RefocusState,
     pub focus_next_window_deadline: Option<Instant>,
     pub focus_next_window_target: Option<FocusNextWindowTarget>,
+    pub auxiliary_window_workspace_target: Option<AuxiliaryWindowWorkspaceTarget>,
     pub recent_workspace_targets: HashMap<WindowId, RecentWorkspaceTarget>,
 }
 
