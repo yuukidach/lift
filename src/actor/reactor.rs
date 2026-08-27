@@ -5,6 +5,7 @@
 //! changes by sending requests out to the other actors in the system.
 
 mod animation;
+pub(crate) use animation::AnimationCommandCompletion;
 mod display_topology;
 mod events;
 mod main_window;

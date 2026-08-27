@@ -316,15 +316,11 @@ impl Apps {
                         ));
                     }
                 }
-                Request::BeginWindowAnimation(wid, target) => {
+                Request::BeginWindowAnimation(wid) => {
                     let window = self.windows.entry(wid).or_default();
                     window.animating = true;
-                    if let Some((frame, txid)) = target {
-                        window.frame = frame;
-                        window.last_seen_txid = txid;
-                    }
                 }
-                Request::EndWindowAnimation(wid, _proxy) => {
+                Request::EndWindowAnimation(wid, _animation_completion) => {
                     let window = self.windows.entry(wid).or_default();
                     window.animating = false;
                     events.push(Event::WindowFrameChanged(

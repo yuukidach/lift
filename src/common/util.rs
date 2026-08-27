@@ -74,49 +74,57 @@ mod tests {
     }
 }
 
-pub fn execute_startup_commands(commands: &[String]) {
+fn execute_command(command: &str, context: &str) {
+    let parts = parse_command(command);
+    if parts.is_empty() {
+        error!(%context, "Empty command");
+        return;
+    }
+
+    let (cmd, args) = parts.split_first().unwrap();
+    let output = std::process::Command::new(cmd).args(args).output();
+    match output {
+        Ok(output) if output.status.success() => {
+            trace!(%context, %command, "Command completed successfully");
+        }
+        Ok(output) => {
+            error!(%context, %command, status = %output.status, "Command failed");
+            if !output.stderr.is_empty() {
+                error!(%context, "stderr: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        Err(error) => {
+            error!(%context, %command, ?error, "Failed to execute command");
+        }
+    }
+}
+
+pub fn execute_commands_sync(commands: &[String], context: &str) {
     if commands.is_empty() {
         return;
     }
 
-    trace!("Executing {} startup commands", commands.len());
-
-    for (i, command) in commands.iter().enumerate() {
-        trace!("Executing startup command {}: {}", i + 1, command);
-
-        let parts = parse_command(command);
-        if parts.is_empty() {
-            error!("Empty startup command at index {}", i);
-            continue;
-        }
-
-        let (cmd, args) = parts.split_first().unwrap();
-
-        let cmd_owned = cmd.to_string();
-        let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        let command_str = command.clone();
-
-        std::thread::spawn(move || {
-            let output = std::process::Command::new(&cmd_owned).args(&args_owned).output();
-
-            match output {
-                Ok(output) => {
-                    if output.status.success() {
-                        trace!("Startup command completed successfully: {}", command_str);
-                    } else {
-                        error!(
-                            "Startup command failed with status {}: {}",
-                            output.status, command_str
-                        );
-                        if !output.stderr.is_empty() {
-                            error!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to execute startup command '{}': {}", command_str, e);
-                }
-            }
-        });
+    trace!(%context, count = commands.len(), "Executing commands synchronously");
+    for command in commands {
+        execute_command(command, context);
     }
+}
+
+pub fn execute_commands_async(commands: &[String], context: &str) {
+    if commands.is_empty() {
+        return;
+    }
+
+    trace!(%context, count = commands.len(), "Scheduling commands");
+    let commands = commands.to_vec();
+    let context = context.to_string();
+    std::thread::spawn(move || {
+        for command in commands {
+            execute_command(&command, &context);
+        }
+    });
+}
+
+pub fn execute_startup_commands(commands: &[String]) {
+    execute_commands_async(commands, "startup");
 }

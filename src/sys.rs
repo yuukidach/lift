@@ -28,7 +28,6 @@ pub mod service;
 pub mod skylight;
 pub mod space_switch;
 pub mod timer;
-pub mod window_animation;
 pub mod window_notify;
 pub mod window_server;
 

@@ -803,10 +803,6 @@ fn capture_window(id: WindowServerId) -> Option<CapturedWindowImage> {
     }
 }
 
-pub fn capture_window_image_full(id: WindowServerId) -> Option<CapturedWindowImage> {
-    capture_window(id)
-}
-
 pub fn capture_window_image(
     id: WindowServerId,
     target_w: usize,

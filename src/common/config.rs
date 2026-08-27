@@ -467,6 +467,14 @@ pub struct Settings {
     #[serde(default)]
     pub run_on_start: Vec<String>,
 
+    /// Commands run synchronously before a layout animation starts.
+    #[serde(default)]
+    pub run_on_animation_start: Vec<String>,
+
+    /// Commands run after every animated app has applied its final frame.
+    #[serde(default)]
+    pub run_on_animation_end: Vec<String>,
+
     /// Whether to reapply app rules when a window title changes.
     /// Enable hot-reloading of the config file when it changes
     #[serde(default = "yes")]

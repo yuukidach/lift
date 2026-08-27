@@ -37,7 +37,6 @@ use crate::sys::geometry::SameAs;
 use crate::sys::observer::Observer;
 use crate::sys::process::ProcessInfo;
 use crate::sys::timer::Timer;
-use crate::sys::window_animation::WindowAnimationProxy;
 use crate::sys::window_server::{self, WindowServerId, WindowServerInfo};
 
 const kAXApplicationActivatedNotification: &str = "AXApplicationActivated";
@@ -335,8 +334,11 @@ pub enum Request {
         txid: TransactionId,
     },
 
-    BeginWindowAnimation(WindowId, Option<(CGRect, TransactionId)>),
-    EndWindowAnimation(WindowId, Option<WindowAnimationProxy>),
+    BeginWindowAnimation(WindowId),
+    EndWindowAnimation(
+        WindowId,
+        Option<crate::actor::reactor::AnimationCommandCompletion>,
+    ),
 
     /// Raise the windows within a single space, in the given order. All windows must be
     /// in the same space, or they will not be raised correctly.
@@ -895,7 +897,7 @@ impl State {
                     let _ = self.app.set_bool_attribute("AXEnhancedUserInterface", true);
                 }
             }
-            Request::BeginWindowAnimation(wid, target) => {
+            Request::BeginWindowAnimation(wid) => {
                 let (elem, started_animation) = {
                     let window = self.window_mut(wid)?;
                     let started_animation = !std::mem::replace(&mut window.is_animating, true);
@@ -909,16 +911,8 @@ impl State {
                     let _ = self.app.set_bool_attribute("AXEnhancedUserInterface", false);
                 }
                 self.stop_notifications_for_animation(&elem);
-                if let Some((target, txid)) = target {
-                    let window = self.window_mut(wid)?;
-                    window.last_seen_txid = txid;
-                    window.last_animation_frame = Some(target);
-                    let _ = elem.set_size(target.size);
-                    let _ = elem.set_position(target.origin);
-                    let _ = elem.set_size(target.size);
-                }
             }
-            Request::EndWindowAnimation(wid, proxy) => {
+            Request::EndWindowAnimation(wid, _animation_completion) => {
                 if let Err(err) = self.flush_frames(wid) {
                     warn!(?wid, ?err, "Failed to flush animation frame on end");
                 }
@@ -952,9 +946,6 @@ impl State {
                     let _ = elem.set_size(frame.size);
                     let _ = elem.set_position(frame.origin);
                     let _ = elem.set_size(frame.size);
-                }
-                if let Some(proxy) = proxy {
-                    proxy.finish();
                 }
                 if ended_animation {
                     self.active_animation_count = self.active_animation_count.saturating_sub(1);
