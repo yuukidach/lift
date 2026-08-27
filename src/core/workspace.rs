@@ -430,6 +430,25 @@ impl WorkspaceCatalog {
             != Some(frame))
     }
 
+    pub fn set_floating_position(
+        &mut self,
+        workspace: WorkspaceId,
+        window: WindowId,
+        frame: Rect,
+    ) -> Result<(), CoreError> {
+        let state = self
+            .workspaces
+            .get_mut(&workspace)
+            .ok_or(CoreError::WorkspaceConflict(workspace))?;
+        if !state.floating.contains(&window)
+            || self.window_assignment.get(&window) != Some(&workspace)
+        {
+            return Err(CoreError::MissingWindow(window));
+        }
+        state.floating_positions.insert(window, frame);
+        Ok(())
+    }
+
     pub fn destroy_if_ephemeral(&mut self, workspace: WorkspaceId) -> Result<bool, CoreError> {
         let Some(candidate) = self.workspaces.get(&workspace) else {
             return Ok(false);

@@ -102,6 +102,12 @@ define_class! {
             self.send_event(WmEvent::SystemWoke);
         }
 
+        #[unsafe(method(recvSessionDidBecomeActive:))]
+        fn recv_session_did_become_active(&self, notif: &NSNotification) {
+            trace!("{notif:#?}");
+            self.send_event(WmEvent::SessionDidBecomeActive);
+        }
+
         #[unsafe(method(recvSleepEvent:))]
         fn recv_sleep_event(&self, notif: &NSNotification) {
             trace!("{notif:#?}");
@@ -608,6 +614,12 @@ impl NotificationCenter {
             register_unsafe(
                 sel!(recvWakeEvent:),
                 NSWorkspaceDidWakeNotification,
+                workspace_center,
+                workspace,
+            );
+            register_unsafe(
+                sel!(recvSessionDidBecomeActive:),
+                NSWorkspaceSessionDidBecomeActiveNotification,
                 workspace_center,
                 workspace,
             );

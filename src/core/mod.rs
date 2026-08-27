@@ -8,6 +8,7 @@ pub mod geometry;
 pub mod ids;
 pub mod input;
 pub mod interaction;
+pub mod placement;
 pub mod rules;
 pub mod snapshot;
 pub mod state;

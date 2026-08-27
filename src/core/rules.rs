@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use super::error::CoreError;
 use super::ids::WorkspaceNumber;
+use super::placement::FloatingPlacement;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceTarget {
     Number(WorkspaceNumber),
@@ -12,7 +13,7 @@ pub enum WorkspaceTarget {
     Current,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowRule {
     pub app_id: Option<String>,
     pub app_name: Option<String>,
@@ -22,6 +23,8 @@ pub struct WindowRule {
     pub ax_subrole: Option<String>,
     pub workspace: WorkspaceTarget,
     pub floating: bool,
+    pub placement: Option<FloatingPlacement>,
+    pub focus: bool,
     pub manage: bool,
 }
 
@@ -34,11 +37,13 @@ pub struct WindowIdentity<'a> {
     pub ax_subrole: Option<&'a str>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RuleDecision {
     Managed {
         workspace: WorkspaceTarget,
         floating: bool,
+        placement: Option<FloatingPlacement>,
+        focus: bool,
         rule_index: Option<usize>,
     },
     Unmanaged {
@@ -111,6 +116,8 @@ impl RuleSet {
             return RuleDecision::Managed {
                 workspace: WorkspaceTarget::Current,
                 floating: false,
+                placement: None,
+                focus: false,
                 rule_index: None,
             };
         };
@@ -120,6 +127,8 @@ impl RuleSet {
             RuleDecision::Managed {
                 workspace: rule.source.workspace.clone(),
                 floating: rule.source.floating,
+                placement: rule.source.placement,
+                focus: rule.source.focus,
                 rule_index: Some(*index),
             }
         }
@@ -206,6 +215,8 @@ mod tests {
             ax_subrole: None,
             workspace: WorkspaceTarget::Current,
             floating: false,
+            placement: None,
+            focus: false,
             manage: true,
         }
     }
@@ -231,6 +242,8 @@ mod tests {
             RuleDecision::Managed {
                 workspace: WorkspaceTarget::Number(number(3)),
                 floating: false,
+                placement: None,
+                focus: false,
                 rule_index: Some(1),
             }
         );

@@ -43,6 +43,7 @@ pub enum WmEvent {
     SpaceChanged(Vec<Option<SpaceId>>),
     ScreenParametersChanged(Vec<ScreenInfo>, CoordinateConverter),
     SystemWoke,
+    SessionDidBecomeActive,
     PowerStateChanged(bool),
     KeyboardLayoutChanged,
     ConfigUpdated(crate::common::config::Config),
@@ -195,6 +196,7 @@ impl WmController {
 
         match event {
             SystemWoke => self.events_tx.send(Event::SystemWoke),
+            SessionDidBecomeActive => self.events_tx.send(Event::SessionDidBecomeActive),
             DisplayChurnBegin => self.events_tx.send(Event::DisplayChurnBegin),
             DisplayChurnEnd => self.events_tx.send(Event::DisplayChurnEnd),
             AppEventsRegistered => {
@@ -513,7 +515,56 @@ impl ExecCmd {
     fn as_array(&self) -> Cow<'_, [String]> {
         match self {
             ExecCmd::Array(vec) => Cow::Borrowed(&*vec),
-            ExecCmd::String(s) => s.split(' ').map(|s| s.to_owned()).collect::<Vec<_>>().into(),
+            ExecCmd::String(s) => crate::common::util::parse_command(s).into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExecCmd, WmCommand};
+    use crate::model::layout::{
+        ConfiguredLayoutCommand, ToggleFloatingSize, ToggleFloatingSizePreset,
+    };
+    use crate::model::reactor::Command;
+
+    #[test]
+    fn string_exec_uses_grouped_command_parser() {
+        let command = ExecCmd::String(r#"say "it's alive""#.into());
+
+        assert_eq!(command.as_array().as_ref(), &[
+            "say".to_string(),
+            "it's alive".to_string()
+        ]);
+    }
+
+    #[test]
+    fn array_exec_preserves_pre_split_arguments() {
+        let command = ExecCmd::Array(vec!["say".into(), "it's alive".into()]);
+
+        assert_eq!(command.as_array().as_ref(), &[
+            "say".to_string(),
+            "it's alive".to_string()
+        ]);
+    }
+
+    #[test]
+    fn configured_floating_command_accepts_smart_size() {
+        let command: WmCommand = serde_json::from_value(serde_json::json!({
+            "toggle_window_floating": { "center": true, "size": "smart" }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            command,
+            WmCommand::ReactorCommand(Command::ConfiguredLayout(
+                ConfiguredLayoutCommand::ToggleWindowFloating(
+                    crate::model::layout::ToggleFloatingOptions {
+                        center: true,
+                        size: Some(ToggleFloatingSize::Preset(ToggleFloatingSizePreset::Smart)),
+                    },
+                ),
+            ))
+        );
     }
 }

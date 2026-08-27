@@ -65,6 +65,33 @@ pub enum LayoutCommand {
     SwapWindows(WindowId, WindowId),
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfiguredLayoutCommand {
+    ToggleWindowFloating(ToggleFloatingOptions),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToggleFloatingOptions {
+    #[serde(default)]
+    pub center: bool,
+    pub size: Option<ToggleFloatingSize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToggleFloatingSize {
+    Points { w: f64, h: f64 },
+    Preset(ToggleFloatingSizePreset),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToggleFloatingSizePreset {
+    Smart,
+}
+
 #[must_use]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct EventResponse {

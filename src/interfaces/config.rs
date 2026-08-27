@@ -2,6 +2,7 @@ use crate::common::config::{Config, WorkspaceSelector};
 use crate::core::config::{AnimationConfig, CoreConfig, Gaps, LayoutConfig};
 use crate::core::error::CoreError;
 use crate::core::ids::{DisplayId, WorkspaceNumber};
+use crate::core::placement::{FloatingPlacement, FloatingPosition, FloatingSize};
 use crate::core::rules::{WindowRule, WorkspaceTarget};
 
 pub fn core_config(config: &Config) -> Result<CoreConfig, CoreError> {
@@ -36,6 +37,18 @@ pub fn core_config(config: &Config) -> Result<CoreConfig, CoreError> {
                 ax_subrole: rule.ax_subrole.clone(),
                 workspace,
                 floating: rule.floating,
+                placement: (rule.position.is_some() || rule.size.is_some()).then_some(
+                    FloatingPlacement {
+                        position: rule.position.map(|position| FloatingPosition::Normalized {
+                            x: position.x,
+                            y: position.y,
+                        }),
+                        size: rule
+                            .size
+                            .map(|size| FloatingSize::Points { width: size.w, height: size.h }),
+                    },
+                ),
+                focus: rule.focus,
                 manage: rule.manage,
             })
         })

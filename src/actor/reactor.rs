@@ -208,6 +208,8 @@ pub enum Event {
     MouseMoved(#[serde(with = "crate::sys::geometry::CGPointDef")] CGPoint),
     /// System woke from sleep; used to re-subscribe SLS notifications.
     SystemWoke,
+    /// The login session became active after an unlock or user switch.
+    SessionDidBecomeActive,
 
     #[serde(skip)]
     DisplayChurnBegin,
@@ -240,6 +242,18 @@ pub enum Event {
     #[serde(skip)]
     ConfigUpdated(Config),
     UserInput(UserInputTrace),
+}
+
+fn untracked_window_is_focusable(info: &WindowServerInfo) -> bool { info.layer == 0 }
+
+fn lifecycle_activation_suppression(event: &Event) -> Option<bool> {
+    match event {
+        Event::SystemWoke | Event::SessionDidBecomeActive => Some(true),
+        Event::MouseUp | Event::MouseMoved(_) | Event::UserInput(_) | Event::Command(_) => {
+            Some(false)
+        }
+        _ => None,
+    }
 }
 
 pub struct Reactor {
@@ -382,6 +396,7 @@ impl Reactor {
                 active_workspace_switch: None,
                 pending_workspace_switch_origin: None,
                 pending_workspace_mouse_warp: None,
+                suppress_auto_workspace_switch_until_input: false,
                 quiet_activation_deadlines: HashMap::default(),
             },
             recording_manager: managers::RecordingManager {
@@ -889,6 +904,7 @@ impl Reactor {
         self.snapshot_store.publish(snapshot);
         let current = self.snapshot_store.load();
         self.broadcast_windows_changed(&previous, &current);
+        self.broadcast_layout_changed(&previous, &current);
         self.recording_manager.diagnostics.record_snapshot(&current);
         if let Some(stack_line_tx) = self.communication_manager.stack_line_tx.as_ref() {
             if let Err(error) =
@@ -965,6 +981,59 @@ impl Reactor {
                 windows,
                 space_id: SpaceId::new(space.0),
                 display_uuid: Some(display_id.0),
+            };
+            let _ = self.communication_manager.event_broadcaster.send(event);
+        }
+    }
+
+    fn broadcast_layout_changed(
+        &self,
+        previous: &crate::core::snapshot::CoreSnapshot,
+        current: &crate::core::snapshot::CoreSnapshot,
+    ) {
+        for display in &current.displays {
+            let (Some(space), Some(workspace_id)) = (display.space, display.active_workspace)
+            else {
+                continue;
+            };
+            let Some(workspace) =
+                current.workspaces.iter().find(|workspace| workspace.id == workspace_id)
+            else {
+                continue;
+            };
+            let current_layout = crate::interfaces::query::layout_state_for_workspace(
+                current,
+                workspace,
+                crate::core::ids::SpaceId(space.0),
+            );
+            let previous_layout =
+                previous.displays.iter().find(|candidate| candidate.id == display.id).and_then(
+                    |candidate| {
+                        let previous_workspace = candidate.active_workspace?;
+                        let workspace = previous
+                            .workspaces
+                            .iter()
+                            .find(|workspace| workspace.id == previous_workspace)?;
+                        Some((
+                            previous_workspace,
+                            crate::interfaces::query::layout_state_for_workspace(
+                                previous,
+                                workspace,
+                                crate::core::ids::SpaceId(candidate.space?.0),
+                            ),
+                        ))
+                    },
+                );
+            if previous_layout.as_ref() == Some(&(workspace_id, current_layout.clone())) {
+                continue;
+            }
+            let event = BroadcastEvent::LayoutChanged {
+                workspace_id,
+                workspace_index: workspace.number.map(|number| number.get() as u64),
+                workspace_name: workspace.name.clone(),
+                layout: current_layout,
+                space_id: SpaceId::new(space.0),
+                display_uuid: Some(display.id.0.clone()),
             };
             let _ = self.communication_manager.event_broadcaster.send(event);
         }
@@ -1519,6 +1588,7 @@ impl Reactor {
                 | Event::MissionControlNativeEntered
                 | Event::MissionControlNativeExited
                 | Event::SystemWoke
+                | Event::SessionDidBecomeActive
                 | Event::ApplicationLaunched { .. }
                 | Event::ApplicationTerminated(..)
                 | Event::ApplicationThreadTerminated(..)
@@ -1585,6 +1655,10 @@ impl Reactor {
                 self.recording_manager.diagnostics.begin_operation(command, &before);
             }
             _ => {}
+        }
+
+        if let Some(suppress) = lifecycle_activation_suppression(&event) {
+            self.workspace_switch_manager.suppress_auto_workspace_switch_until_input = suppress;
         }
 
         match event {
@@ -1787,6 +1861,7 @@ impl Reactor {
                 }
             }
             Event::SystemWoke => SystemEventHandler::handle_system_woke(self),
+            Event::SessionDidBecomeActive => {}
             Event::MissionControlNativeEntered => {
                 SpaceEventHandler::handle_mission_control_native_entered(self);
             }
@@ -2709,8 +2784,14 @@ impl Reactor {
         window_ids: Vec<WindowId>,
         app_info: AppInfo,
     ) {
+        let mut focus_windows = Vec::new();
         for &window in &window_ids {
             let decision = self.window_rule_decision(window, Some(&app_info));
+            if self.workspace_for_window(window).is_none()
+                && matches!(&decision, RuleDecision::Managed { focus: true, .. })
+            {
+                focus_windows.push(window);
+            }
             if let Some(state) = self.window_manager.window_mut(window) {
                 state.ignore_app_rule = matches!(decision, RuleDecision::Unmanaged { .. });
             }
@@ -2736,6 +2817,54 @@ impl Reactor {
                 warn!(?error, ?window, "Core rejected a pending workspace target");
             }
         }
+        for window in focus_windows {
+            self.focus_new_rule_window(window);
+        }
+    }
+
+    fn focus_new_rule_window(&mut self, window: WindowId) {
+        let Some(window_space) = self
+            .window_manager
+            .window(window)
+            .and_then(|state| self.intended_space_for_window_state(window, state))
+        else {
+            return;
+        };
+        let Some(target_workspace) = self.workspace_for_window(window) else {
+            return;
+        };
+        let Some(active_workspace) = self.active_workspace_for_space(window_space) else {
+            return;
+        };
+        let mut response = layout::EventResponse::default();
+        if target_workspace != active_workspace {
+            let Some(number) = self.workspace_number(target_workspace) else {
+                return;
+            };
+            self.store_current_floating_positions(window_space);
+            self.workspace_switch_manager
+                .start_workspace_switch(WorkspaceSwitchOrigin::Auto);
+            let transition =
+                match self.transition_core_command(crate::core::command::Command::Workspace(
+                    crate::core::command::WorkspaceCommand::Activate(number),
+                )) {
+                    Ok(transition) => transition,
+                    Err(error) => {
+                        warn!(
+                            ?error,
+                            ?window,
+                            "Core rejected rule-requested workspace activation"
+                        );
+                        return;
+                    }
+                };
+            response = self.layout_response_for_transition(&transition);
+        }
+        response.focus_window = Some(window);
+        if !response.raise_windows.contains(&window) {
+            response.raise_windows.push(window);
+        }
+        self.handle_layout_response(response, Some(window_space));
     }
 
     fn handle_app_activation_workspace_switch(&mut self, pid: pid_t) {
@@ -2747,6 +2876,14 @@ impl Reactor {
         pid: pid_t,
         preferred_window: Option<WindowId>,
     ) {
+        if self.workspace_switch_manager.suppress_auto_workspace_switch_until_input {
+            debug!(
+                pid,
+                "Skipping automatic workspace switch for lifecycle-restored activation before user input"
+            );
+            return;
+        }
+
         if self.workspace_switch_manager.active_workspace_switch.is_some() {
             trace!(
                 "Skipping auto workspace switch for pid {} because a workspace switch is in progress",
@@ -3345,6 +3482,14 @@ impl Reactor {
             .or_else(|| window_server::get_window(wsid));
 
         let Some(info) = window_info else { return false };
+        if !untracked_window_is_focusable(&info) {
+            trace!(
+                ?wsid,
+                layer = info.layer,
+                "Skipping non-application surface under cursor"
+            );
+            return false;
+        }
         window_server::make_key_window(info.pid, wsid).is_ok()
     }
 

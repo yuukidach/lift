@@ -65,6 +65,26 @@ fn environment_for_event(
                 env_vars.insert("LIFT_DISPLAY_UUID".into(), display_uuid.clone());
             }
         }
+        BroadcastEvent::LayoutChanged {
+            workspace_id,
+            workspace_index,
+            workspace_name,
+            layout,
+            space_id,
+            display_uuid,
+        } => {
+            env_vars.insert("LIFT_EVENT_TYPE".into(), "layout_changed".into());
+            env_vars.insert("LIFT_WORKSPACE_ID".into(), workspace_id.to_string());
+            env_vars.insert("LIFT_WORKSPACE_NAME".into(), workspace_name.clone());
+            if let Some(workspace_index) = workspace_index {
+                env_vars.insert("LIFT_WORKSPACE_INDEX".into(), workspace_index.to_string());
+            }
+            env_vars.insert("LIFT_LAYOUT".into(), serde_json::to_string(layout)?);
+            env_vars.insert("LIFT_SPACE_ID".into(), space_id.to_string());
+            if let Some(display_uuid) = display_uuid.as_ref() {
+                env_vars.insert("LIFT_DISPLAY_UUID".into(), display_uuid.clone());
+            }
+        }
         BroadcastEvent::WindowTitleChanged {
             window_id,
             workspace_id,

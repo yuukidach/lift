@@ -11,6 +11,7 @@ use crate::core::input::{
     DisplayObservation, DisplayTopologyObservation, Input, Observation, PlatformSnapshotObservation,
 };
 use crate::core::interaction::{DragObservation, MissionControlPhase};
+use crate::core::placement::FloatingPlacement;
 use crate::core::rules::{RuleDecision, RuleSet, WindowIdentity, WorkspaceTarget};
 use crate::core::snapshot::CoreSnapshot;
 
@@ -104,6 +105,13 @@ impl CoreState {
         &mut self,
         observation: PlatformSnapshotObservation,
     ) -> Result<(), CoreError> {
+        let previously_floating = self
+            .platform
+            .windows
+            .keys()
+            .copied()
+            .filter(|window| self.workspaces.is_floating(*window))
+            .collect::<BTreeSet<_>>();
         let generation = observation.generation;
         let active_display = observation.active_display;
         let (displays, display_order) =
@@ -161,7 +169,8 @@ impl CoreState {
         self.focus.focused_window = observation.focused_window;
         self.reconcile_window_assignments()?;
         for window in self.platform.windows.values() {
-            if !self.workspaces.is_floating(window.id) {
+            if !self.workspaces.is_floating(window.id) || !previously_floating.contains(&window.id)
+            {
                 continue;
             }
             let Some(workspace) = self.workspaces.workspace_for_window(window.id) else {
@@ -348,6 +357,8 @@ impl CoreState {
                 RuleDecision::Managed {
                     workspace,
                     floating,
+                    placement,
+                    focus: _,
                     rule_index,
                 } => {
                     let display = window
@@ -365,6 +376,7 @@ impl CoreState {
                             ))
                         })?;
                     let existing = self.workspaces.workspace_for_window(window.id);
+                    let is_new_assignment = existing.is_none();
                     let floating = if rule_index.is_none() {
                         existing.is_some_and(|_| self.workspaces.is_floating(window.id))
                     } else {
@@ -405,6 +417,9 @@ impl CoreState {
                     };
                     if floating {
                         self.workspaces.assign_floating(target, window.id)?;
+                        if is_new_assignment && let Some(placement) = placement {
+                            self.apply_floating_placement(target, window.id, placement)?;
+                        }
                     } else {
                         let after = self.focus.focused_window.filter(|focused| {
                             self.workspaces.workspace_for_window(*focused) == Some(target)
@@ -625,7 +640,7 @@ impl CoreState {
                 })?;
                 self.focus_window(target, effects, events)?;
             }
-            Command::Window(WindowCommand::ToggleFloating { window }) => {
+            Command::Window(WindowCommand::ToggleFloating { window, placement }) => {
                 let window = self.command_window(window)?;
                 let workspace = self
                     .workspaces
@@ -635,6 +650,9 @@ impl CoreState {
                     self.workspaces.assign_tiled(workspace, window, None)?;
                 } else {
                     self.workspaces.assign_floating(workspace, window)?;
+                    if let Some(placement) = placement {
+                        self.apply_floating_placement(workspace, window, placement)?;
+                    }
                 }
             }
             Command::Window(WindowCommand::ToggleFullscreen { window, within_gaps }) => {
@@ -689,6 +707,28 @@ impl CoreState {
             }
         }
         Ok(())
+    }
+
+    fn apply_floating_placement(
+        &mut self,
+        workspace: WorkspaceId,
+        window: WindowId,
+        placement: FloatingPlacement,
+    ) -> Result<(), CoreError> {
+        let current = self
+            .platform
+            .windows
+            .get(&window)
+            .map(|window| window.frame)
+            .ok_or(CoreError::MissingWindow(window))?;
+        let display = self
+            .workspaces
+            .display_for_workspace(workspace)
+            .and_then(|display| self.platform.displays.get(display))
+            .map(|display| display.frame)
+            .ok_or(CoreError::WorkspaceConflict(workspace))?;
+        let frame = placement.resolve(current, display)?;
+        self.workspaces.set_floating_position(workspace, window, frame)
     }
 
     fn step_workspace(

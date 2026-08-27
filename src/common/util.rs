@@ -3,25 +3,21 @@ use tracing::{error, trace};
 pub fn parse_command(command: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current_part = String::new();
-    let mut in_quotes = false;
+    let mut quote_char = None;
     let mut chars = command.chars().peekable();
 
     while let Some(ch) = chars.next() {
         match ch {
-            '\'' | '"' => {
-                if in_quotes {
-                    in_quotes = false;
-                } else {
-                    in_quotes = true;
-                }
+            '\'' | '"' if quote_char.is_none() || quote_char == Some(ch) => {
+                quote_char = if quote_char.is_none() { Some(ch) } else { None };
             }
-            ' ' | '\t' if !in_quotes => {
+            ' ' | '\t' if quote_char.is_none() => {
                 if !current_part.is_empty() {
                     parts.push(current_part.clone());
                     current_part.clear();
                 }
             }
-            '\\' if in_quotes => {
+            '\\' if quote_char.is_some() => {
                 if let Some(next_ch) = chars.next() {
                     match next_ch {
                         'n' => current_part.push('\n'),
@@ -50,6 +46,32 @@ pub fn parse_command(command: &str) -> Vec<String> {
     }
 
     parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_command;
+
+    #[test]
+    fn matching_quote_delimiter_controls_argument_grouping() {
+        assert_eq!(parse_command(r#"say "it's alive""#), vec![
+            "say".to_string(),
+            "it's alive".to_string()
+        ]);
+        assert_eq!(parse_command(r#"say 'she said "hello"'"#), vec![
+            "say".to_string(),
+            "she said \"hello\"".to_string()
+        ]);
+    }
+
+    #[test]
+    fn quoted_escapes_and_unquoted_whitespace_keep_existing_behavior() {
+        assert_eq!(parse_command("notify  \"line\\nvalue\"\tend"), vec![
+            "notify".to_string(),
+            "line\nvalue".to_string(),
+            "end".to_string(),
+        ]);
+    }
 }
 
 pub fn execute_startup_commands(commands: &[String]) {

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor::app::{AppInfo, AppThreadHandle, WindowId, pid_t};
 use crate::common::log::MetricsCommand;
-use crate::model::layout::{Direction, LayoutCommand};
+use crate::model::layout::{ConfiguredLayoutCommand, Direction, LayoutCommand};
 use crate::sys::app::WindowInfo;
 use crate::sys::screen::SpaceId;
 use crate::sys::window_server::WindowServerId;
@@ -15,6 +15,7 @@ pub struct Requested(pub bool);
 #[serde(untagged)]
 pub enum Command {
     Layout(LayoutCommand),
+    ConfiguredLayout(ConfiguredLayoutCommand),
     Metrics(MetricsCommand),
     Reactor(ReactorCommand),
 }

@@ -362,6 +362,7 @@ mod tests {
             })),
             Input::Command(Command::Window(WindowCommand::ToggleFloating {
                 window: Some(first),
+                placement: None,
             })),
             Input::Command(Command::Workspace(WorkspaceCommand::ActivateOrCreate {
                 workspace: number(2),
@@ -417,6 +418,8 @@ mod tests {
             ax_subrole: None,
             workspace: WorkspaceTarget::Number(number(2)),
             floating: true,
+            placement: None,
+            focus: false,
             manage: true,
         });
         let mut state = CoreState::new(config);
@@ -461,6 +464,8 @@ mod tests {
             ax_subrole: None,
             workspace: WorkspaceTarget::Current,
             floating: false,
+            placement: None,
+            focus: false,
             manage: true,
         });
         let mut state = CoreState::new(config);
@@ -514,6 +519,8 @@ mod tests {
             ax_subrole: None,
             workspace: WorkspaceTarget::Number(number(8)),
             floating: false,
+            placement: None,
+            focus: false,
             manage: true,
         });
         let mut state = CoreState::new(config);
@@ -672,6 +679,8 @@ mod tests {
             ax_subrole: None,
             workspace: WorkspaceTarget::Current,
             floating: false,
+            placement: None,
+            focus: false,
             manage: false,
         });
         let mut state = CoreState::new(config);
@@ -1171,6 +1180,7 @@ mod tests {
         state
             .transition(Input::Command(Command::Window(WindowCommand::ToggleFloating {
                 window: Some(floating),
+                placement: None,
             })))
             .unwrap();
 
@@ -1208,6 +1218,7 @@ mod tests {
         state
             .transition(Input::Command(Command::Window(WindowCommand::ToggleFloating {
                 window: Some(id),
+                placement: None,
             })))
             .unwrap();
 
@@ -1226,6 +1237,98 @@ mod tests {
             .unwrap();
         assert!(refreshed.snapshot.windows[0].floating);
         assert_eq!(refreshed.snapshot.workspaces[0].layout_frames[&id], moved.frame);
+    }
+
+    #[test]
+    fn configured_manual_float_uses_smart_centered_frame() {
+        use crate::core::placement::{FloatingPlacement, FloatingPosition, FloatingSize};
+
+        let mut state = CoreState::new(CoreConfig::default());
+        let id = window(1);
+        observe(&mut state, 1, vec![display("main", 9)], vec![observed_window(
+            id, "main",
+        )])
+        .unwrap();
+
+        let transition = state
+            .transition(Input::Command(Command::Window(WindowCommand::ToggleFloating {
+                window: Some(id),
+                placement: Some(FloatingPlacement {
+                    position: Some(FloatingPosition::Center),
+                    size: Some(FloatingSize::Smart),
+                }),
+            })))
+            .unwrap();
+        let workspace = transition
+            .snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.floating_windows.contains(&id))
+            .unwrap();
+        assert_eq!(
+            workspace.layout_frames.get(&id),
+            Some(&Rect::new(120.0, 28.0, 960.0, 744.0).unwrap())
+        );
+    }
+
+    #[test]
+    fn new_window_rule_applies_initial_float_frame_once() {
+        use crate::core::placement::{FloatingPlacement, FloatingPosition, FloatingSize};
+
+        let mut config = CoreConfig::default();
+        config.window_rules.push(WindowRule {
+            app_id: Some("com.example.Terminal".into()),
+            app_name: None,
+            title_regex: None,
+            title_substring: None,
+            ax_role: None,
+            ax_subrole: None,
+            workspace: WorkspaceTarget::Number(number(2)),
+            floating: true,
+            placement: Some(FloatingPlacement {
+                position: Some(FloatingPosition::Normalized { x: 1.0, y: 0.0 }),
+                size: Some(FloatingSize::Points {
+                    width: Some(600.0),
+                    height: Some(300.0),
+                }),
+            }),
+            focus: true,
+            manage: true,
+        });
+        let mut state = CoreState::new(config);
+        let id = window(1);
+        let first = observe(&mut state, 1, vec![display("main", 9)], vec![observed_window(
+            id, "main",
+        )])
+        .unwrap();
+        let workspace = first
+            .snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.number == Some(number(2)))
+            .unwrap();
+        assert_eq!(
+            workspace.layout_frames.get(&id),
+            Some(&Rect::new(600.0, 0.0, 600.0, 300.0).unwrap())
+        );
+        state
+            .transition(Input::Command(Command::Workspace(WorkspaceCommand::Activate(
+                number(2),
+            ))))
+            .unwrap();
+        let mut refreshed_window = observed_window(id, "main");
+        refreshed_window.frame = Rect::new(250.0, 100.0, 700.0, 500.0).unwrap();
+        let refreshed =
+            observe(&mut state, 2, vec![display("main", 9)], vec![refreshed_window]).unwrap();
+        assert_eq!(
+            refreshed
+                .snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.number == Some(number(2)))
+                .and_then(|workspace| workspace.layout_frames.get(&id)),
+            Some(&Rect::new(250.0, 100.0, 700.0, 500.0).unwrap())
+        );
     }
 
     #[test]

@@ -185,6 +185,7 @@ impl ServerState {
         let event_name = match &event {
             BroadcastEvent::WorkspaceChanged { .. } => "workspace_changed",
             BroadcastEvent::WindowsChanged { .. } => "windows_changed",
+            BroadcastEvent::LayoutChanged { .. } => "layout_changed",
             BroadcastEvent::WindowTitleChanged { .. } => "window_title_changed",
             BroadcastEvent::StacksChanged { .. } => "stacks_changed",
         };
@@ -233,6 +234,7 @@ impl ServerState {
         let event_name = match &event {
             BroadcastEvent::WorkspaceChanged { .. } => "workspace_changed",
             BroadcastEvent::WindowsChanged { .. } => "windows_changed",
+            BroadcastEvent::LayoutChanged { .. } => "layout_changed",
             BroadcastEvent::WindowTitleChanged { .. } => "window_title_changed",
             BroadcastEvent::StacksChanged { .. } => "stacks_changed",
         };

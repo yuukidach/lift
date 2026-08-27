@@ -33,9 +33,11 @@ use crate::sys::axuielement::{
 use crate::sys::enhanced_ui::with_enhanced_ui_disabled;
 use crate::sys::event;
 use crate::sys::executor::Executor;
+use crate::sys::geometry::SameAs;
 use crate::sys::observer::Observer;
 use crate::sys::process::ProcessInfo;
 use crate::sys::timer::Timer;
+use crate::sys::window_animation::WindowAnimationProxy;
 use crate::sys::window_server::{self, WindowServerId, WindowServerInfo};
 
 const kAXApplicationActivatedNotification: &str = "AXApplicationActivated";
@@ -333,8 +335,8 @@ pub enum Request {
         txid: TransactionId,
     },
 
-    BeginWindowAnimation(WindowId),
-    EndWindowAnimation(WindowId),
+    BeginWindowAnimation(WindowId, Option<(CGRect, TransactionId)>),
+    EndWindowAnimation(WindowId, Option<WindowAnimationProxy>),
 
     /// Raise the windows within a single space, in the given order. All windows must be
     /// in the same space, or they will not be raised correctly.
@@ -744,6 +746,11 @@ impl State {
                         Some(frame) => frame,
                         None => return Ok(false),
                     };
+                let Some(frame) =
+                    self.retry_position_if_needed(wid, &elem, pos, frame, eui && !is_animating)?
+                else {
+                    return Ok(false);
+                };
 
                 self.send_event(Event::WindowFrameChanged(
                     wid,
@@ -795,6 +802,16 @@ impl State {
                         Some(frame) => frame,
                         None => return Ok(false),
                     };
+                let Some(frame) = self.retry_position_if_needed(
+                    wid,
+                    &elem,
+                    desired.origin,
+                    frame,
+                    eui && !is_animating,
+                )?
+                else {
+                    return Ok(false);
+                };
 
                 self.send_event(Event::WindowFrameChanged(
                     wid,
@@ -855,6 +872,16 @@ impl State {
                         Some(frame) => frame,
                         None => continue,
                     };
+                    let Some(frame) = self.retry_position_if_needed(
+                        *wid,
+                        &elem,
+                        desired.origin,
+                        frame,
+                        eui && !is_animating && !disable_eui_for_batch,
+                    )?
+                    else {
+                        continue;
+                    };
 
                     self.send_event(Event::WindowFrameChanged(
                         *wid,
@@ -868,7 +895,7 @@ impl State {
                     let _ = self.app.set_bool_attribute("AXEnhancedUserInterface", true);
                 }
             }
-            Request::BeginWindowAnimation(wid) => {
+            Request::BeginWindowAnimation(wid, target) => {
                 let (elem, started_animation) = {
                     let window = self.window_mut(wid)?;
                     let started_animation = !std::mem::replace(&mut window.is_animating, true);
@@ -882,8 +909,16 @@ impl State {
                     let _ = self.app.set_bool_attribute("AXEnhancedUserInterface", false);
                 }
                 self.stop_notifications_for_animation(&elem);
+                if let Some((target, txid)) = target {
+                    let window = self.window_mut(wid)?;
+                    window.last_seen_txid = txid;
+                    window.last_animation_frame = Some(target);
+                    let _ = elem.set_size(target.size);
+                    let _ = elem.set_position(target.origin);
+                    let _ = elem.set_size(target.size);
+                }
             }
-            Request::EndWindowAnimation(wid) => {
+            Request::EndWindowAnimation(wid, proxy) => {
                 if let Err(err) = self.flush_frames(wid) {
                     warn!(?wid, ?err, "Failed to flush animation frame on end");
                 }
@@ -918,6 +953,9 @@ impl State {
                     let _ = elem.set_position(frame.origin);
                     let _ = elem.set_size(frame.size);
                 }
+                if let Some(proxy) = proxy {
+                    proxy.finish();
+                }
                 if ended_animation {
                     self.active_animation_count = self.active_animation_count.saturating_sub(1);
                 }
@@ -930,6 +968,14 @@ impl State {
                         Some(frame) => frame,
                         None => return Ok(false),
                     };
+                let frame = if let Some(target) = last_animation_frame {
+                    match self.retry_position_if_needed(wid, &elem, target.origin, frame, false)? {
+                        Some(frame) => frame,
+                        None => return Ok(false),
+                    }
+                } else {
+                    frame
+                };
                 self.send_event(Event::WindowFrameChanged(
                     wid,
                     frame,
@@ -1547,6 +1593,31 @@ impl State {
             }
             Err(AxError::NotFound) => Ok(None),
         }
+    }
+
+    fn retry_position_if_needed(
+        &mut self,
+        wid: WindowId,
+        elem: &AXUIElement,
+        desired: CGPoint,
+        observed: CGRect,
+        enhanced_ui: bool,
+    ) -> Result<Option<CGRect>, AxError> {
+        if observed.origin.same_as(desired) {
+            return Ok(Some(observed));
+        }
+        warn!(
+            ?wid,
+            actual = ?observed.origin,
+            ?desired,
+            "AX position write did not take effect; retrying once"
+        );
+        if enhanced_ui {
+            let _ = with_enhanced_ui_disabled(&self.app, || elem.set_position(desired));
+        } else {
+            let _ = elem.set_position(desired);
+        }
+        self.handle_ax_result(wid, trace("frame after position retry", elem, || elem.frame()))
     }
 
     fn remove_stale_windows(&mut self) {

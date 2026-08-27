@@ -13,6 +13,7 @@ use crate::sys::geometry::{Round, SameAs};
 use crate::sys::power;
 use crate::sys::screen::SpaceId;
 use crate::sys::timer::Timer;
+use crate::sys::window_animation::{WindowAnimationProxy, WindowAnimationUpdate};
 use crate::sys::window_server::WindowServerId;
 
 pub type Sender = mpsc::UnboundedSender<Message>;
@@ -53,6 +54,8 @@ struct AnimatedWindow {
     finish: CGRect,
     is_focus: bool,
     resizes: bool,
+    window_server_id: Option<WindowServerId>,
+    proxy: Option<WindowAnimationProxy>,
     txid: TransactionId,
 }
 
@@ -114,7 +117,7 @@ impl AnimationManager {
                 };
                 self.active.as_ref().map(|active| active.animation.interval)
             }
-            Message::SkipToEnd(animation) => {
+            Message::SkipToEnd(mut animation) => {
                 self.finish_active();
                 animation.skip_to_end();
                 None
@@ -128,7 +131,7 @@ impl AnimationManager {
         let active = self.active.as_mut()?;
         active.send_next_frame_at(now);
         if active.is_complete() {
-            let active = self.active.take().expect("animation disappeared while ticking");
+            let mut active = self.active.take().expect("animation disappeared while ticking");
             active.animation.end();
             None
         } else {
@@ -212,7 +215,15 @@ impl AnimationManager {
 
             if is_active {
                 trace!(?wid, ?current_frame, ?target_frame, "Animating visible window");
-                anim.add_window(&app_state.handle, wid, current_frame, target_frame, false, txid);
+                anim.add_window_with_server_id(
+                    &app_state.handle,
+                    wid,
+                    current_frame,
+                    target_frame,
+                    false,
+                    window_server_id,
+                    txid,
+                );
                 animated_count += 1;
                 if let Some(wsid) = window_server_id {
                     reactor.transaction_manager.update_txid_entries([(wsid, txid, target_frame)]);
@@ -257,8 +268,8 @@ impl AnimationManager {
                 };
                 if let Err(err) = tx.send(message) {
                     match err.0 {
-                        Message::Replace(animation) => animation.skip_to_end(),
-                        Message::SkipToEnd(animation) => animation.skip_to_end(),
+                        Message::Replace(mut animation) => animation.skip_to_end(),
+                        Message::SkipToEnd(mut animation) => animation.skip_to_end(),
                     }
                 }
             } else {
@@ -372,7 +383,7 @@ impl AnimationManager {
 impl ActiveAnimation {
     fn start(animation: Animation) -> Option<Self> { Self::start_at(animation, Instant::now()) }
 
-    fn start_at(animation: Animation, started_at: Instant) -> Option<Self> {
+    fn start_at(mut animation: Animation, started_at: Instant) -> Option<Self> {
         if animation.is_empty() {
             return None;
         }
@@ -384,9 +395,10 @@ impl ActiveAnimation {
         })
     }
 
-    fn replace_with(self, mut next: Animation) -> Self {
+    fn replace_with(mut self, mut next: Animation) -> Self {
         let current = self.current_frames();
         let continuing = next.patch_starts_from(&current);
+        next.adopt_proxies_from(&mut self.animation);
         next.begin_windows_not_in(&continuing);
         next.carry_over(self.animation, &current);
         Self {
@@ -461,6 +473,19 @@ impl Animation {
         is_focus: bool,
         txid: TransactionId,
     ) {
+        self.add_window_with_server_id(handle, wid, start, finish, is_focus, None, txid);
+    }
+
+    fn add_window_with_server_id(
+        &mut self,
+        handle: &AppThreadHandle,
+        wid: WindowId,
+        start: CGRect,
+        finish: CGRect,
+        is_focus: bool,
+        window_server_id: Option<WindowServerId>,
+        txid: TransactionId,
+    ) {
         self.windows.push(AnimatedWindow {
             handle: handle.clone(),
             wid,
@@ -468,6 +493,8 @@ impl Animation {
             finish,
             is_focus,
             resizes: !start.size.same_as(finish.size),
+            window_server_id,
+            proxy: None,
             txid,
         });
         self.mark_handled(wid);
@@ -479,7 +506,7 @@ impl Animation {
         }
     }
 
-    pub fn skip_to_end(&self) {
+    pub fn skip_to_end(&mut self) {
         for window in &self.windows {
             _ = window.handle.send(Request::SetWindowFrame(
                 window.wid,
@@ -492,15 +519,23 @@ impl Animation {
 
     pub fn is_empty(&self) -> bool { self.windows.is_empty() }
 
-    fn begin(&self) { self.begin_windows_not_in(&[]); }
+    fn begin(&mut self) { self.begin_windows_not_in(&[]); }
 
-    fn begin_windows_not_in(&self, skip: &[WindowId]) {
-        for window in &self.windows {
+    fn begin_windows_not_in(&mut self, skip: &[WindowId]) {
+        self.prepare_proxies();
+        for window in &mut self.windows {
             if skip.contains(&window.wid) {
+                if window.proxy.is_some() {
+                    _ = window.handle.send(Request::BeginWindowAnimation(
+                        window.wid,
+                        Some((window.finish, window.txid)),
+                    ));
+                }
                 continue;
             }
-            _ = window.handle.send(Request::BeginWindowAnimation(window.wid));
-            if window.is_focus {
+            let target = window.proxy.as_ref().map(|_| (window.finish, window.txid));
+            _ = window.handle.send(Request::BeginWindowAnimation(window.wid, target));
+            if window.proxy.is_none() && window.is_focus {
                 let frame = CGRect {
                     origin: window.start.origin,
                     size: window.finish.size,
@@ -515,24 +550,55 @@ impl Animation {
         }
     }
 
-    fn finish_all(&self) {
-        for window in &self.windows {
-            _ = window.handle.send(Request::AnimationFrame {
-                wid: window.wid,
-                frame: window.finish,
-                set_size: true,
-                txid: window.txid,
-            });
-            _ = window.handle.send(Request::EndWindowAnimation(window.wid));
+    fn prepare_proxies(&mut self) {
+        let candidates: Vec<_> = self
+            .windows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, window)| {
+                (window.resizes && window.proxy.is_none())
+                    .then_some(window.window_server_id)
+                    .flatten()
+                    .map(|id| (index, id, window.start))
+            })
+            .collect();
+        let requests: Vec<_> = candidates.iter().map(|&(_, id, frame)| (id, frame)).collect();
+        for ((index, _, _), proxy) in
+            candidates.into_iter().zip(WindowAnimationProxy::create_batch(&requests))
+        {
+            self.windows[index].proxy = proxy;
+        }
+    }
+
+    fn finish_all(&mut self) {
+        for window in &mut self.windows {
+            if window.proxy.is_none() {
+                _ = window.handle.send(Request::AnimationFrame {
+                    wid: window.wid,
+                    frame: window.finish,
+                    set_size: true,
+                    txid: window.txid,
+                });
+            }
+            _ = window.handle.send(Request::EndWindowAnimation(window.wid, window.proxy.take()));
         }
     }
 
     fn send_frame(&self, frame: u32) {
         let t = f64::from(frame) / f64::from(self.frames);
+        let update = self
+            .windows
+            .iter()
+            .any(|window| window.proxy.is_some())
+            .then(WindowAnimationUpdate::new);
         for window in &self.windows {
             let mut rect = get_frame(window.start, window.finish, t, self.easing);
             if window.is_focus {
                 rect.size = window.finish.size;
+            }
+            if let (Some(update), Some(proxy)) = (&update, &window.proxy) {
+                update.set_frame(proxy, rect);
+                continue;
             }
             let set_size = window.resizes && !window.is_focus;
             _ = window.handle.send(Request::AnimationFrame {
@@ -542,13 +608,12 @@ impl Animation {
                 txid: window.txid,
             });
         }
-    }
-
-    fn end(&self) {
-        for window in &self.windows {
-            _ = window.handle.send(Request::EndWindowAnimation(window.wid));
+        if let Some(update) = update {
+            update.commit();
         }
     }
+
+    fn end(&mut self) { self.finish_all(); }
 
     fn patch_starts_from(&mut self, current_frames: &[(WindowId, CGRect)]) -> Vec<WindowId> {
         let mut continuing = Vec::new();
@@ -562,9 +627,25 @@ impl Animation {
         continuing
     }
 
+    fn adopt_proxies_from(&mut self, previous: &mut Animation) {
+        for window in &mut self.windows {
+            let Some(previous) =
+                previous.windows.iter_mut().find(|previous| previous.wid == window.wid)
+            else {
+                continue;
+            };
+            window.proxy = previous.proxy.take();
+        }
+    }
+
     fn carry_over(&mut self, previous: Animation, current_frames: &[(WindowId, CGRect)]) {
         for mut window in previous.windows {
             if self.handled_windows.contains(&window.wid) {
+                if window.proxy.is_some() {
+                    _ = window
+                        .handle
+                        .send(Request::EndWindowAnimation(window.wid, window.proxy.take()));
+                }
                 continue;
             }
             if self.windows.iter().any(|existing| existing.wid == window.wid) {
@@ -579,7 +660,7 @@ impl Animation {
         }
     }
 
-    fn skip_to_end_and_end(self) { self.finish_all(); }
+    fn skip_to_end_and_end(mut self) { self.finish_all(); }
 }
 
 fn get_frame(a: CGRect, b: CGRect, t: f64, easing: AnimationEasing) -> CGRect {
@@ -889,7 +970,7 @@ mod tests {
         manager.handle_message(Message::Replace(first));
         assert!(matches!(
             collect_requests(&mut rx).as_slice(),
-            [Request::BeginWindowAnimation(req_wid)] if *req_wid == wid
+            [Request::BeginWindowAnimation(req_wid, None)] if *req_wid == wid
         ));
 
         manager.tick();
@@ -968,7 +1049,9 @@ mod tests {
 
         let requests = collect_requests(&mut rx);
         assert_eq!(requests.len(), 1);
-        assert!(matches!(requests[0], Request::BeginWindowAnimation(req_wid) if req_wid == wid3));
+        assert!(
+            matches!(requests[0], Request::BeginWindowAnimation(req_wid, None) if req_wid == wid3)
+        );
         assert!(animation_contains(&manager, wid2));
 
         let carried = manager
@@ -1049,9 +1132,13 @@ mod tests {
 
         let requests = collect_requests(&mut rx);
         assert_eq!(requests.len(), 4);
-        assert!(matches!(requests[0], Request::BeginWindowAnimation(req_wid) if req_wid == wid));
+        assert!(
+            matches!(requests[0], Request::BeginWindowAnimation(req_wid, None) if req_wid == wid)
+        );
         assert_animation_frame(&requests[1], wid, rect(50.0, 60.0, 10.0, 10.0));
-        assert!(matches!(requests[2], Request::EndWindowAnimation(req_wid) if req_wid == wid));
+        assert!(
+            matches!(requests[2], Request::EndWindowAnimation(req_wid, None) if req_wid == wid)
+        );
         assert_set_window_frame(&requests[3], wid, rect(80.0, 90.0, 10.0, 10.0));
     }
 }

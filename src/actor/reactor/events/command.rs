@@ -20,7 +20,10 @@ use crate::core::command::{
 use crate::core::effect::Effect as CoreEffect;
 use crate::core::error::CoreError;
 use crate::core::ids::{DisplayId as CoreDisplayId, WorkspaceNumber as CoreWorkspaceNumber};
-use crate::model::layout::{EventResponse, LayoutCommand};
+use crate::model::layout::{
+    ConfiguredLayoutCommand, EventResponse, LayoutCommand, ToggleFloatingSize,
+    ToggleFloatingSizePreset,
+};
 use crate::sys::app::pid_t;
 use crate::sys::window_server::{self as window_server, WindowServerId};
 
@@ -326,8 +329,48 @@ impl CommandEventHandler {
     pub fn handle_command(reactor: &mut Reactor, cmd: Command) {
         match cmd {
             Command::Layout(cmd) => Self::handle_command_layout(reactor, cmd),
+            Command::ConfiguredLayout(cmd) => Self::handle_configured_layout_command(reactor, cmd),
             Command::Metrics(cmd) => Self::handle_command_metrics(reactor, cmd),
             Command::Reactor(cmd) => Self::handle_command_reactor(reactor, cmd),
+        }
+    }
+
+    fn handle_configured_layout_command(reactor: &mut Reactor, cmd: ConfiguredLayoutCommand) {
+        match cmd {
+            ConfiguredLayoutCommand::ToggleWindowFloating(options) => {
+                let Some(window) = reactor.focused_window_for_command() else {
+                    return;
+                };
+                let placement = crate::core::placement::FloatingPlacement {
+                    position: options
+                        .center
+                        .then_some(crate::core::placement::FloatingPosition::Center),
+                    size: options.size.map(|size| match size {
+                        ToggleFloatingSize::Points { w, h } => {
+                            crate::core::placement::FloatingSize::Points {
+                                width: Some(w),
+                                height: Some(h),
+                            }
+                        }
+                        ToggleFloatingSize::Preset(ToggleFloatingSizePreset::Smart) => {
+                            crate::core::placement::FloatingSize::Smart
+                        }
+                    }),
+                };
+                let workspace_space = reactor.workspace_command_space();
+                match reactor.transition_core_command(CoreCommand::Window(
+                    CoreWindowCommand::ToggleFloating {
+                        window: Some(Self::core_window(window)),
+                        placement: Some(placement),
+                    },
+                )) {
+                    Ok(transition) => {
+                        let response = reactor.layout_response_for_transition(&transition);
+                        reactor.handle_layout_response(response, workspace_space);
+                    }
+                    Err(error) => warn!(?error, ?cmd, "Core rejected configured floating command"),
+                }
+            }
         }
     }
 
@@ -393,7 +436,10 @@ impl CommandEventHandler {
                 .workspace_switch_manager
                 .start_workspace_switch(WorkspaceSwitchOrigin::Manual);
         } else {
-            reactor.workspace_switch_manager.mark_workspace_switch_inactive();
+            // A direct layout command supersedes any unfinished workspace-switch
+            // generation. Leaving it active forces apply_layout down the instant
+            // path and makes user-initiated BSP rearrangements visibly jump.
+            reactor.workspace_switch_manager.cancel_workspace_switch();
         }
 
         if let LayoutCommand::MoveWindowToWorkspace { workspace, window_id: None } = &cmd {
@@ -508,7 +554,10 @@ impl CommandEventHandler {
             };
             let window = Self::core_window(window);
             if let Err(error) = reactor.transition_core_command(CoreCommand::Window(
-                CoreWindowCommand::ToggleFloating { window: Some(window) },
+                CoreWindowCommand::ToggleFloating {
+                    window: Some(window),
+                    placement: None,
+                },
             )) {
                 warn!(?error, ?cmd, "Core rejected floating-state command");
                 reactor.handle_layout_response(EventResponse::default(), workspace_space);
@@ -701,7 +750,7 @@ impl CommandEventHandler {
                 return;
             }
         };
-        reactor.workspace_switch_manager.mark_workspace_switch_inactive();
+        reactor.workspace_switch_manager.cancel_workspace_switch();
         reactor.handle_layout_response(response, command_space);
     }
 

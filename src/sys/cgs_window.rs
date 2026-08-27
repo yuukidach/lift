@@ -86,13 +86,25 @@ pub struct CgsWindow {
 
 impl CgsWindow {
     pub fn new(frame: CGRect) -> Result<Self, CgsWindowError> {
+        Self::new_with_options(frame, 13, (1 << 1) | (1 << 9))
+    }
+
+    pub fn new_animation_proxy(frame: CGRect) -> Result<Self, CgsWindowError> {
+        // Opt this short-lived proxy out of WindowManagementBridge bookkeeping,
+        // request high-quality resampling, and keep it out of pointer dispatch.
+        Self::new_with_options(frame, 13 | (1 << 18), (1 << 1) | (1 << 4) | (1 << 9))
+    }
+
+    fn new_with_options(
+        frame: CGRect,
+        options: i32,
+        mut tags: u64,
+    ) -> Result<Self, CgsWindowError> {
         unsafe {
             let connection = *G_CONNECTION;
 
             let frame_region = CFRegion::from_rect(&frame).map_err(CgsWindowError::Region)?;
             let empty_region = CFRegion::empty();
-
-            let mut tags: u64 = (1 << 1) | (1 << 9);
 
             let mut wid: WindowId = 0;
             cg_ok(SLSNewWindowWithOpaqueShapeAndContext(
@@ -100,7 +112,7 @@ impl CgsWindow {
                 2,
                 frame_region.as_ptr(),
                 empty_region.as_ptr(),
-                13,
+                options,
                 &mut tags,
                 0.0,
                 0.0,

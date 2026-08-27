@@ -1,10 +1,11 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::actor::app::WindowId as ActorWindowId;
+use crate::core::bsp::Axis;
 use crate::core::geometry::Rect;
-use crate::core::ids::{SpaceId, WindowId, WorkspaceId, WorkspaceNumber};
+use crate::core::ids::{GroupId, SpaceId, WindowId, WorkspaceId, WorkspaceNumber};
 use crate::core::snapshot::{CoreSnapshot, WorkspaceSnapshot};
-use crate::model::server::{WindowData, WorkspaceData};
+use crate::model::server::{WindowData, WindowLayoutPosition, WorkspaceData};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct WorkspaceLayoutView {
@@ -36,13 +37,29 @@ pub struct ApplicationView {
     pub window_count: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LayoutStateView {
     pub space_id: u64,
-    pub mode: &'static str,
+    pub mode: String,
+    pub groups: Vec<LayoutGroupView>,
     pub floating_windows: Vec<ActorWindowId>,
     pub tiled_windows: Vec<ActorWindowId>,
+    pub frames: Vec<LayoutWindowFrameView>,
     pub focused_window: Option<ActorWindowId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LayoutGroupView {
+    pub id: GroupId,
+    pub axis: Axis,
+    pub windows: Vec<ActorWindowId>,
+    pub selected: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayoutWindowFrameView {
+    pub window: ActorWindowId,
+    pub frame: Rect,
 }
 
 pub fn workspaces(
@@ -90,23 +107,85 @@ pub fn windows(snapshot: &CoreSnapshot, space: Option<SpaceId>) -> Vec<WindowDat
             .find(|display| display.space == Some(space))
             .and_then(|display| display.active_workspace)
     });
-    snapshot
+    let mut windows = snapshot
         .windows
         .iter()
         .filter(|window| {
             space.is_none()
                 || active_workspace.is_some_and(|workspace| window.workspace == Some(workspace))
         })
-        .map(|window| crate::interfaces::ui::window_data(snapshot, window))
-        .collect()
+        .map(|window| {
+            let mut data = crate::interfaces::ui::window_data(snapshot, window);
+            data.layout_position = window_layout_position(snapshot, window.id);
+            data
+        })
+        .collect::<Vec<_>>();
+    windows.sort_by_key(|window| {
+        let core_id = WindowId::new(crate::core::ids::ApplicationId(window.id.pid), window.id.idx);
+        let workspace_index = snapshot
+            .windows
+            .iter()
+            .find(|candidate| candidate.id == core_id)
+            .and_then(|candidate| candidate.workspace)
+            .and_then(|id| snapshot.workspaces.iter().find(|workspace| workspace.id == id))
+            .map(|workspace| {
+                let display_index = snapshot
+                    .displays
+                    .iter()
+                    .position(|display| display.id == workspace.display)
+                    .unwrap_or(usize::MAX);
+                let number_index =
+                    workspace.number.map(WorkspaceNumber::global_slot).unwrap_or(usize::MAX);
+                (display_index, number_index)
+            })
+            .unwrap_or((usize::MAX, usize::MAX));
+        window
+            .layout_position
+            .map(|position| {
+                (
+                    workspace_index.0,
+                    workspace_index.1,
+                    0,
+                    position.group_index,
+                    position.window_index,
+                )
+            })
+            .unwrap_or((workspace_index.0, workspace_index.1, 1, usize::MAX, usize::MAX))
+    });
+    windows
 }
 
 pub fn window(snapshot: &CoreSnapshot, id: WindowId) -> Option<WindowData> {
+    snapshot.windows.iter().find(|window| window.id == id).map(|window| {
+        let mut data = crate::interfaces::ui::window_data(snapshot, window);
+        data.layout_position = window_layout_position(snapshot, window.id);
+        data
+    })
+}
+
+fn window_layout_position(
+    snapshot: &CoreSnapshot,
+    window: WindowId,
+) -> Option<WindowLayoutPosition> {
+    let workspace = snapshot.windows.iter().find(|candidate| candidate.id == window)?.workspace?;
     snapshot
-        .windows
+        .workspaces
         .iter()
-        .find(|window| window.id == id)
-        .map(|window| crate::interfaces::ui::window_data(snapshot, window))
+        .find(|candidate| candidate.id == workspace)?
+        .groups
+        .iter()
+        .enumerate()
+        .find_map(|(group_index, group)| {
+            group
+                .windows
+                .iter()
+                .position(|candidate| *candidate == window)
+                .map(|window_index| WindowLayoutPosition {
+                    group_id: group.id,
+                    group_index,
+                    window_index,
+                })
+        })
 }
 
 pub fn applications(snapshot: &CoreSnapshot) -> Vec<ApplicationView> {
@@ -125,13 +204,31 @@ pub fn applications(snapshot: &CoreSnapshot) -> Vec<ApplicationView> {
 
 pub fn layout_state(snapshot: &CoreSnapshot, space: SpaceId) -> Option<LayoutStateView> {
     let workspace = active_workspace(snapshot, space)?;
+    Some(layout_state_for_workspace(snapshot, &workspace, space))
+}
+
+pub fn layout_state_for_workspace(
+    snapshot: &CoreSnapshot,
+    workspace: &WorkspaceSnapshot,
+    space: SpaceId,
+) -> LayoutStateView {
     let to_actor = |window: WindowId| ActorWindowId {
         pid: window.application.0,
         idx: window.index,
     };
-    Some(LayoutStateView {
+    LayoutStateView {
         space_id: space.0,
-        mode: "bsp",
+        mode: "bsp".to_string(),
+        groups: workspace
+            .groups
+            .iter()
+            .map(|group| LayoutGroupView {
+                id: group.id,
+                axis: group.axis,
+                windows: group.windows.iter().copied().map(to_actor).collect(),
+                selected: group.selected,
+            })
+            .collect(),
         floating_windows: workspace.floating_windows.iter().copied().map(to_actor).collect(),
         tiled_windows: workspace
             .groups
@@ -139,8 +236,22 @@ pub fn layout_state(snapshot: &CoreSnapshot, space: SpaceId) -> Option<LayoutSta
             .flat_map(|group| group.windows.iter().copied())
             .map(to_actor)
             .collect(),
-        focused_window: snapshot.focused_window.map(to_actor),
-    })
+        frames: workspace
+            .layout_frames
+            .iter()
+            .map(|(window, frame)| LayoutWindowFrameView {
+                window: to_actor(*window),
+                frame: *frame,
+            })
+            .collect(),
+        focused_window: snapshot
+            .focused_window
+            .filter(|window| {
+                workspace.groups.iter().any(|group| group.windows.contains(window))
+                    || workspace.floating_windows.contains(window)
+            })
+            .map(to_actor),
+    }
 }
 
 pub fn workspace_layouts(
@@ -332,6 +443,9 @@ mod tests {
         let windows = serde_json::to_value(windows(&snapshot, None)).unwrap();
         assert_eq!(windows[0]["window_server_id"], 99);
         assert_eq!(windows[0]["bundle_id"], "com.example.Terminal");
+        assert_eq!(windows[0]["layout_position"]["group_id"], 3);
+        assert_eq!(windows[0]["layout_position"]["group_index"], 0);
+        assert_eq!(windows[0]["layout_position"]["window_index"], 0);
 
         let applications = serde_json::to_value(applications(&snapshot)).unwrap();
         assert_eq!(applications[0]["pid"], 42);
@@ -340,5 +454,36 @@ mod tests {
         let layout = serde_json::to_value(layout_state(&snapshot, SpaceId(9)).unwrap()).unwrap();
         assert_eq!(layout["mode"], "bsp");
         assert_eq!(layout["tiled_windows"][0]["pid"], 42);
+    }
+
+    #[test]
+    fn window_query_uses_bsp_group_and_window_order() {
+        let mut snapshot = fixture();
+        let logical_first = WindowId::new(ApplicationId(42), NonZeroU32::new(3).unwrap());
+        let logical_second = WindowId::new(ApplicationId(42), NonZeroU32::new(2).unwrap());
+        let workspace = snapshot.workspaces[0].id;
+        snapshot.workspaces[0].groups[0].windows = vec![logical_first, logical_second];
+        snapshot.windows = [logical_second, logical_first]
+            .into_iter()
+            .map(|id| WindowSnapshot {
+                id,
+                workspace: Some(workspace),
+                frame: Rect::new(0.0, 0.0, 500.0, 400.0).unwrap(),
+                title: format!("Window {}", id.index),
+                application_name: Some("Terminal".into()),
+                platform_id: Some(id.index.get()),
+                floating: false,
+                minimized: false,
+                fullscreen: false,
+            })
+            .collect();
+
+        let queried = windows(&snapshot, Some(SpaceId(9)));
+        assert_eq!(queried.iter().map(|window| window.id.idx).collect::<Vec<_>>(), [
+            logical_first.index,
+            logical_second.index,
+        ]);
+        assert_eq!(queried[0].layout_position.unwrap().window_index, 0);
+        assert_eq!(queried[1].layout_position.unwrap().window_index, 1);
     }
 }

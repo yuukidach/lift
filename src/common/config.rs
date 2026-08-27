@@ -122,6 +122,14 @@ pub struct AppWorkspaceRule {
     /// Whether windows should be floating in this workspace
     #[serde(default)]
     pub floating: bool,
+    /// Initial normalized position within the target display. Both coordinates
+    /// are in 0.0..=1.0 and only apply to floating windows.
+    pub position: Option<AppRulePosition>,
+    /// Initial size in logical points. Omitted dimensions keep the observed size.
+    pub size: Option<AppRuleSize>,
+    /// Focus a newly discovered matching window and activate its workspace.
+    #[serde(default)]
+    pub focus: bool,
     /// Whether Lift should manage matching windows (defaults to true). `false` makes the
     /// window invisible to Lift (no tiling, floating, or assignments).
     #[serde(default = "yes")]
@@ -149,6 +157,20 @@ pub struct AppWorkspaceRule {
     /// non-empty string and will be compared against the accessibility subrole
     /// reported by the AX APIs for a window (exact string match).
     pub ax_subrole: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+pub struct AppRulePosition {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+pub struct AppRuleSize {
+    pub w: Option<f64>,
+    pub h: Option<f64>,
 }
 
 impl Default for VirtualWorkspaceSettings {
@@ -245,6 +267,39 @@ impl VirtualWorkspaceSettings {
                             index, idx
                         ));
                     }
+                }
+            }
+
+            if let Some(position) = rule.position {
+                for (name, value) in [("x", position.x), ("y", position.y)] {
+                    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                        issues.push(format!(
+                            "App rule {} position.{} must be within 0.0..=1.0",
+                            index, name
+                        ));
+                    }
+                }
+                if !rule.floating {
+                    issues.push(format!(
+                        "App rule {} specifies position but is not floating",
+                        index
+                    ));
+                }
+            }
+            if let Some(size) = rule.size {
+                if size.w.is_none() && size.h.is_none() {
+                    issues.push(format!("App rule {} size must specify w or h", index));
+                }
+                for (name, value) in [("w", size.w), ("h", size.h)] {
+                    if value.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+                        issues.push(format!(
+                            "App rule {} size.{} must be finite and greater than zero",
+                            index, name
+                        ));
+                    }
+                }
+                if !rule.floating {
+                    issues.push(format!("App rule {} specifies size but is not floating", index));
                 }
             }
 
@@ -1199,6 +1254,22 @@ mod tests {
             PathBuf::from("/Users/example/.config/lift/config.toml")
         );
         assert!(diagnostics_file().ends_with(".lift/diagnostics/operations.jsonl"));
+    }
+
+    #[test]
+    fn floating_rule_actions_parse_and_validate() {
+        let settings: VirtualWorkspaceSettings = toml::from_str(
+            r#"
+            app_rules = [{ app_id = "com.example.app", workspace = 2, floating = true, position = { x = 0.5, y = 1.0 }, size = { w = 900.0 }, focus = true }]
+            "#,
+        )
+        .unwrap();
+
+        assert!(settings.validate().is_empty());
+        let rule = &settings.app_rules[0];
+        assert_eq!(rule.position, Some(AppRulePosition { x: 0.5, y: 1.0 }));
+        assert_eq!(rule.size, Some(AppRuleSize { w: Some(900.0), h: None }));
+        assert!(rule.focus);
     }
 
     #[test]

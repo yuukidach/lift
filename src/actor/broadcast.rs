@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actor::app::WindowId;
 use crate::core::ids::WorkspaceId as VirtualWorkspaceId;
+use crate::interfaces::query::LayoutStateView;
 use crate::model::layout::LayoutKind;
 use crate::sys::screen::SpaceId;
 
@@ -28,6 +29,14 @@ pub enum BroadcastEvent {
         workspace_id: VirtualWorkspaceId,
         workspace_name: String,
         windows: Vec<String>,
+        space_id: SpaceId,
+        display_uuid: Option<String>,
+    },
+    LayoutChanged {
+        workspace_id: VirtualWorkspaceId,
+        workspace_index: Option<u64>,
+        workspace_name: String,
+        layout: LayoutStateView,
         space_id: SpaceId,
         display_uuid: Option<String>,
     },

@@ -9,6 +9,93 @@ use crate::sys::geometry::SameAs;
 fn screen(x: f64) -> CGRect { CGRect::new(CGPoint::new(x, 0.0), CGSize::new(1000.0, 1000.0)) }
 
 #[test]
+fn untracked_focus_fallback_rejects_system_surfaces() {
+    let info = |layer| WindowServerInfo {
+        pid: 1,
+        id: WindowServerId::new(1),
+        layer,
+        frame: screen(0.0),
+        min_frame: CGSize::ZERO,
+        max_frame: CGSize::ZERO,
+    };
+
+    assert!(untracked_window_is_focusable(&info(0)));
+    assert!(!untracked_window_is_focusable(&info(-1)));
+    assert!(!untracked_window_is_focusable(&info(25)));
+}
+
+#[test]
+fn lifecycle_events_control_activation_suppression() {
+    assert_eq!(lifecycle_activation_suppression(&Event::SystemWoke), Some(true));
+    assert_eq!(
+        lifecycle_activation_suppression(&Event::SessionDidBecomeActive),
+        Some(true)
+    );
+    assert_eq!(lifecycle_activation_suppression(&Event::MouseUp), Some(false));
+    assert_eq!(
+        lifecycle_activation_suppression(&Event::ApplicationGloballyActivated(7)),
+        None
+    );
+}
+
+#[test]
+fn lifecycle_restored_activation_waits_for_user_input() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let pid = 7;
+    let window = WindowId::new(pid, 1);
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(pid, make_windows(1), Some(window), true, true));
+    apps.simulate_until_quiet(&mut reactor);
+    let original = reactor.active_workspace_for_space(space).unwrap();
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace {
+            workspace: 1,
+            window_id: Some(window.idx.get()),
+        },
+    )));
+    let target = reactor.workspace_for_window(window).unwrap();
+    assert_ne!(target, original);
+    assert_eq!(reactor.active_workspace_for_space(space), Some(original));
+
+    reactor.handle_event(Event::SessionDidBecomeActive);
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    apps.simulate_until_quiet(&mut reactor);
+    assert_eq!(
+        reactor.active_workspace_for_space(space),
+        Some(original),
+        "lifecycle-restored activation must not switch workspaces"
+    );
+
+    reactor.handle_event(Event::MouseUp);
+    assert!(!reactor.workspace_switch_manager.suppress_auto_workspace_switch_until_input);
+}
+
+#[test]
+fn focus_app_rule_activates_the_new_windows_workspace() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    reactor.config.virtual_workspaces =
+        toml::from_str(r#"app_rules = [{ app_id = "com.testapp7", workspace = 2, focus = true }]"#)
+            .unwrap();
+    let core_config = crate::interfaces::config::core_config(&reactor.config).unwrap();
+    reactor.window_rules = RuleSet::compile(core_config.window_rules.clone()).unwrap();
+    reactor.core_state = Some(crate::core::state::CoreState::new(core_config));
+
+    let window = WindowId::new(7, 1);
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(7, make_windows(1), Some(window), true, true));
+    apps.simulate_until_quiet(&mut reactor);
+
+    let workspace = reactor.workspace_for_window(window).unwrap();
+    assert_eq!(reactor.active_workspace_for_space(space), Some(workspace));
+    assert_eq!(reactor.workspace_number(workspace).unwrap().get(), 2);
+}
+
+#[test]
 fn publishes_stable_immutable_core_snapshots() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test();
@@ -91,6 +178,61 @@ fn newly_managed_windows_suppress_the_first_layout_animation() {
 }
 
 #[test]
+fn perpendicular_move_node_uses_the_regular_layout_animation() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    reactor.config.settings.animate = true;
+    reactor.config.settings.animation_duration = 0.2;
+    let (animation_tx, mut animation_rx) = tokio::sync::mpsc::unbounded_channel();
+    reactor.animation_tx = Some(animation_tx);
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0)],
+        vec![Some(SpaceId::new(1))],
+        vec![],
+    ));
+    let focused = WindowId::new(1, 1);
+    reactor.handle_events(apps.make_app_with_opts(1, make_windows(2), Some(focused), true, true));
+    apps.simulate_until_quiet(&mut reactor);
+    while animation_rx.try_recv().is_ok() {}
+
+    reactor
+        .transition_core_command(crate::core::command::Command::Window(
+            crate::core::command::WindowCommand::ToggleOrientation {
+                window: Some(Reactor::core_window_id(focused)),
+            },
+        ))
+        .unwrap();
+    assert!(reactor.update_layout_or_warn(false, false));
+    assert!(matches!(
+        animation_rx.try_recv(),
+        Ok(animation::Message::Replace(_))
+    ));
+    while animation_rx.try_recv().is_ok() {}
+
+    reactor
+        .transition_core_input(crate::core::input::Input::Observation(
+            crate::core::input::Observation::FocusChanged {
+                window: Some(Reactor::core_window_id(focused)),
+            },
+        ))
+        .unwrap();
+    reactor
+        .workspace_switch_manager
+        .start_workspace_switch(WorkspaceSwitchOrigin::Manual);
+    reactor.workspace_switch_manager.mark_workspace_switch_inactive();
+    assert!(reactor.workspace_switch_manager.active_workspace_switch.is_some());
+
+    reactor.handle_event(Event::Command(Command::Layout(LayoutCommand::MoveNode(
+        Direction::Right,
+    ))));
+    assert!(reactor.workspace_switch_manager.active_workspace_switch.is_none());
+    assert!(matches!(
+        animation_rx.try_recv(),
+        Ok(animation::Message::Replace(_))
+    ));
+}
+
+#[test]
 fn publishing_window_membership_changes_broadcasts_once_for_the_display() {
     let mut apps = Apps::new();
     let (mut reactor, mut broadcasts) = Reactor::new_for_test_with_broadcast();
@@ -119,6 +261,13 @@ fn publishing_window_membership_changes_broadcasts_once_for_the_display() {
     assert_eq!(windows.len(), 2);
     assert_eq!(space_id, SpaceId::new(1));
     assert_eq!(display_uuid.as_deref(), Some("test-display-0"));
+
+    let (_, event) = broadcasts.try_recv().expect("layout_changed broadcast");
+    let BroadcastEvent::LayoutChanged { layout, .. } = event else {
+        panic!("expected layout_changed broadcast");
+    };
+    assert_eq!(layout.mode, "bsp");
+    assert_eq!(layout.tiled_windows.len(), 2);
 
     reactor.publish_core_snapshot().unwrap();
     assert!(

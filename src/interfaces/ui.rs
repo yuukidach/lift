@@ -47,6 +47,7 @@ pub fn window_data(snapshot: &CoreSnapshot, window: &WindowSnapshot) -> WindowDa
         is_floating: window.floating,
         is_focused: snapshot.focused_window == Some(window.id),
         app_name: window.application_name.clone(),
+        layout_position: None,
         info: WindowInfo {
             is_standard: true,
             is_root: true,
@@ -146,6 +147,16 @@ pub fn workspace_data_for_display(
                 .filter_map(|window| snapshot.windows.iter().find(|item| item.id == *window))
                 .map(|window| {
                     let mut data = window_data(snapshot, window);
+                    data.layout_position =
+                        workspace.groups.iter().enumerate().find_map(|(group_index, group)| {
+                            group.windows.iter().position(|candidate| *candidate == window.id).map(
+                                |window_index| crate::model::server::WindowLayoutPosition {
+                                    group_id: group.id,
+                                    group_index,
+                                    window_index,
+                                },
+                            )
+                        });
                     if !is_active && let Some(frame) = workspace.layout_frames.get(&window.id) {
                         data.info.frame = CGRect::new(
                             CGPoint::new(frame.origin.x, frame.origin.y),

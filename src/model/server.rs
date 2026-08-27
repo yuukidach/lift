@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::actor::app::WindowId;
+use crate::core::ids::GroupId;
 use crate::sys::app::WindowInfo;
 use crate::sys::geometry::CGRectDef;
 use crate::sys::window_server::WindowServerId;
@@ -25,7 +26,15 @@ pub struct WindowData {
     pub is_floating: bool,
     pub is_focused: bool,
     pub app_name: Option<String>,
+    pub layout_position: Option<WindowLayoutPosition>,
     pub info: WindowInfo,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WindowLayoutPosition {
+    pub group_id: GroupId,
+    pub group_index: usize,
+    pub window_index: usize,
 }
 
 impl Serialize for WindowData {
@@ -42,6 +51,8 @@ impl Serialize for WindowData {
             is_focused: bool,
             bundle_id: Option<&'a String>,
             app_name: Option<&'a String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            layout_position: Option<WindowLayoutPosition>,
             window_server_id: Option<u32>,
         }
 
@@ -53,6 +64,7 @@ impl Serialize for WindowData {
             is_focused: self.is_focused,
             bundle_id: self.info.bundle_id.as_ref(),
             app_name: self.app_name.as_ref(),
+            layout_position: self.layout_position,
             window_server_id: self.info.sys_id.map(|id| id.as_u32()),
         };
 
@@ -74,6 +86,8 @@ impl<'de> Deserialize<'de> for WindowData {
             is_focused: bool,
             bundle_id: Option<String>,
             app_name: Option<String>,
+            #[serde(default)]
+            layout_position: Option<WindowLayoutPosition>,
             window_server_id: Option<u32>,
         }
 
@@ -99,6 +113,7 @@ impl<'de> Deserialize<'de> for WindowData {
             is_floating: helper.is_floating,
             is_focused: helper.is_focused,
             app_name: helper.app_name,
+            layout_position: helper.layout_position,
             info,
         })
     }
@@ -133,6 +148,7 @@ mod tests {
             is_floating: true,
             is_focused: false,
             app_name: Some("Test App".to_string()),
+            layout_position: None,
             info,
         };
 

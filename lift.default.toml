@@ -256,6 +256,13 @@ display_migration_priority = []
 #         { app_id = "com.example.X", ax_subrole = "AXDialog", floating = true },
 #       ]
 #
+#   - Place, size, and focus a floating window when it is first discovered.
+#     Position coordinates are normalized within the target display; size is
+#     measured in logical points:
+#       app_rules = [
+#         { app_id = "com.example.X", workspace = 2, floating = true, position = { x = 0.5, y = 0.5 }, size = { w = 1000, h = 700 }, focus = true },
+#       ]
+#
 # By default there are no app rules; add or uncomment rules below as needed.
 app_rules = []
 
@@ -292,6 +299,8 @@ comb1 = "Alt + Shift"
 # - join_window = "left"|"right"|"up"|"down"
 # - toggle_orientation / unjoin_windows
 # - toggle_focus_floating / toggle_window_floating / toggle_fullscreen / toggle_fullscreen_within_gaps
+#   `toggle_window_floating` also accepts `{ center = true, size = "smart" }`
+#   or `{ center = true, size = { w = 1000, h = 700 } }`.
 # - resize_mode (arrows resize; Escape/Enter exits; 10-second inactivity timeout)
 # - resize_window_grow / resize_window_shrink / resize_window_by = 0.05
 # - swap_windows = [123, 456]

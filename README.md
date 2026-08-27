@@ -55,7 +55,7 @@ Keys use `Cmd`, `Alt`, `Ctrl`, and `Shift`; `Meta` is an alias for `Cmd`. Values
 [virtual_workspaces]
 app_rules = [
   { app_id = "com.tencent.xinWeChat", workspace = 8 },
-  { app_id = "com.electron.lark", workspace = 9 },
+  { app_id = "com.electron.lark", workspace = 9, floating = true, position = { x = 0.5, y = 0.5 }, size = { w = 1100, h = 760 }, focus = true },
 ]
 
 [keys]
@@ -63,10 +63,11 @@ app_rules = [
 "Cmd + Shift + 1" = { move_window_to_workspace = 1 }
 "Cmd + Left" = { move_focus = "left" }
 "Cmd + Shift + Left" = { move_node = "left" }
+"Cmd + Shift + Space" = { toggle_window_floating = { center = true, size = "smart" } }
 "Cmd + Enter" = { exec = ["/usr/bin/open", "-a", "Terminal"] }
 ```
 
-App workspace rules apply when a window is first assigned; moving it manually takes precedence. Use `lift-cli query applications` for bundle IDs and `lift-cli query displays` for display UUIDs.
+App workspace rules apply when a window is first assigned; moving it manually takes precedence. Floating rules may set normalized `position`, logical-point `size`, and one-shot `focus`. Use `lift-cli query applications` for bundle IDs and `lift-cli query displays` for display UUIDs.
 
 ## Default shortcuts
 

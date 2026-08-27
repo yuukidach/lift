@@ -89,6 +89,10 @@ pub struct WorkspaceSwitchManager {
     pub active_workspace_switch: Option<u64>,
     pub pending_workspace_switch_origin: Option<WorkspaceSwitchOrigin>,
     pub pending_workspace_mouse_warp: Option<WindowId>,
+    /// Wake/unlock can replay application activations that reflect restored
+    /// lifecycle state rather than user intent. Suppress automatic workspace
+    /// following until an explicit input event arrives.
+    pub suppress_auto_workspace_switch_until_input: bool,
     /// Carbon global-activation events do not carry the app actor's `Quiet` bit.
     pub quiet_activation_deadlines: HashMap<pid_t, Instant>,
 }
@@ -111,6 +115,11 @@ impl WorkspaceSwitchManager {
     pub fn mark_workspace_switch_inactive(&mut self) {
         self.workspace_switch_state = WorkspaceSwitchState::Inactive;
         self.pending_workspace_switch_origin = None;
+    }
+
+    pub fn cancel_workspace_switch(&mut self) {
+        self.mark_workspace_switch_inactive();
+        self.active_workspace_switch = None;
     }
 
     pub fn expect_quiet_activation(&mut self, pid: pid_t) {

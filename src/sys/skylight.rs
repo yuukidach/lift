@@ -371,6 +371,8 @@ unsafe extern "C" {
     pub fn SLSServerPort(zero: *mut c_void) -> u32;
     pub safe fn SLSDisableUpdate(cid: cid_t) -> i32;
     pub safe fn SLSReenableUpdate(cid: cid_t) -> i32;
+    pub fn SLSSetWindowAlpha(cid: cid_t, wid: u32, alpha: f32) -> CGError;
+    pub fn SLSGetWindowAlpha(cid: cid_t, wid: u32, alpha: *mut f32) -> CGError;
     pub fn _SLPSSetFrontProcessWithOptions(
         psn: *const ProcessSerialNumber,
         wid: u32,
@@ -493,7 +495,6 @@ unsafe extern "C" {
     ) -> CGError;
     pub fn SLSReleaseWindow(cid: cid_t, wid: u32) -> CGError;
     pub fn SLSSetWindowResolution(cid: cid_t, wid: u32, resolution: f64) -> CGError;
-    pub fn SLSSetWindowAlpha(cid: cid_t, wid: u32, alpha: f32) -> CGError;
     pub fn SLSSetWindowBackgroundBlurRadiusStyle(
         cid: cid_t,
         wid: u32,

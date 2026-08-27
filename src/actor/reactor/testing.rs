@@ -316,10 +316,15 @@ impl Apps {
                         ));
                     }
                 }
-                Request::BeginWindowAnimation(wid) => {
-                    self.windows.entry(wid).or_default().animating = true;
+                Request::BeginWindowAnimation(wid, target) => {
+                    let window = self.windows.entry(wid).or_default();
+                    window.animating = true;
+                    if let Some((frame, txid)) = target {
+                        window.frame = frame;
+                        window.last_seen_txid = txid;
+                    }
                 }
-                Request::EndWindowAnimation(wid) => {
+                Request::EndWindowAnimation(wid, _proxy) => {
                     let window = self.windows.entry(wid).or_default();
                     window.animating = false;
                     events.push(Event::WindowFrameChanged(
