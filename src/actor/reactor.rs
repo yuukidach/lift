@@ -1481,6 +1481,16 @@ impl Reactor {
         )
     }
 
+    fn should_suppress_layout_animation(event: &Event) -> bool {
+        Self::is_interactive_resize_event(event)
+            || matches!(
+                event,
+                Event::ApplicationLaunched { .. }
+                    | Event::WindowsDiscovered { .. }
+                    | Event::WindowCreated(..)
+            )
+    }
+
     fn should_update_notifications(event: &Event) -> bool {
         matches!(
             event,
@@ -1609,7 +1619,10 @@ impl Reactor {
         let should_update_notifications = Self::should_update_notifications(&event);
 
         let raised_window = self.main_window_tracker.handle_event(&event);
-        let mut is_resize = Self::is_interactive_resize_event(&event);
+        // A newly managed window must land in its tiled frame immediately. Letting
+        // it use the regular layout animation first exposes the app's default frame
+        // for one animation interval and makes the neighboring tiles visibly jump.
+        let mut suppress_layout_animation = Self::should_suppress_layout_animation(&event);
         let mut window_was_destroyed = false;
 
         match event {
@@ -1646,6 +1659,19 @@ impl Reactor {
             }
             Event::ApplicationDeactivated(pid) => {
                 self.clear_menu_state_for_pid(pid);
+            }
+            Event::ApplicationMainWindowChanged(pid, window, quiet) => {
+                // Some apps keep a small always-on-top controller visible while their
+                // real window remains assigned to an inactive Lift workspace. Expanding
+                // that controller changes the frontmost app's main window without
+                // re-activating the app, so the regular activation path never restores
+                // the window's workspace.
+                if quiet == Quiet::No
+                    && let Some(window) = window
+                    && raised_window == Some(window)
+                {
+                    self.handle_app_activation_workspace_switch_for_window(pid, Some(window));
+                }
             }
             Event::ApplicationGloballyDeactivated(pid) => {
                 self.clear_menu_state_for_pid(pid);
@@ -1721,7 +1747,7 @@ impl Reactor {
                 WindowEventHandler::handle_window_deminiaturized(self, wid);
             }
             Event::WindowFrameChanged(wid, new_frame, last_seen, requested, mouse_state) => {
-                is_resize = WindowEventHandler::handle_window_frame_changed(
+                suppress_layout_animation = WindowEventHandler::handle_window_frame_changed(
                     self,
                     wid,
                     new_frame,
@@ -1785,7 +1811,7 @@ impl Reactor {
 
         self.finalize_event_processing(
             raised_window,
-            is_resize,
+            suppress_layout_animation,
             window_was_destroyed,
             should_update_notifications,
         );
@@ -1798,7 +1824,7 @@ impl Reactor {
     fn finalize_event_processing(
         &mut self,
         raised_window: Option<WindowId>,
-        is_resize: bool,
+        suppress_layout_animation: bool,
         window_was_destroyed: bool,
         should_update_notifications: bool,
     ) {
@@ -1816,7 +1842,7 @@ impl Reactor {
         let mut layout_changed = false;
         if !self.is_in_drag() || window_was_destroyed {
             layout_changed = self.update_layout_or_warn(
-                is_resize,
+                suppress_layout_animation,
                 matches!(
                     self.workspace_switch_manager.workspace_switch_state,
                     WorkspaceSwitchState::Active
@@ -2713,10 +2739,14 @@ impl Reactor {
     }
 
     fn handle_app_activation_workspace_switch(&mut self, pid: pid_t) {
-        use objc2_app_kit::NSRunningApplication;
+        self.handle_app_activation_workspace_switch_for_window(pid, None);
+    }
 
-        use crate::sys::app::NSRunningApplicationExt;
-
+    fn handle_app_activation_workspace_switch_for_window(
+        &mut self,
+        pid: pid_t,
+        preferred_window: Option<WindowId>,
+    ) {
         if self.workspace_switch_manager.active_workspace_switch.is_some() {
             trace!(
                 "Skipping auto workspace switch for pid {} because a workspace switch is in progress",
@@ -2744,20 +2774,31 @@ impl Reactor {
         }
 
         if let Some(wsid) = self.activation_from_unmanageable_window(pid) {
+            if !self.has_manageable_window_on_inactive_workspace(pid) {
+                debug!(
+                    ?wsid,
+                    "Skipping auto workspace switch for pid {} because the activated window is not manageable",
+                    pid
+                );
+                return;
+            }
             debug!(
                 ?wsid,
-                "Skipping auto workspace switch for pid {} because the activated window is not manageable",
-                pid
+                pid, "Unmanageable controller activated; restoring the app's manageable window"
             );
-            return;
         }
 
         let visible_spaces: HashSet<SpaceId> = self.iter_active_spaces().collect();
-        let app_is_on_visible_workspace =
-            self.window_manager.iter_windows().any(|(wid, window_state)| {
+        let app_is_on_visible_workspace = self
+            .window_manager
+            .iter_windows()
+            .filter(|(wid, _)| {
                 if wid.pid != pid {
                     return false;
                 }
+                preferred_window.is_none_or(|preferred| *wid == preferred)
+            })
+            .any(|(wid, window_state)| {
                 let Some(space) = self.intended_space_for_window_state(wid, window_state) else {
                     return false;
                 };
@@ -2776,30 +2817,36 @@ impl Reactor {
             return;
         }
 
-        let Some(app) = NSRunningApplication::with_process_id(pid) else {
+        let Some(bundle_id) =
+            self.app_manager.apps.get(&pid).and_then(|app| app.info.bundle_id.as_deref())
+        else {
             return;
         };
-        let Some(bundle_id) = app.bundle_id() else {
-            return;
-        };
-        let bundle_id_str = bundle_id.to_string();
 
-        if self.config.settings.auto_focus_blacklist.contains(&bundle_id_str) {
+        if self
+            .config
+            .settings
+            .auto_focus_blacklist
+            .iter()
+            .any(|blocked| blocked == bundle_id)
+        {
             debug!(
                 "App {} is blacklisted for auto-focus workspace switching, ignoring activation",
-                bundle_id_str
+                bundle_id
             );
             return;
         }
 
         debug!(
             "App activation detected: {} (pid: {}), checking for workspace switch",
-            bundle_id_str, pid
+            bundle_id, pid
         );
 
-        let app_window = self
-            .main_window()
+        let app_window = preferred_window
             .filter(|wid| wid.pid == pid && self.window_is_standard(*wid))
+            .or_else(|| {
+                self.main_window().filter(|wid| wid.pid == pid && self.window_is_standard(*wid))
+            })
             .or_else(|| {
                 self.window_manager
                     .window_ids_for_pid(pid)
@@ -3267,6 +3314,21 @@ impl Reactor {
         let window = self.window_manager.window(wid)?;
         (wid.pid == pid && !window.matches_filter(WindowFilter::EffectivelyManageable))
             .then_some(wsid)
+    }
+
+    fn has_manageable_window_on_inactive_workspace(&self, pid: pid_t) -> bool {
+        self.window_manager.iter_windows().any(|(wid, window)| {
+            if wid.pid != pid || !window.matches_filter(WindowFilter::EffectivelyManageable) {
+                return false;
+            }
+            let Some(window_workspace) = self.workspace_for_window(wid) else {
+                return false;
+            };
+            let Some(space) = self.intended_space_for_window_state(wid, window) else {
+                return false;
+            };
+            self.active_workspace_for_space(space) != Some(window_workspace)
+        })
     }
 
     fn focus_untracked_window_under_cursor(&mut self) -> bool {

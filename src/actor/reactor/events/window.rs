@@ -1,4 +1,5 @@
 use objc2_core_foundation::CGRect;
+use serde_json::json;
 use tracing::{debug, trace, warn};
 
 use crate::actor::app::WindowId;
@@ -258,6 +259,60 @@ impl WindowEventHandler {
                 has_pending_request = false;
             }
 
+            if !old_frame.size.same_as(new_frame.size) {
+                let core_window = Reactor::core_window_id(wid);
+                let snapshot = reactor.core_snapshot();
+                let planned_frame = snapshot
+                    .workspaces
+                    .iter()
+                    .find_map(|workspace| workspace.layout_frames.get(&core_window).copied());
+                let workspace = reactor.workspace_for_window(wid);
+                let focused_window = reactor.focused_window_for_command();
+                let main_window = reactor.main_window();
+                let floating = reactor.is_window_floating(wid);
+                let in_drag = reactor.is_in_drag();
+                let app = reactor.app_manager.apps.get(&wid.pid).map(|app| {
+                    json!({
+                        "bundle_id": app.info.bundle_id,
+                        "name": app.info.localized_name,
+                    })
+                });
+                let attribution = if triggered_by_lift {
+                    "lift_transaction"
+                } else if requested.0 {
+                    "lift_requested_without_pending_transaction"
+                } else if has_pending_request {
+                    "stale_transaction"
+                } else if effective_mouse_state == Some(MouseState::Down) || in_drag {
+                    "user_drag"
+                } else {
+                    "external"
+                };
+                reactor.recording_manager.diagnostics.record_window_frame_change(json!({
+                    "window": wid,
+                    "window_server_id": server_id.map(|id| id.as_u32()),
+                    "app": app,
+                    "workspace": workspace,
+                    "focused_window": focused_window,
+                    "main_window": main_window,
+                    "floating": floating,
+                    "in_drag": in_drag,
+                    "mouse_state": effective_mouse_state,
+                    "requested": requested.0,
+                    "attribution": attribution,
+                    "last_seen_transaction": last_seen,
+                    "last_sent_transaction": last_sent_txid,
+                    "pending_target": pending_target.map(|(_, frame)| frame_json(frame)),
+                    "planned_layout_frame": planned_frame,
+                    "old_frame": frame_json(old_frame),
+                    "new_frame": frame_json(new_frame),
+                    "delta": {
+                        "width": new_frame.size.width - old_frame.size.width,
+                        "height": new_frame.size.height - old_frame.size.height,
+                    },
+                }));
+            }
+
             if has_pending_request && last_seen.is_some_and(|seen| seen != last_sent_txid) {
                 debug!(?last_seen, ?last_sent_txid, "Ignoring frame change");
                 return false;
@@ -336,10 +391,6 @@ impl WindowEventHandler {
 
             let dragging = effective_mouse_state == Some(MouseState::Down) || reactor.is_in_drag();
 
-            if !dragging {
-                reactor.drag_manager.skip_layout_for_window = Some(wid);
-            }
-
             if dragging {
                 reactor.ensure_active_drag(wid, &old_frame);
                 reactor.update_active_drag(wid, &new_frame);
@@ -380,6 +431,12 @@ impl WindowEventHandler {
                 }
             } else {
                 if old_space != new_space {
+                    // Preserve a programmatic cross-display move long enough to
+                    // transfer the window to the destination workspace. Same-space
+                    // changes must not take this path: some apps resize themselves
+                    // by a few pixels when focused, and skipping the tiled window
+                    // would leave it overlapping its BSP neighbors.
+                    reactor.drag_manager.skip_layout_for_window = Some(wid);
                     reactor.send_layout_event(LayoutEvent::Changed);
                     if let Some(space) = new_space {
                         if reactor.is_space_active(space) {
@@ -453,6 +510,13 @@ impl WindowEventHandler {
             }
         }
     }
+}
+
+fn frame_json(frame: CGRect) -> serde_json::Value {
+    json!({
+        "origin": {"x": frame.origin.x, "y": frame.origin.y},
+        "size": {"width": frame.size.width, "height": frame.size.height},
+    })
 }
 
 fn active_space_for_window(

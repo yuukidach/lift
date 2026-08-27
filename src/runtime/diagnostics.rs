@@ -208,6 +208,18 @@ impl DiagnosticLog {
         }));
     }
 
+    pub fn record_window_frame_change(&mut self, details: Value) {
+        if !self.settings.enabled {
+            return;
+        }
+        self.write(json!({
+            "version": 1,
+            "timestamp_ms": timestamp_ms(),
+            "kind": "window_frame_change",
+            "details": details,
+        }));
+    }
+
     fn write(&mut self, mut record: Value) {
         self.sequence = self.sequence.saturating_add(1);
         if let Some(object) = record.as_object_mut() {
@@ -437,5 +449,31 @@ mod tests {
         assert_eq!(record["decisions"][0]["name"], "move_window_resolution");
         assert!(encoded.contains("Editor"));
         assert!(!encoded.contains("private document title"));
+    }
+
+    #[test]
+    fn frame_change_records_structured_details() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("operations.jsonl");
+        let mut log = DiagnosticLog::new(
+            DiagnosticsSettings {
+                enabled: true,
+                max_file_size_mb: 1,
+                retained_files: 2,
+            },
+            path.clone(),
+        );
+
+        log.record_window_frame_change(json!({
+            "window": {"pid": 7, "idx": 9},
+            "attribution": "external",
+            "delta": {"width": 2.0, "height": 1.0},
+        }));
+
+        let encoded = fs::read_to_string(path).unwrap();
+        let record: Value = serde_json::from_str(encoded.trim()).unwrap();
+        assert_eq!(record["kind"], "window_frame_change");
+        assert_eq!(record["details"]["attribution"], "external");
+        assert_eq!(record["details"]["delta"]["width"], 2.0);
     }
 }

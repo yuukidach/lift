@@ -1458,4 +1458,46 @@ mod tests {
             DisplayId("right".into())
         );
     }
+
+    #[test]
+    fn directional_move_reorients_a_perpendicular_split_before_reaching_a_boundary() {
+        let mut state = CoreState::new(CoreConfig::default());
+        let first = window(1);
+        let second = window(2);
+        state
+            .transition(Input::Observation(Observation::PlatformSnapshot(
+                PlatformSnapshotObservation {
+                    generation: Generation(1),
+                    displays: vec![display("main", 9)],
+                    active_display: Some(DisplayId("main".into())),
+                    windows: vec![
+                        observed_window(first, "main"),
+                        observed_window(second, "main"),
+                    ],
+                    focused_window: Some(first),
+                },
+            )))
+            .unwrap();
+        let vertical = state
+            .transition(Input::Command(Command::Window(
+                WindowCommand::ToggleOrientation { window: Some(first) },
+            )))
+            .unwrap();
+        assert!(
+            vertical.snapshot.workspaces[0].layout_frames[&first].origin.y
+                < vertical.snapshot.workspaces[0].layout_frames[&second].origin.y
+        );
+
+        let moved = state
+            .transition(Input::Command(Command::Window(WindowCommand::Move {
+                direction: crate::core::command::Direction::Right,
+                window: Some(first),
+            })))
+            .unwrap();
+        let frames = &moved.snapshot.workspaces[0].layout_frames;
+
+        assert!(frames[&first].origin.x > frames[&second].origin.x);
+        assert_eq!(frames[&first].origin.y, frames[&second].origin.y);
+        assert_eq!(moved.snapshot.focused_window, Some(first));
+    }
 }

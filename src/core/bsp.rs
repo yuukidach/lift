@@ -279,6 +279,36 @@ impl BspTree {
         Ok(true)
     }
 
+    pub fn reorient_for_move(
+        &mut self,
+        window: WindowId,
+        desired_axis: Axis,
+        selected_should_be_first: bool,
+    ) -> Result<bool, BspError> {
+        let node =
+            self.window_nodes.get(&window).copied().ok_or(BspError::MissingWindow(window))?;
+        let Some(parent) = self.parent_of(node) else {
+            return Ok(false);
+        };
+        let Some(BspNode::Split { axis, ratio, first, second }) = self.nodes.get_mut(&parent)
+        else {
+            return Err(BspError::InvariantViolation(
+                "window parent is not a split".into(),
+            ));
+        };
+        if *axis == desired_axis {
+            return Ok(false);
+        }
+
+        let selected_is_first = *first == node;
+        if selected_is_first != selected_should_be_first {
+            std::mem::swap(first, second);
+            *ratio = Ratio::new(1.0 - ratio.get())?;
+        }
+        *axis = desired_axis;
+        Ok(true)
+    }
+
     pub fn resize(&mut self, window: WindowId, amount: f64) -> Result<bool, BspError> {
         if !amount.is_finite() {
             return Err(BspError::InvalidRatio(amount));
@@ -1051,6 +1081,25 @@ mod tests {
         assert_eq!(after[&window(2)].size, before[&window(2)].size);
         assert!(before[&window(1)].origin.x < before[&window(2)].origin.x);
         assert!(after[&window(1)].origin.x > after[&window(2)].origin.x);
+        tree.validate().unwrap();
+    }
+
+    #[test]
+    fn moving_right_from_a_vertical_split_reorients_and_places_the_window_on_the_right() {
+        let mut tree = BspTree::default();
+        tree.insert_after(None, window(1)).unwrap();
+        tree.insert_after(Some(window(1)), window(2)).unwrap();
+        tree.toggle_orientation(window(1)).unwrap();
+        let frame = Rect::new(0.0, 0.0, 1000.0, 800.0).unwrap();
+        let gaps = Gaps::default();
+        let vertical = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+        assert!(vertical[&window(1)].origin.y < vertical[&window(2)].origin.y);
+
+        assert!(tree.reorient_for_move(window(1), Axis::Horizontal, false).unwrap());
+        let horizontal = tree.layout(frame, gaps, &BTreeMap::new()).unwrap();
+
+        assert!(horizontal[&window(1)].origin.x > horizontal[&window(2)].origin.x);
+        assert_eq!(horizontal[&window(1)].origin.y, horizontal[&window(2)].origin.y);
         tree.validate().unwrap();
     }
 

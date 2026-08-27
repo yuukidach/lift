@@ -547,6 +547,8 @@ impl CoreState {
                 if let Some(target) = self.directional_neighbor(window, direction)? {
                     self.workspaces.swap(window, target)?;
                     self.workspaces.select_tiled_window(window)?;
+                } else if self.workspaces.reorient_for_move(window, direction)? {
+                    self.workspaces.select_tiled_window(window)?;
                 } else {
                     let source = self
                         .workspaces

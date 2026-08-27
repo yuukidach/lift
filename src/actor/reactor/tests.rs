@@ -57,6 +57,40 @@ fn layout_resize_commands_are_classified_as_interactive() {
 }
 
 #[test]
+fn newly_managed_windows_suppress_the_first_layout_animation() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    reactor.config.settings.animate = true;
+    reactor.config.settings.animation_duration = 0.2;
+    let (animation_tx, mut animation_rx) = tokio::sync::mpsc::unbounded_channel();
+    reactor.animation_tx = Some(animation_tx);
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0)],
+        vec![Some(SpaceId::new(1))],
+        vec![],
+    ));
+
+    let launched = apps.make_app(7, make_windows(1)).pop().unwrap();
+    assert!(Reactor::should_suppress_layout_animation(&launched));
+    reactor.handle_event(launched);
+    assert!(matches!(
+        animation_rx.try_recv(),
+        Ok(animation::Message::SkipToEnd(_))
+    ));
+
+    let mut windows = make_windows(1);
+    let created = Event::WindowCreated(
+        WindowId::new(8, 1),
+        windows.pop().unwrap(),
+        None,
+        Some(crate::sys::event::MouseState::Up),
+    );
+    assert!(Reactor::should_suppress_layout_animation(&created));
+
+    assert!(!Reactor::should_suppress_layout_animation(&Event::MouseUp));
+}
+
+#[test]
 fn publishing_window_membership_changes_broadcasts_once_for_the_display() {
     let mut apps = Apps::new();
     let (mut reactor, mut broadcasts) = Reactor::new_for_test_with_broadcast();
@@ -147,6 +181,41 @@ fn destroying_the_focused_main_window_reflows_the_remaining_window() {
 }
 
 #[test]
+fn focus_triggered_tiled_resize_is_restored_without_moving_neighbors() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let first = WindowId::new(7, 1);
+    let second = WindowId::new(7, 2);
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0)],
+        vec![Some(SpaceId::new(1))],
+        vec![],
+    ));
+    reactor.handle_events(apps.make_app_with_opts(7, make_windows(2), Some(first), true, true));
+    apps.simulate_until_quiet(&mut reactor);
+    let first_tiled = apps.windows[&first].frame;
+    let second_tiled = apps.windows[&second].frame;
+
+    reactor.send_layout_event(LayoutEvent::WindowFocused(first));
+    let self_resized = CGRect::new(
+        first_tiled.origin,
+        CGSize::new(first_tiled.size.width + 2.0, first_tiled.size.height + 1.0),
+    );
+    apps.windows.get_mut(&first).unwrap().frame = self_resized;
+    reactor.handle_event(Event::WindowFrameChanged(
+        first,
+        self_resized,
+        None,
+        Requested(false),
+        Some(crate::sys::event::MouseState::Up),
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(apps.windows[&first].frame, first_tiled);
+    assert_eq!(apps.windows[&second].frame, second_tiled);
+}
+
+#[test]
 fn mouse_dragged_resize_persists_after_mouse_up() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test();
@@ -222,6 +291,105 @@ fn workspace_move_command_changes_the_authoritative_assignment() {
         .find(|workspace| workspace.number.is_some_and(|number| number.get() == 2))
         .unwrap();
     assert_eq!(reactor.workspace_for_window(window), Some(target.id));
+}
+
+#[test]
+fn frontmost_main_window_change_restores_its_inactive_workspace() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let pid = 7;
+    let first = WindowId::new(pid, 1);
+    let expanded = WindowId::new(pid, 2);
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(pid, make_windows(2), Some(first), true, true));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    apps.simulate_until_quiet(&mut reactor);
+    let original = reactor.active_workspace_for_space(space).unwrap();
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace {
+            workspace: 1,
+            window_id: Some(expanded.idx.get()),
+        },
+    )));
+    let target = reactor.workspace_for_window(expanded).unwrap();
+    assert_ne!(target, original);
+    assert_eq!(reactor.active_workspace_for_space(space), Some(original));
+
+    reactor.handle_event(Event::ApplicationMainWindowChanged(
+        pid,
+        Some(expanded),
+        Quiet::No,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(reactor.active_workspace_for_space(space), Some(target));
+    assert_eq!(
+        reactor.core_snapshot().focused_window,
+        Some(Reactor::core_window_id(expanded))
+    );
+}
+
+#[test]
+fn quiet_main_window_change_does_not_switch_workspaces() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let pid = 7;
+    let first = WindowId::new(pid, 1);
+    let background = WindowId::new(pid, 2);
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(pid, make_windows(2), Some(first), true, true));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    apps.simulate_until_quiet(&mut reactor);
+    let original = reactor.active_workspace_for_space(space).unwrap();
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace {
+            workspace: 1,
+            window_id: Some(background.idx.get()),
+        },
+    )));
+    assert_ne!(reactor.workspace_for_window(background), Some(original));
+
+    reactor.handle_event(Event::ApplicationMainWindowChanged(
+        pid,
+        Some(background),
+        Quiet::Yes,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(reactor.active_workspace_for_space(space), Some(original));
+}
+
+#[test]
+fn inactive_manageable_window_allows_unmanageable_controller_activation() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let pid = 7;
+    let window = WindowId::new(pid, 1);
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(pid, make_windows(1), Some(window), true, true));
+    apps.simulate_until_quiet(&mut reactor);
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::MoveWindowToWorkspace {
+            workspace: 1,
+            window_id: Some(window.idx.get()),
+        },
+    )));
+    let target = reactor.workspace_for_window(window).unwrap();
+    assert_ne!(reactor.active_workspace_for_space(space), Some(target));
+    assert!(reactor.has_manageable_window_on_inactive_workspace(pid));
+
+    reactor.handle_event(Event::Command(Command::Layout(
+        LayoutCommand::SwitchToWorkspace(1),
+    )));
+
+    assert_eq!(reactor.active_workspace_for_space(space), Some(target));
+    assert!(!reactor.has_manageable_window_on_inactive_workspace(pid));
 }
 
 #[test]

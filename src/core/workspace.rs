@@ -609,6 +609,27 @@ impl WorkspaceCatalog {
             .map_err(map_bsp_error)
     }
 
+    pub fn reorient_for_move(
+        &mut self,
+        window: WindowId,
+        direction: Direction,
+    ) -> Result<bool, CoreError> {
+        let workspace =
+            self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
+        let (axis, selected_should_be_first) = match direction {
+            Direction::Left => (Axis::Horizontal, true),
+            Direction::Right => (Axis::Horizontal, false),
+            Direction::Up => (Axis::Vertical, true),
+            Direction::Down => (Axis::Vertical, false),
+        };
+        self.workspaces
+            .get_mut(&workspace)
+            .expect("window assignments reference live workspaces")
+            .tiled
+            .reorient_for_move(window, axis, selected_should_be_first)
+            .map_err(map_bsp_error)
+    }
+
     pub fn resize(&mut self, window: WindowId, amount: f64) -> Result<bool, CoreError> {
         let workspace =
             self.workspace_for_window(window).ok_or(CoreError::MissingWindow(window))?;
