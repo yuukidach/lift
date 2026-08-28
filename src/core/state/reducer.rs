@@ -190,7 +190,11 @@ impl CoreState {
             let overlap_height = (window.frame.origin.y + window.frame.size.height)
                 .min(display_frame.origin.y + display_frame.size.height)
                 - window.frame.origin.y.max(display_frame.origin.y);
-            if overlap_width.max(0.0) * overlap_height.max(0.0) > 9.0 {
+            // Hidden-workspace placement deliberately leaves only a tiny edge near
+            // the display boundary. Do not mistake that sliver for a user-visible
+            // floating position when an application reports its offscreen frame
+            // during activation.
+            if overlap_width > 9.0 && overlap_height > 9.0 {
                 self.workspaces.record_active_floating_position(window.id, window.frame)?;
             }
         }

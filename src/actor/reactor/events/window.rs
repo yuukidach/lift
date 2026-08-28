@@ -55,7 +55,6 @@ impl WindowEventHandler {
         reactor.window_manager.insert_window(wid, window_state);
 
         if is_manageable {
-            reactor.prepare_new_window_for_auxiliary_click_workspace(wid);
             let active_space = active_space_for_window(reactor, &frame, server_id);
             if let Some(space) = active_space {
                 if let Some(app_info) =

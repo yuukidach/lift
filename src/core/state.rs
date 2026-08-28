@@ -1240,6 +1240,64 @@ mod tests {
     }
 
     #[test]
+    fn floating_hidden_sliver_does_not_replace_visible_position() {
+        let mut state = CoreState::new(CoreConfig::default());
+        let id = window(1);
+        let initial = observed_window(id, "main");
+        state
+            .transition(Input::Observation(Observation::PlatformSnapshot(
+                PlatformSnapshotObservation {
+                    generation: Generation(1),
+                    displays: vec![display("main", 9)],
+                    active_display: Some(DisplayId("main".into())),
+                    windows: vec![initial.clone()],
+                    focused_window: Some(id),
+                },
+            )))
+            .unwrap();
+        state
+            .transition(Input::Command(Command::Window(WindowCommand::ToggleFloating {
+                window: Some(id),
+                placement: None,
+            })))
+            .unwrap();
+
+        let visible_frame = Rect::new(200.0, 150.0, 500.0, 400.0).unwrap();
+        let mut visible = initial.clone();
+        visible.frame = visible_frame;
+        state
+            .transition(Input::Observation(Observation::PlatformSnapshot(
+                PlatformSnapshotObservation {
+                    generation: Generation(2),
+                    displays: vec![display("main", 9)],
+                    active_display: Some(DisplayId("main".into())),
+                    windows: vec![visible.clone()],
+                    focused_window: Some(id),
+                },
+            )))
+            .unwrap();
+
+        let mut hidden = visible;
+        hidden.frame = Rect::new(1198.0, 780.0, 500.0, 400.0).unwrap();
+        let refreshed = state
+            .transition(Input::Observation(Observation::PlatformSnapshot(
+                PlatformSnapshotObservation {
+                    generation: Generation(3),
+                    displays: vec![display("main", 9)],
+                    active_display: Some(DisplayId("main".into())),
+                    windows: vec![hidden],
+                    focused_window: Some(id),
+                },
+            )))
+            .unwrap();
+
+        assert_eq!(
+            refreshed.snapshot.workspaces[0].layout_frames[&id],
+            visible_frame
+        );
+    }
+
+    #[test]
     fn configured_manual_float_uses_smart_centered_frame() {
         use crate::core::placement::{FloatingPlacement, FloatingPosition, FloatingSize};
 

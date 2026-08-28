@@ -94,4 +94,8 @@ impl MainWindowTracker {
             _ => None,
         }
     }
+
+    pub(super) fn main_window_for_pid(&self, pid: pid_t) -> Option<WindowId> {
+        self.apps.get(&pid)?.main_window
+    }
 }

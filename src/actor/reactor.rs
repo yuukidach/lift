@@ -208,7 +208,7 @@ pub enum Event {
     /// The left mouse button was pressed. The hit window and click location are
     /// captured before an auxiliary controller can disappear in response.
     MouseDown(
-        Option<WindowServerId>,
+        Option<WindowServerInfo>,
         #[serde(with = "crate::sys::geometry::CGPointDef")] CGPoint,
     ),
     /// The mouse cursor moved over a new window. Only sent if focus-follows-
@@ -1529,7 +1529,7 @@ impl Reactor {
             Event::WindowDestroyed(wid) => Some(wid.idx.get()),
             Event::WindowMinimized(wid) => Some(wid.idx.get()),
             Event::WindowDeminiaturized(wid) => Some(wid.idx.get()),
-            Event::MouseDown(wsid, _) => wsid.map(WindowServerId::as_u32),
+            Event::MouseDown(info, _) => info.map(|info| info.id.as_u32()),
             Event::MouseMoved(_) => None,
             Event::ResyncAppForWindow(wsid) => Some(wsid.as_u32()),
             Event::WindowServerDestroyed(wsid, _) => Some(wsid.as_u32()),
@@ -1744,17 +1744,14 @@ impl Reactor {
             }
             Event::ApplicationActivated(pid, quiet) => {
                 self.clear_menu_state_for_non_owner(pid);
-                AppEventHandler::handle_application_activated(self, pid, quiet);
+                if quiet == Quiet::No && self.move_main_window_to_auxiliary_click_workspace(pid) {
+                    trace!(pid, "Moved auxiliary expansion on application activation");
+                } else {
+                    AppEventHandler::handle_application_activated(self, pid, quiet);
+                }
             }
             Event::ApplicationDeactivated(pid) => {
                 self.clear_menu_state_for_pid(pid);
-            }
-            Event::ApplicationMainWindowChanged(pid, window, quiet) => {
-                if quiet == Quiet::No
-                    && let Some(window) = window
-                {
-                    self.move_window_to_auxiliary_click_workspace(pid, window);
-                }
             }
             Event::ApplicationGloballyDeactivated(pid) => {
                 self.clear_menu_state_for_pid(pid);
@@ -1789,11 +1786,8 @@ impl Reactor {
                             );
                         }
                     }
-                    if self.auxiliary_window_workspace_target(pid).is_some() {
-                        trace!(
-                            pid,
-                            "Skipping auto workspace switch for auxiliary-window expansion"
-                        );
+                    if self.move_main_window_to_auxiliary_click_workspace(pid) {
+                        trace!(pid, "Moved auxiliary expansion on global activation");
                     } else if self.workspace_switch_manager.should_suppress_global_activation(pid) {
                         trace!(
                             pid,
@@ -1853,8 +1847,8 @@ impl Reactor {
             Event::SpaceChanged(spaces) => {
                 SpaceEventHandler::handle_space_changed(self, spaces);
             }
-            Event::MouseDown(wsid, point) => {
-                self.capture_auxiliary_window_workspace_target(wsid, point);
+            Event::MouseDown(info, point) => {
+                self.capture_auxiliary_window_workspace_target(info, point);
             }
             Event::MouseUp => {
                 DragEventHandler::handle_mouse_up(self);
@@ -3487,13 +3481,14 @@ impl Reactor {
 
     fn capture_auxiliary_window_workspace_target(
         &mut self,
-        wsid: Option<WindowServerId>,
+        info: Option<WindowServerInfo>,
         point: CGPoint,
     ) {
         self.refocus_manager.auxiliary_window_workspace_target = None;
-        let Some(wsid) = wsid else {
+        let Some(info) = info else {
             return;
         };
+        let wsid = info.id;
 
         let pid = if let Some(wid) = self.window_manager.tracked_window_id(wsid) {
             let Some(window) = self.window_manager.window(wid) else {
@@ -3504,12 +3499,13 @@ impl Reactor {
             }
             wid.pid
         } else {
-            let info = self
-                .window_manager
-                .get_window_server_info(wsid)
-                .or_else(|| window_server::get_window(wsid));
-            let Some(info) = info else { return };
-            if !untracked_window_is_focusable(&info) {
+            // Floating controllers commonly live above the normal window layer and
+            // may disappear as soon as they are clicked. Only trust such a surface
+            // when the same app already has a manageable window hidden on an
+            // inactive Lift workspace; this excludes ordinary menus and system UI.
+            if !untracked_window_is_focusable(&info)
+                && !self.has_manageable_window_on_inactive_workspace(info.pid)
+            {
                 return;
             }
             info.pid
@@ -3567,18 +3563,8 @@ impl Reactor {
         self.refocus_manager.auxiliary_window_workspace_target.take()
     }
 
-    pub(crate) fn prepare_new_window_for_auxiliary_click_workspace(
-        &mut self,
-        window: WindowId,
-    ) -> bool {
+    fn move_window_to_auxiliary_click_workspace(&mut self, window: WindowId) -> bool {
         let Some(target) = self.take_auxiliary_window_workspace_target(window.pid) else {
-            return false;
-        };
-        self.remember_recent_workspace_target_for(window, target.space, target.workspace_id)
-    }
-
-    fn move_window_to_auxiliary_click_workspace(&mut self, pid: pid_t, window: WindowId) -> bool {
-        let Some(target) = self.take_auxiliary_window_workspace_target(pid) else {
             return false;
         };
         if !self
@@ -3621,6 +3607,13 @@ impl Reactor {
                 false
             }
         }
+    }
+
+    fn move_main_window_to_auxiliary_click_workspace(&mut self, pid: pid_t) -> bool {
+        let Some(window) = self.main_window_tracker.main_window_for_pid(pid) else {
+            return false;
+        };
+        self.move_window_to_auxiliary_click_workspace(window)
     }
 
     fn focus_untracked_window_under_cursor(&mut self) -> bool {
