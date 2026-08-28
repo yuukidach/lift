@@ -486,6 +486,93 @@ fn frontmost_main_window_change_without_auxiliary_click_does_not_switch_workspac
 }
 
 #[test]
+fn external_reactivation_keeps_the_apps_last_used_window() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let pid = 7;
+    let first = WindowId::new(pid, 1);
+    let last_used = WindowId::new(pid, 2);
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(pid, make_windows(2), Some(first), true, true));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    apps.simulate_until_quiet(&mut reactor);
+
+    let last_used_info = reactor
+        .window_manager
+        .get_window_server_info(WindowServerId::new(pid as u32 * 10_000 + 2))
+        .unwrap();
+    reactor.handle_event(Event::MouseDown(
+        Some(last_used_info),
+        CGPoint::new(150.0, 150.0),
+    ));
+    reactor.handle_event(Event::ApplicationMainWindowChanged(
+        pid,
+        Some(last_used),
+        Quiet::No,
+    ));
+    assert_eq!(
+        reactor.core_snapshot().focused_window,
+        Some(Reactor::core_window_id(last_used))
+    );
+
+    reactor.handle_event(Event::ApplicationGloballyDeactivated(pid));
+    reactor.handle_event(Event::ApplicationDeactivated(pid));
+
+    // Chrome can expose an older AXMainWindow before it dispatches an external
+    // URL to its own last-active browser window. That transient value must not
+    // replace the window that was active when the app deactivated.
+    reactor.handle_event(Event::ApplicationMainWindowChanged(pid, Some(first), Quiet::No));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    reactor.handle_event(Event::ApplicationActivated(pid, Quiet::No));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(
+        reactor.core_snapshot().focused_window,
+        Some(Reactor::core_window_id(last_used))
+    );
+    assert_eq!(reactor.main_window(), Some(last_used));
+}
+
+#[test]
+fn direct_click_overrides_the_pre_deactivation_window() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let pid = 7;
+    let first = WindowId::new(pid, 1);
+    let previous = WindowId::new(pid, 2);
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(
+        pid,
+        make_windows(2),
+        Some(previous),
+        true,
+        true,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_event(Event::ApplicationGloballyDeactivated(pid));
+    reactor.handle_event(Event::ApplicationDeactivated(pid));
+
+    let clicked_info = reactor
+        .window_manager
+        .get_window_server_info(WindowServerId::new(pid as u32 * 10_000 + 1))
+        .unwrap();
+    reactor.handle_event(Event::MouseDown(Some(clicked_info), CGPoint::new(50.0, 50.0)));
+    reactor.handle_event(Event::ApplicationMainWindowChanged(pid, Some(first), Quiet::No));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    reactor.handle_event(Event::ApplicationActivated(pid, Quiet::No));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(
+        reactor.core_snapshot().focused_window,
+        Some(Reactor::core_window_id(first))
+    );
+    assert_eq!(reactor.main_window(), Some(first));
+}
+
+#[test]
 fn quiet_main_window_change_does_not_switch_workspaces() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test();

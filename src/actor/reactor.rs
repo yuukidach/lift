@@ -1707,6 +1707,16 @@ impl Reactor {
 
         let should_update_notifications = Self::should_update_notifications(&event);
 
+        if let Event::MouseDown(info, _) = &event {
+            let clicked_window = info.as_ref().and_then(|info| {
+                let window = self.window_manager.tracked_window_id(info.id)?;
+                self.window_manager
+                    .window(window)
+                    .is_some_and(|state| state.matches_filter(WindowFilter::EffectivelyManageable))
+                    .then_some(window)
+            });
+            self.main_window_tracker.handle_mouse_down(clicked_window);
+        }
         let raised_window = self.main_window_tracker.handle_event(&event);
         // A newly managed window must land in its tiled frame immediately. Letting
         // it use the regular layout animation first exposes the app's default frame
