@@ -980,7 +980,7 @@ impl CommandEventHandler {
     fn focus_first_window_on_screen(reactor: &mut Reactor, screen: &ScreenInfo) -> bool {
         if let Some(space) = screen.space {
             let focus_target = reactor
-                .last_focused_window_in_space(space)
+                .preferred_window_in_space(space)
                 .or_else(|| reactor.windows_in_active_workspace(space).into_iter().next());
             if let Some(window_id) = focus_target {
                 reactor.send_layout_event(LayoutEvent::WindowFocused(window_id));

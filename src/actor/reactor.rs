@@ -1097,19 +1097,25 @@ impl Reactor {
                 .collect::<Vec<_>>();
             windows.dedup();
             response.raise_windows = windows;
-            response.focus_window = snapshot
-                .last_tiled_window
-                .or(snapshot.last_floating_window)
-                .or_else(|| {
-                    snapshot
-                        .groups
-                        .iter()
-                        .find_map(|group| group.windows.get(group.selected).copied())
-                })
-                .or_else(|| snapshot.floating_windows.first().copied())
-                .map(Self::actor_window_id);
+            response.focus_window =
+                Self::preferred_workspace_window(snapshot).map(Self::actor_window_id);
         }
         response
+    }
+
+    fn preferred_workspace_window(
+        workspace: &crate::core::snapshot::WorkspaceSnapshot,
+    ) -> Option<crate::core::ids::WindowId> {
+        workspace
+            .last_tiled_window
+            .or(workspace.last_floating_window)
+            .or_else(|| {
+                workspace
+                    .groups
+                    .iter()
+                    .find_map(|group| group.windows.get(group.selected).copied())
+            })
+            .or_else(|| workspace.floating_windows.first().copied())
     }
 
     fn transition_core_input(
@@ -1208,18 +1214,6 @@ impl Reactor {
 
     fn focused_window_for_command(&self) -> Option<WindowId> {
         self.core_snapshot().focused_window.map(Self::actor_window_id)
-    }
-
-    fn last_tiled_window_in_workspace(
-        &self,
-        workspace: crate::core::ids::WorkspaceId,
-    ) -> Option<WindowId> {
-        self.core_snapshot()
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == workspace)
-            .and_then(|candidate| candidate.last_tiled_window)
-            .map(Self::actor_window_id)
     }
 
     fn workspace_number(
@@ -3161,7 +3155,7 @@ impl Reactor {
                     }
                 }
             } else if let Some(space) = pending_refocus_space.take() {
-                if let Some(wid) = self.last_focused_window_in_space(space) {
+                if let Some(wid) = self.preferred_window_in_space(space) {
                     focus_window = Some(wid);
                     false
                 } else if !self.is_in_drag() {
@@ -3651,9 +3645,15 @@ impl Reactor {
         window_server::make_key_window(info.pid, wsid).is_ok()
     }
 
-    fn last_focused_window_in_space(&self, space: SpaceId) -> Option<WindowId> {
+    fn preferred_window_in_space(&self, space: SpaceId) -> Option<WindowId> {
         let active_workspace = self.active_workspace_for_space(space)?;
-        let wid = self.last_tiled_window_in_workspace(active_workspace)?;
+        let snapshot = self.core_snapshot();
+        let wid = snapshot
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == active_workspace)
+            .and_then(Self::preferred_workspace_window)
+            .map(Self::actor_window_id)?;
         let window = self.window_manager.window(wid)?;
 
         if self.best_space_for_window_id(wid)? != space {
@@ -3667,6 +3667,14 @@ impl Reactor {
             return None;
         }
         Some(wid)
+    }
+
+    fn prepare_refocus_for_unavailable_window(&mut self, window: WindowId) {
+        if self.focused_window_for_command() == Some(window)
+            && let Some(space) = self.best_space_for_window_id(window)
+        {
+            self.refocus_manager.refocus_state = RefocusState::Pending(space);
+        }
     }
 
     fn request_refocus_if_hidden(&mut self, space: SpaceId, window_id: WindowId) {

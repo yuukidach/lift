@@ -8,6 +8,41 @@ use crate::sys::geometry::SameAs;
 
 fn screen(x: f64) -> CGRect { CGRect::new(CGPoint::new(x, 0.0), CGSize::new(1000.0, 1000.0)) }
 
+fn reactor_with_two_windows(
+    pid: i32,
+    focused: WindowId,
+) -> (Apps, Reactor, actor::Receiver<raise_manager::Event>) {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let (raise_tx, mut raise_rx) = actor::channel();
+    reactor.communication_manager.raise_manager_tx = raise_tx;
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0)],
+        vec![Some(SpaceId::new(1))],
+        vec![],
+    ));
+    reactor.handle_events(apps.make_app_with_opts(pid, make_windows(2), Some(focused), true, true));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    apps.simulate_until_quiet(&mut reactor);
+    drain_raise_requests(&mut raise_rx);
+    (apps, reactor, raise_rx)
+}
+
+fn drain_raise_requests(receiver: &mut actor::Receiver<raise_manager::Event>) {
+    while receiver.try_recv().is_ok() {}
+}
+
+fn take_focus_request(receiver: &mut actor::Receiver<raise_manager::Event>) -> Option<WindowId> {
+    while let Ok((_, event)) = receiver.try_recv() {
+        if let raise_manager::Event::RaiseRequest(request) = event
+            && let Some((window, _)) = request.focus_window
+        {
+            return Some(window);
+        }
+    }
+    None
+}
+
 #[test]
 fn untracked_focus_fallback_rejects_system_surfaces() {
     let info = |layer| WindowServerInfo {
@@ -301,26 +336,11 @@ fn destroyed_window_is_removed_before_the_same_event_reflows_layout() {
 }
 
 #[test]
-fn destroying_the_focused_main_window_reflows_the_remaining_window() {
-    let mut apps = Apps::new();
-    let mut reactor = Reactor::new_for_test();
+fn destroying_the_focused_main_window_reflows_and_refocuses_the_remaining_window() {
     let pid = 7;
     let destroyed = WindowId::new(pid, 1);
     let remaining = WindowId::new(pid, 2);
-    reactor.handle_event(screen_params_event(
-        vec![screen(0.0)],
-        vec![Some(SpaceId::new(1))],
-        vec![],
-    ));
-    reactor.handle_events(apps.make_app_with_opts(
-        pid,
-        make_windows(2),
-        Some(destroyed),
-        true,
-        true,
-    ));
-    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
-    apps.simulate_until_quiet(&mut reactor);
+    let (mut apps, mut reactor, mut raise_rx) = reactor_with_two_windows(pid, destroyed);
     let before = apps.windows[&remaining].frame;
 
     reactor.handle_event(Event::WindowDestroyed(destroyed));
@@ -328,9 +348,63 @@ fn destroying_the_focused_main_window_reflows_the_remaining_window() {
 
     let after = apps.windows[&remaining].frame;
     assert_eq!(reactor.core_snapshot().windows.len(), 1);
-    assert_eq!(reactor.core_snapshot().focused_window, None);
+    assert_eq!(take_focus_request(&mut raise_rx), Some(remaining));
     assert!(after.size.width > before.size.width);
     assert!(after.size.height >= before.size.height);
+}
+
+#[test]
+fn minimizing_the_focused_fullscreen_window_refocuses_the_remaining_window() {
+    let pid = 7;
+    let minimized = WindowId::new(pid, 1);
+    let remaining = WindowId::new(pid, 2);
+    let (mut apps, mut reactor, mut raise_rx) = reactor_with_two_windows(pid, minimized);
+
+    reactor.handle_event(Event::Command(Command::Layout(LayoutCommand::ToggleFullscreen)));
+    apps.simulate_until_quiet(&mut reactor);
+    drain_raise_requests(&mut raise_rx);
+    let before = apps.windows[&remaining].frame;
+
+    reactor.handle_event(Event::WindowMinimized(minimized));
+    apps.simulate_until_quiet(&mut reactor);
+
+    let after = apps.windows[&remaining].frame;
+    assert_eq!(take_focus_request(&mut raise_rx), Some(remaining));
+    assert!(after.size.width > before.size.width);
+    assert!(after.size.height >= before.size.height);
+
+    reactor.handle_event(Event::ApplicationMainWindowChanged(
+        pid,
+        Some(remaining),
+        Quiet::No,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+    drain_raise_requests(&mut raise_rx);
+    reactor.handle_event(Event::WindowDeminiaturized(minimized));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(
+        take_focus_request(&mut raise_rx),
+        None,
+        "restoring a minimized window must not steal focus"
+    );
+}
+
+#[test]
+fn minimizing_an_unfocused_window_does_not_request_refocus() {
+    let pid = 7;
+    let focused = WindowId::new(pid, 1);
+    let minimized = WindowId::new(pid, 2);
+    let (mut apps, mut reactor, mut raise_rx) = reactor_with_two_windows(pid, focused);
+
+    reactor.handle_event(Event::WindowMinimized(minimized));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(take_focus_request(&mut raise_rx), None);
+    assert_eq!(
+        reactor.core_snapshot().focused_window,
+        Some(Reactor::core_window_id(focused))
+    );
 }
 
 #[test]

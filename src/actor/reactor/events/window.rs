@@ -120,6 +120,8 @@ impl WindowEventHandler {
             return false;
         }
 
+        reactor.prepare_refocus_for_unavailable_window(wid);
+
         if let Some(ws_id) = window_server_id {
             reactor.transaction_manager.remove_for_window(ws_id);
             reactor.window_manager.remove_window_server_state(ws_id);
@@ -150,19 +152,26 @@ impl WindowEventHandler {
     }
 
     pub fn handle_window_minimized(reactor: &mut Reactor, wid: WindowId) {
-        if let Some(window) = reactor.window_manager.window_mut(wid) {
-            if window.info.is_minimized {
+        let window_server_id = match reactor.window_manager.window(wid) {
+            Some(window) if window.info.is_minimized => return,
+            Some(window) => window.info.sys_id,
+            None => {
+                debug!(?wid, "Received WindowMinimized for unknown window - ignoring");
                 return;
             }
-            window.info.is_minimized = true;
-            window.is_manageable = false;
-            if let Some(ws_id) = window.info.sys_id {
-                reactor.window_manager.mark_window_hidden(ws_id);
-            }
-            reactor.send_layout_event(LayoutEvent::Changed);
-        } else {
-            debug!(?wid, "Received WindowMinimized for unknown window - ignoring");
+        };
+
+        reactor.prepare_refocus_for_unavailable_window(wid);
+        let window = reactor
+            .window_manager
+            .window_mut(wid)
+            .expect("window existence was checked above");
+        window.info.is_minimized = true;
+        window.is_manageable = false;
+        if let Some(ws_id) = window_server_id {
+            reactor.window_manager.mark_window_hidden(ws_id);
         }
+        reactor.send_layout_event(LayoutEvent::Changed);
     }
 
     pub fn handle_window_deminiaturized(reactor: &mut Reactor, wid: WindowId) {
