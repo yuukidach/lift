@@ -609,6 +609,56 @@ fn external_reactivation_keeps_the_apps_last_used_window() {
 }
 
 #[test]
+fn quiet_workspace_raise_becomes_the_apps_last_used_window() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let pid = 7;
+    let previous = WindowId::new(pid, 1);
+    let workspace_target = WindowId::new(pid, 2);
+    let space = SpaceId::new(1);
+    reactor.handle_event(screen_params_event(vec![screen(0.0)], vec![Some(space)], vec![]));
+    reactor.handle_events(apps.make_app_with_opts(
+        pid,
+        make_windows(2),
+        Some(previous),
+        true,
+        true,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    apps.simulate_until_quiet(&mut reactor);
+
+    reactor.handle_event(Event::ApplicationGloballyDeactivated(pid));
+    reactor.handle_event(Event::ApplicationDeactivated(pid));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    reactor.handle_event(Event::ApplicationActivated(pid, Quiet::No));
+
+    // Workspace focus raises are quiet so they do not auto-switch workspaces,
+    // but they still represent an explicit last-used window selection.
+    reactor.handle_event(Event::ApplicationMainWindowChanged(
+        pid,
+        Some(workspace_target),
+        Quiet::Yes,
+    ));
+    assert_eq!(reactor.main_window(), Some(workspace_target));
+
+    reactor.handle_event(Event::ApplicationGloballyDeactivated(pid));
+    reactor.handle_event(Event::ApplicationDeactivated(pid));
+
+    // Chrome may expose the previous AXMainWindow before dispatching an
+    // external URL. Reactivation must preserve the workspace-selected window.
+    reactor.handle_event(Event::ApplicationMainWindowChanged(
+        pid,
+        Some(previous),
+        Quiet::No,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    reactor.handle_event(Event::ApplicationActivated(pid, Quiet::No));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(reactor.main_window(), Some(workspace_target));
+}
+
+#[test]
 fn direct_click_overrides_the_pre_deactivation_window() {
     let mut apps = Apps::new();
     let mut reactor = Reactor::new_for_test();

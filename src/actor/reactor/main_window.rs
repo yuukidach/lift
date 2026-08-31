@@ -115,12 +115,14 @@ impl MainWindowTracker {
                     .activation_preference
                     .filter(|(_, started)| started.elapsed() < ACTIVATION_SETTLE_TIMEOUT)
                     .map(|(window, _)| window);
-                if app.is_frontmost && preferred.is_some() && wid != preferred {
+                if quiet == Quiet::No && app.is_frontmost && preferred.is_some() && wid != preferred
+                {
                     // Chrome and a few other apps can briefly expose the previous
                     // AXMainWindow while handling an external open request. Raising
                     // it here steals focus from the window the app selected for the
                     // URL. Keep the pre-deactivation (or directly clicked) window
-                    // until activation has settled.
+                    // until activation has settled. Quiet changes come from Lift's
+                    // own raise path, so they are authoritative window selections.
                     app.main_window = preferred;
                 } else {
                     app.activation_preference = None;
