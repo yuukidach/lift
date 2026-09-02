@@ -40,6 +40,23 @@ impl MainWindowTracker {
         app.activation_preference = Some((window, now));
     }
 
+    pub(super) fn expect_authoritative_focus(&mut self, window: WindowId) {
+        let Some(app) = self.apps.get_mut(&window.pid) else {
+            return;
+        };
+        let now = Instant::now();
+
+        // A Lift-selected focus target must win over an app's stale AXMainWindow
+        // while the app is being activated. Keep the target in both activation
+        // slots so it survives either ordering of the global and AX activation
+        // notifications. A real mouse-down can still replace this immediately.
+        app.main_window = Some(window);
+        if !app.is_frontmost {
+            app.deactivated_main_window = Some(window);
+        }
+        app.activation_preference = Some((window, now));
+    }
+
     #[must_use]
     pub fn handle_event(&mut self, event: &Event) -> Option<WindowId> {
         let (event_pid, quiet_edge) = match event {
@@ -150,11 +167,12 @@ impl MainWindowTracker {
             })
             .map(|(window, _)| window);
         let app = self.apps.get_mut(&pid)?;
-        let stable_preference = app
-            .activation_preference
-            .filter(|(_, started)| started.elapsed() < ACTIVATION_SETTLE_TIMEOUT)
-            .map(|(window, _)| window)
-            .or(clicked_window)
+        let stable_preference = clicked_window
+            .or_else(|| {
+                app.activation_preference
+                    .filter(|(_, started)| started.elapsed() < ACTIVATION_SETTLE_TIMEOUT)
+                    .map(|(window, _)| window)
+            })
             .or(app.deactivated_main_window);
         let preferred = stable_preference.or(app.main_window);
         app.deactivated_main_window = None;

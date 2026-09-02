@@ -3110,7 +3110,15 @@ impl Reactor {
 
         let original_focus = focus_window;
 
-        let focus_quiet = workspace_switch_space.map_or(Quiet::No, |_| Quiet::Yes);
+        // A focus target selected by Lift is authoritative even when no
+        // workspace switch is involved. Marking only workspace-switch raises
+        // as quiet lets an app activation (or its stale AXMainWindow) override
+        // directional focus when the target app has windows on both displays.
+        let focus_quiet = if workspace_switch_space.is_some() || original_focus.is_some() {
+            Quiet::Yes
+        } else {
+            Quiet::No
+        };
 
         let handled_without_raise = if raise_windows.is_empty() && focus_window.is_none() {
             if matches!(
@@ -3252,9 +3260,13 @@ impl Reactor {
             (wid, warp)
         });
         let frontmost_pid = self.main_window().map(|wid| wid.pid);
-        let quiet_activation_pid = workspace_switch_generation
-            .and_then(|_| focus_window_with_warp.as_ref().map(|(wid, _)| wid.pid))
+        let quiet_activation_pid = (focus_quiet == Quiet::Yes)
+            .then(|| focus_window_with_warp.as_ref().map(|(wid, _)| wid.pid))
+            .flatten()
             .filter(|pid| Some(*pid) != frontmost_pid);
+        let authoritative_focus_window = (focus_quiet == Quiet::Yes)
+            .then(|| focus_window_with_warp.as_ref().map(|(wid, _)| *wid))
+            .flatten();
 
         let msg = raise_manager::Event::RaiseRequest(RaiseRequest {
             raise_windows: windows_by_app_and_screen.into_values().collect(),
@@ -3266,6 +3278,9 @@ impl Reactor {
 
         match self.communication_manager.raise_manager_tx.try_send(msg) {
             Ok(()) => {
+                if let Some(wid) = authoritative_focus_window {
+                    self.main_window_tracker.expect_authoritative_focus(wid);
+                }
                 if let Some(pid) = quiet_activation_pid {
                     self.workspace_switch_manager.expect_quiet_activation(pid);
                 }

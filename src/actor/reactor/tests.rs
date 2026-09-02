@@ -43,6 +43,242 @@ fn take_focus_request(receiver: &mut actor::Receiver<raise_manager::Event>) -> O
     None
 }
 
+fn take_raise_request(
+    receiver: &mut actor::Receiver<raise_manager::Event>,
+) -> Option<raise_manager::RaiseRequest> {
+    while let Ok((_, event)) = receiver.try_recv() {
+        if let raise_manager::Event::RaiseRequest(request) = event {
+            return Some(request);
+        }
+    }
+    None
+}
+
+#[test]
+fn directional_focus_across_displays_is_an_authoritative_quiet_raise() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let (raise_tx, mut raise_rx) = actor::channel();
+    reactor.communication_manager.raise_manager_tx = raise_tx;
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0), screen(1000.0)],
+        vec![Some(SpaceId::new(1)), Some(SpaceId::new(2))],
+        vec![],
+    ));
+
+    let target = WindowId::new(8, 1);
+    let source = WindowId::new(7, 1);
+    let target_window = make_window(1);
+    let mut source_window = make_window(1);
+    source_window.frame.origin.x += 1000.0;
+    reactor.handle_events(apps.make_app_with_opts(
+        target.pid,
+        vec![target_window],
+        Some(target),
+        false,
+        true,
+    ));
+    reactor.handle_events(apps.make_app_with_opts(
+        source.pid,
+        vec![source_window],
+        Some(source),
+        true,
+        true,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(source.pid));
+    apps.simulate_until_quiet(&mut reactor);
+    drain_raise_requests(&mut raise_rx);
+    assert_eq!(
+        reactor.core_snapshot().focused_window,
+        Some(Reactor::core_window_id(source))
+    );
+
+    reactor.handle_event(Event::Command(Command::Layout(LayoutCommand::MoveFocus(
+        Direction::Left,
+    ))));
+
+    let request = take_raise_request(&mut raise_rx).expect("cross-display focus request");
+    assert_eq!(request.focus_window.map(|(window, _)| window), Some(target));
+    assert_eq!(request.focus_quiet, Quiet::Yes);
+    assert!(reactor.workspace_switch_manager.should_suppress_global_activation(target.pid));
+}
+
+#[test]
+fn directional_focus_overrides_the_same_apps_activation_preference() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let (raise_tx, mut raise_rx) = actor::channel();
+    reactor.communication_manager.raise_manager_tx = raise_tx;
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0), screen(1000.0)],
+        vec![Some(SpaceId::new(1)), Some(SpaceId::new(2))],
+        vec![],
+    ));
+
+    let pid = 7;
+    let target = WindowId::new(pid, 1);
+    let source = WindowId::new(pid, 2);
+    let target_window = make_window(1);
+    let mut source_window = make_window(2);
+    source_window.frame.origin.x += 1000.0;
+    reactor.handle_events(apps.make_app_with_opts(
+        pid,
+        vec![target_window, source_window],
+        Some(source),
+        true,
+        true,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    apps.simulate_until_quiet(&mut reactor);
+
+    // Recreate the short settling interval used to preserve Chrome's last
+    // active window during an external app activation.
+    reactor.handle_event(Event::ApplicationGloballyDeactivated(pid));
+    reactor.handle_event(Event::ApplicationDeactivated(pid));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    reactor.handle_event(Event::ApplicationActivated(pid, Quiet::No));
+    apps.simulate_until_quiet(&mut reactor);
+    drain_raise_requests(&mut raise_rx);
+
+    reactor.handle_event(Event::Command(Command::Layout(LayoutCommand::MoveFocus(
+        Direction::Left,
+    ))));
+
+    let request = take_raise_request(&mut raise_rx).expect("cross-display focus request");
+    assert_eq!(request.focus_window.map(|(window, _)| window), Some(target));
+    reactor.handle_event(Event::ApplicationMainWindowChanged(
+        pid,
+        Some(target),
+        request.focus_quiet,
+    ));
+
+    assert_eq!(reactor.main_window(), Some(target));
+    assert_eq!(
+        reactor.core_snapshot().focused_window,
+        Some(Reactor::core_window_id(target))
+    );
+}
+
+#[test]
+fn directional_focus_target_survives_stale_main_window_from_other_display() {
+    let mut apps = Apps::new();
+    let mut reactor = Reactor::new_for_test();
+    let (raise_tx, mut raise_rx) = actor::channel();
+    reactor.communication_manager.raise_manager_tx = raise_tx;
+    reactor.handle_event(screen_params_event(
+        vec![screen(0.0), screen(1000.0)],
+        vec![Some(SpaceId::new(1)), Some(SpaceId::new(2))],
+        vec![],
+    ));
+
+    let chrome_pid = 7;
+    let stale_left = WindowId::new(chrome_pid, 1);
+    let target_right = WindowId::new(chrome_pid, 2);
+    let mut target_window = make_window(2);
+    target_window.frame.origin.x += 1000.0;
+    reactor.handle_events(apps.make_app_with_opts(
+        chrome_pid,
+        vec![make_window(1), target_window],
+        Some(stale_left),
+        true,
+        true,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(chrome_pid));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_event(Event::ApplicationGloballyDeactivated(chrome_pid));
+    reactor.handle_event(Event::ApplicationDeactivated(chrome_pid));
+
+    let codex = WindowId::new(8, 1);
+    let mut codex_window = make_window(1);
+    codex_window.frame.origin.x += 1000.0;
+    reactor.handle_events(apps.make_app_with_opts(
+        codex.pid,
+        vec![codex_window],
+        Some(codex),
+        true,
+        true,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(codex.pid));
+    apps.simulate_until_quiet(&mut reactor);
+    drain_raise_requests(&mut raise_rx);
+
+    // Model the authoritative target selected by a directional command. Chrome
+    // can report its left-display AXMainWindow before activation catches up.
+    reactor.handle_layout_response(
+        layout::EventResponse {
+            focus_window: Some(target_right),
+            ..Default::default()
+        },
+        None,
+    );
+    let request = take_raise_request(&mut raise_rx).expect("directional focus request");
+    assert_eq!(
+        request.focus_window.map(|(window, _)| window),
+        Some(target_right)
+    );
+    assert_eq!(request.focus_quiet, Quiet::Yes);
+
+    reactor.handle_event(Event::ApplicationMainWindowChanged(
+        chrome_pid,
+        Some(stale_left),
+        Quiet::No,
+    ));
+    reactor.handle_event(Event::ApplicationGloballyActivated(chrome_pid));
+    reactor.handle_event(Event::ApplicationActivated(chrome_pid, Quiet::Yes));
+    reactor.handle_event(Event::ApplicationMainWindowChanged(
+        chrome_pid,
+        Some(stale_left),
+        Quiet::No,
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(reactor.main_window(), Some(target_right));
+    assert_eq!(
+        reactor.core_snapshot().focused_window,
+        Some(Reactor::core_window_id(target_right))
+    );
+}
+
+#[test]
+fn click_to_activate_overrides_a_pending_authoritative_focus() {
+    let pid = 7;
+    let clicked = WindowId::new(pid, 1);
+    let target = WindowId::new(pid, 2);
+    let (mut apps, mut reactor, mut raise_rx) = reactor_with_two_windows(pid, clicked);
+
+    reactor.handle_event(Event::ApplicationGloballyDeactivated(pid));
+    reactor.handle_event(Event::ApplicationDeactivated(pid));
+    reactor.handle_layout_response(
+        layout::EventResponse {
+            focus_window: Some(target),
+            ..Default::default()
+        },
+        None,
+    );
+    let request = take_raise_request(&mut raise_rx).expect("authoritative focus request");
+    assert_eq!(request.focus_window.map(|(window, _)| window), Some(target));
+
+    let clicked_info = reactor
+        .window_manager
+        .get_window_server_info(WindowServerId::new(pid as u32 * 10_000 + 1))
+        .unwrap();
+    reactor.handle_event(Event::MouseDown(Some(clicked_info), CGPoint::new(50.0, 50.0)));
+    reactor.handle_event(Event::ApplicationGloballyActivated(pid));
+    reactor.handle_event(Event::ApplicationMainWindowChanged(
+        pid,
+        Some(clicked),
+        Quiet::No,
+    ));
+    reactor.handle_event(Event::ApplicationActivated(pid, Quiet::No));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(reactor.main_window(), Some(clicked));
+    assert_eq!(
+        reactor.core_snapshot().focused_window,
+        Some(Reactor::core_window_id(clicked))
+    );
+}
+
 #[test]
 fn untracked_focus_fallback_rejects_system_surfaces() {
     let info = |layer| WindowServerInfo {
