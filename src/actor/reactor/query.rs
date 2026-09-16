@@ -37,10 +37,33 @@ impl Reactor {
             return;
         };
 
-        let displays = crate::interfaces::ui::menu_bar_display_data(
+        let mut displays = crate::interfaces::ui::menu_bar_display_data(
             &snapshot,
             &self.config.virtual_workspaces.display_order,
         );
+        // Core display frames exclude the menu bar and Dock. Status windows must
+        // instead be matched against the full display bounds in Quartz coordinates.
+        for display in &mut displays {
+            let Some(screen) = self
+                .space_manager
+                .screens
+                .iter()
+                .find(|screen| screen.display_uuid == display.display_uuid)
+            else {
+                continue;
+            };
+            let bounds = objc2_core_graphics::CGDisplayBounds(screen.id.as_u32());
+            if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+                if let Ok(frame) = crate::core::geometry::Rect::new(
+                    bounds.origin.x,
+                    bounds.origin.y,
+                    bounds.size.width,
+                    bounds.size.height,
+                ) {
+                    display.frame = frame;
+                }
+            }
+        }
         let mut workspaces = Vec::new();
         let mut display_starts = Vec::new();
         for display in &displays {

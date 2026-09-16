@@ -1279,10 +1279,12 @@ mod tests {
     fn status_windows_map_to_displays_with_negative_origins() {
         let displays = vec![
             MenuBarDisplayData {
+                display_uuid: "left".into(),
                 frame: Rect::new(-1440.0, -205.0, 1440.0, 2560.0).unwrap(),
                 workspaces: Vec::new(),
             },
             MenuBarDisplayData {
+                display_uuid: "main".into(),
                 frame: Rect::new(0.0, 0.0, 2560.0, 1440.0).unwrap(),
                 workspaces: Vec::new(),
             },

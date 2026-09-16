@@ -9,6 +9,7 @@ use crate::sys::window_server::WindowServerId;
 
 #[derive(Clone, Debug)]
 pub struct MenuBarDisplayData {
+    pub display_uuid: String,
     pub frame: Rect,
     pub workspaces: Vec<WorkspaceData>,
 }
@@ -118,6 +119,7 @@ pub fn menu_bar_display_data(
     displays
         .into_iter()
         .map(|display| MenuBarDisplayData {
+            display_uuid: display.id.0.clone(),
             frame: display.frame,
             workspaces: workspace_data_for_display(snapshot, display),
         })
@@ -440,6 +442,8 @@ mod tests {
 
         let displays = menu_bar_display_data(&snapshot, &[]);
         assert_eq!(displays.len(), 2);
+        assert_eq!(displays[0].display_uuid, "left");
+        assert_eq!(displays[1].display_uuid, "right");
         assert_eq!(
             displays[0]
                 .workspaces
