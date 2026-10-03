@@ -603,6 +603,7 @@ pub enum MenuBarDisplayMode {
     #[default]
     All,
     Active,
+    Auto,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Default)]
@@ -1342,6 +1343,10 @@ mod tests {
         );
         let global: MenuBarSettings = toml::from_str("workspace_scope = \"global\"").unwrap();
         assert_eq!(global.workspace_scope, MenuBarWorkspaceScope::Global);
+        let adaptive: MenuBarSettings = toml::from_str("mode = \"auto\"").unwrap();
+        assert_eq!(adaptive.mode, MenuBarDisplayMode::Auto);
+        assert_eq!(adaptive.workspace_scope, MenuBarWorkspaceScope::PerDisplay);
+        assert_eq!(MenuBarSettings::default().mode, MenuBarDisplayMode::All);
     }
 
     #[test]

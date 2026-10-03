@@ -30,7 +30,9 @@ The signing setup runs once. Later installs reuse the same local identity, so ma
 
 Enable the native indicator under `settings.ui.menu_bar`. `workspace_scope = "per_display"` is the default and shows only the current display's workspaces without a separator; `workspace_scope = "global"` combines every display and separates their groups.
 
-If the workspace indicator and other menu extras exceed the available width, use [Ice](https://github.com/jordanbaird/Ice) to hide less important items while keeping Lift visible:
+Set `mode = "auto"` to show all workspaces when the menu bar has room and fall back to the active workspace when crowded. Lift rechecks the available space after display and menu-item changes, including the area beside a camera notch. `mode = "all"` and `mode = "active"` remain fixed options. This is independent of `workspace_scope`.
+
+macOS shares a status item's width across displays, so auto mode uses the space available on the most constrained display. Each display still shows its own workspaces with `per_display`. If even the active indicator cannot fit, use [Ice](https://github.com/jordanbaird/Ice) to hide less important items while keeping Lift visible:
 
 ```bash
 brew install --cask jordanbaird-ice

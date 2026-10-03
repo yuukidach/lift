@@ -100,6 +100,8 @@ impl Menu {
 
                     if let Some(ev) = pending.take() {
                         self.handle_event(ev);
+                    } else if let Some(icon) = &mut self.icon {
+                        icon.refresh();
                     }
                 }
 
@@ -259,7 +261,7 @@ impl Menu {
 
         std::thread::spawn(move || {
             loop {
-                match cmd_rx.recv() {
+                match cmd_rx.recv_timeout(Duration::from_secs(1)) {
                     Ok(DebounceCommand::Arm) => loop {
                         match cmd_rx.recv_timeout(period) {
                             Ok(DebounceCommand::Arm) => continue,
@@ -274,7 +276,12 @@ impl Menu {
                             }
                         }
                     },
-                    Ok(DebounceCommand::Shutdown) | Err(_) => return,
+                    Err(RecvTimeoutError::Timeout) => {
+                        if tick_tx.send(()).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(DebounceCommand::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
                 }
             }
         });

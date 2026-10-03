@@ -100,7 +100,8 @@ vertical = 0
 enabled = false
 # show empty workspaces
 show_empty = false
-# choose between drawing every workspace or only the active workspace
+# "auto" shows all workspaces when they fit, otherwise only the active workspace.
+# "all" and "active" always use the chosen presentation.
 mode = "all"
 # when showing workspaces as labels ("index" or "name"), choose which label to render
 active_label = "index"

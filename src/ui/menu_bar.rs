@@ -8,7 +8,7 @@ use objc2_app_kit::{
     NSApplication, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags,
     NSFont, NSFontAttributeName, NSFontWeightRegular, NSFontWeightSemibold,
     NSForegroundColorAttributeName, NSGraphicsContext, NSImage, NSMenu, NSMenuItem,
-    NSRunningApplication, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSView,
+    NSRunningApplication, NSScreen, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSView,
 };
 use objc2_core_foundation::{
     CFAttributedString, CFDictionary, CFRetained, CFString, CGFloat, CGPoint, CGRect, CGSize,
@@ -20,7 +20,7 @@ use objc2_foundation::{
     NSRect, NSSize, NSString,
 };
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::actor::reactor::{Command as ReactorTopCommand, ReactorCommand};
 use crate::actor::wm_controller::{WmCmd, WmCommand};
@@ -33,8 +33,8 @@ use crate::interfaces::ui::MenuBarDisplayData;
 use crate::model::layout::LayoutCommand;
 use crate::model::server::{WindowData, WorkspaceData};
 use crate::sys::hotkey::{Hotkey, KeyCode, Modifiers};
-use crate::sys::screen::SpaceId;
-use crate::sys::window_server::get_visible_windows_with_layer;
+use crate::sys::screen::{NSScreenExt, SpaceId};
+use crate::sys::window_server::{WindowServerInfo, get_visible_windows_with_layer};
 use crate::ui::common::compute_window_layout_metrics;
 
 const CELL_WIDTH: f64 = 20.0;
@@ -53,6 +53,9 @@ const DISPLAY_SEPARATOR_WIDTH: f64 = 2.0;
 const LABEL_ACTIVE_BACKGROUND_ALPHA: f64 = 0.10;
 const LABEL_ACTIVE_INDICATOR_ALPHA: f64 = 0.85;
 const LABEL_INACTIVE_ICON_ALPHA: f64 = 0.72;
+const AUTO_EXPAND_MARGIN: f64 = 16.0;
+// AppKit keeps additional clearance around the notch and neighboring menu extras.
+const MENU_EDGE_MARGIN: f64 = 24.0;
 
 #[derive(Debug, Clone, Copy)]
 pub enum MenuAction {
@@ -75,6 +78,18 @@ pub struct MenuIcon {
     mtm: MainThreadMarker,
     prev_width: f64,
     display_views: HashMap<isize, Retained<MenuIconView>>,
+    layouts: Option<MenuBarLayouts>,
+    compact: bool,
+    presentation_dirty: bool,
+    last_status_frames: Vec<(u32, CGRect)>,
+}
+
+struct MenuBarLayouts {
+    mode: MenuBarDisplayMode,
+    scope: MenuBarWorkspaceScope,
+    displays: Vec<MenuBarDisplayData>,
+    all: Vec<MenuIconLayout>,
+    active: Vec<MenuIconLayout>,
 }
 
 impl MenuIcon {
@@ -107,6 +122,10 @@ impl MenuIcon {
             mtm,
             prev_width: 0.0,
             display_views: HashMap::new(),
+            layouts: None,
+            compact: true,
+            presentation_dirty: true,
+            last_status_frames: Vec::new(),
         }
     }
 
@@ -143,41 +162,113 @@ impl MenuIcon {
             build_layout(inputs, active_attrs, inactive_attrs, empty_attrs)
         };
 
-        let (layout, display_layouts) = match settings.workspace_scope {
-            MenuBarWorkspaceScope::Global => {
-                let inputs = workspace_render_inputs(workspaces, display_starts, settings);
-                (build(&inputs), Vec::new())
-            }
-            MenuBarWorkspaceScope::PerDisplay => {
-                let layouts = displays
+        let build_for = |mode| {
+            let settings = MenuBarSettings { mode, ..settings.clone() };
+            match settings.workspace_scope {
+                MenuBarWorkspaceScope::Global => {
+                    vec![build(&workspace_render_inputs(
+                        workspaces,
+                        display_starts,
+                        &settings,
+                    ))]
+                }
+                MenuBarWorkspaceScope::PerDisplay => displays
                     .iter()
                     .map(|display| {
-                        let inputs = workspace_render_inputs(&display.workspaces, &[], settings);
+                        let inputs = workspace_render_inputs(&display.workspaces, &[], &settings);
                         build(&inputs)
                     })
-                    .collect::<Vec<_>>();
-                let width = layouts.iter().map(|layout| layout.total_width).fold(0.0, f64::max);
-                (
-                    MenuIconLayout {
-                        total_width: width,
-                        total_height: CELL_HEIGHT,
-                        ..Default::default()
-                    },
-                    layouts,
-                )
+                    .collect::<Vec<_>>(),
             }
         };
-        if layout.total_width <= 0.0 {
+        self.layouts = Some(MenuBarLayouts {
+            mode: settings.mode,
+            scope: settings.workspace_scope,
+            displays: displays.to_vec(),
+            all: build_for(MenuBarDisplayMode::All),
+            active: build_for(MenuBarDisplayMode::Active),
+        });
+        self.presentation_dirty = true;
+        self.refresh();
+    }
+
+    /// Menu extras can move or disappear without a workspace event. Reuse the cached
+    /// layouts and only repaint when the native geometry or selected width changes.
+    pub fn refresh(&mut self) {
+        let Some(layouts) = &self.layouts else { return };
+        let status_windows = get_visible_windows_with_layer(Some(25))
+            .into_iter()
+            .filter(|window| window.pid == std::process::id() as i32)
+            .filter(|window| (16.0..=48.0).contains(&window.frame.size.height))
+            .collect::<Vec<_>>();
+        let mut status_frames = status_windows
+            .iter()
+            .map(|window| (window.id.as_u32(), window.frame))
+            .collect::<Vec<_>>();
+        status_frames.sort_by_key(|(id, _)| *id);
+        let all_width = max_layout_width(&layouts.all);
+        let available = self.available_width(&layouts.displays, &status_windows);
+        let compact = match layouts.mode {
+            MenuBarDisplayMode::All => false,
+            MenuBarDisplayMode::Active => true,
+            MenuBarDisplayMode::Auto => auto_compact(self.compact, all_width, available),
+        };
+        let changed = self.presentation_dirty
+            || compact != self.compact
+            || status_frames != self.last_status_frames;
+        if !changed {
+            return;
+        }
+        if layouts.mode == MenuBarDisplayMode::Auto
+            && (compact != self.compact || self.presentation_dirty)
+        {
+            info!(compact, all_width, ?available, "menu bar auto presentation");
+        }
+        self.compact = compact;
+        self.presentation_dirty = false;
+        self.last_status_frames = status_frames;
+        let selected = if compact {
+            &layouts.active
+        } else {
+            &layouts.all
+        };
+        let width = max_layout_width(selected);
+        let scope = layouts.scope;
+        let displays = layouts.displays.clone();
+        let display_layouts = selected.clone();
+        // The ordinary NSStatusItem view must always contain real content, even
+        // before macOS exposes its per-display replica windows (or when Ice hides it).
+        let primary_display = self
+            .status_item
+            .button(self.mtm)
+            .and_then(|button| button.window())
+            .and_then(|window| window.screen())
+            .and_then(|screen| screen.get_number().ok())
+            .and_then(|id| {
+                display_index_for_window(
+                    objc2_core_graphics::CGDisplayBounds(id.as_u32()),
+                    &displays,
+                )
+            });
+        let primary_index = match scope {
+            MenuBarWorkspaceScope::Global => 0,
+            MenuBarWorkspaceScope::PerDisplay => primary_display.unwrap_or(0),
+        };
+        let layout = display_layouts.get(primary_index).cloned().unwrap_or_default();
+        if width <= 0.0 {
             self.clear_display_views();
             self.status_item.setVisible(false);
             self.prev_width = 0.0;
             return;
         }
 
-        let size = NSSize::new(layout.total_width, layout.total_height);
+        let size = NSSize::new(width, CELL_HEIGHT);
+        let content_width = layout.total_width;
         self.view.set_layout(layout);
 
-        self.status_item.setLength(size.width);
+        if self.prev_width != size.width {
+            self.status_item.setLength(size.width);
+        }
         self.status_item.setVisible(true);
 
         if let Some(btn) = self.status_item.button(self.mtm) {
@@ -186,20 +277,55 @@ impl MenuIcon {
                 btn.setNeedsLayout(true);
             }
 
-            self.view.setFrameSize(size);
+            self.view.setFrameSize(NSSize::new(content_width, size.height));
             let btn_bounds = btn.bounds();
-            let x = (btn_bounds.size.width - size.width) / 2.0;
+            let x = ((btn_bounds.size.width - size.width) / 2.0).max(0.0)
+                + (size.width - content_width).max(0.0);
             let y = (btn_bounds.size.height - size.height) / 2.0;
             self.view.setFrameOrigin(CGPoint::new(x, y));
         }
 
         self.view.displayIfNeeded();
 
-        if settings.workspace_scope == MenuBarWorkspaceScope::PerDisplay {
-            self.update_display_views(displays, &display_layouts, size.width);
+        if scope == MenuBarWorkspaceScope::PerDisplay {
+            self.update_display_views(&displays, &display_layouts, size.width, &status_windows);
         } else {
             self.clear_display_views();
         }
+    }
+
+    fn available_width(
+        &self,
+        displays: &[MenuBarDisplayData],
+        windows: &[WindowServerInfo],
+    ) -> Option<f64> {
+        let mut budgets = Vec::new();
+        for screen in NSScreen::screens(self.mtm) {
+            let Ok(id) = screen.get_number() else { continue };
+            let bounds = objc2_core_graphics::CGDisplayBounds(id.as_u32());
+            let Some(index) = display_index_for_window(bounds, displays) else {
+                continue;
+            };
+            if displays[index].workspaces.is_empty() {
+                continue;
+            }
+            // auxiliaryTopRightArea uses AppKit coordinates; only its x is needed.
+            // Without a notch, leave a conservative third of the screen for app menus.
+            let safe_area = screen.auxiliaryTopRightArea();
+            let left = if safe_area.size.width > 0.0 {
+                safe_area.origin.x
+            } else {
+                bounds.origin.x + bounds.size.width / 3.0
+            };
+            let window = windows
+                .iter()
+                .find(|window| display_index_for_window(window.frame, displays) == Some(index));
+            // Start compact while the native status window is missing. Once it
+            // appears we can measure its right edge without expanding experimentally.
+            let window = window?;
+            budgets.push(menu_width_budget(left, window.frame, self.prev_width));
+        }
+        budgets.into_iter().reduce(f64::min)
     }
 
     fn update_display_views(
@@ -207,11 +333,16 @@ impl MenuIcon {
         displays: &[MenuBarDisplayData],
         layouts: &[MenuIconLayout],
         reserved_width: f64,
+        status_windows: &[WindowServerInfo],
     ) {
-        let pid = std::process::id() as i32;
-        let status_window_displays = get_visible_windows_with_layer(Some(25))
-            .into_iter()
-            .filter(|window| window.pid == pid && (16.0..=40.0).contains(&window.frame.size.height))
+        let primary_window = self
+            .status_item
+            .button(self.mtm)
+            .and_then(|button| button.window())
+            .map(|window| window.windowNumber());
+        let status_window_displays = status_windows
+            .iter()
+            .filter(|window| Some(window.id.as_u32() as isize) != primary_window)
             .filter_map(|window| {
                 display_index_for_window(window.frame, displays)
                     .map(|display_index| (window.id.as_u32(), display_index))
@@ -295,6 +426,21 @@ struct MenuIconLayout {
     separators: Vec<f64>,
 }
 
+fn max_layout_width(layouts: &[MenuIconLayout]) -> f64 {
+    layouts.iter().map(|layout| layout.total_width).fold(0.0, f64::max)
+}
+
+fn menu_width_budget(safe_left: f64, window: CGRect, current_width: f64) -> f64 {
+    let padding = (window.size.width - current_width).max(0.0);
+    (window.origin.x + window.size.width - safe_left - padding - MENU_EDGE_MARGIN).max(0.0)
+}
+
+fn auto_compact(was_compact: bool, all_width: f64, available: Option<f64>) -> bool {
+    let Some(available) = available else { return true };
+    let margin = if was_compact { AUTO_EXPAND_MARGIN } else { 0.0 };
+    all_width + margin > available
+}
+
 #[derive(Clone)]
 struct WorkspaceRenderData {
     bg_rect: CGRect,
@@ -341,7 +487,7 @@ fn workspace_render_inputs(
 
     grouped_workspaces
         .filter(|(_, workspace)| match settings.mode {
-            MenuBarDisplayMode::All => {
+            MenuBarDisplayMode::All | MenuBarDisplayMode::Auto => {
                 settings.show_empty || workspace.window_count > 0 || workspace.is_active
             }
             MenuBarDisplayMode::Active => workspace.is_active,
@@ -1235,11 +1381,54 @@ mod tests {
 
     use super::{
         APP_ICON_SIZE, APP_ICON_SPACING, CELL_SPACING, DISPLAY_GROUP_SPACING,
-        LABEL_HORIZONTAL_INSET, display_index_for_window, inter_workspace_spacing,
-        label_and_icon_positions, label_cell_width, label_fill_alpha,
+        LABEL_HORIZONTAL_INSET, auto_compact, display_index_for_window, inter_workspace_spacing,
+        label_and_icon_positions, label_cell_width, label_fill_alpha, menu_width_budget,
     };
     use crate::core::geometry::Rect;
     use crate::interfaces::ui::MenuBarDisplayData;
+
+    #[test]
+    fn auto_mode_collapses_on_the_laptop_and_expands_after_moving_to_a_larger_display() {
+        let laptop_item = CGRect::new(CGPoint::new(900.0, 0.0), CGSize::new(46.0, 38.0));
+        let laptop_budget = menu_width_budget(850.0, laptop_item, 30.0);
+        assert!(auto_compact(false, 200.0, Some(laptop_budget)));
+
+        let external_item = CGRect::new(CGPoint::new(-700.0, -200.0), CGSize::new(46.0, 24.0));
+        let external_budget = menu_width_budget(-1200.0, external_item, 30.0);
+        assert!(!auto_compact(true, 200.0, Some(external_budget)));
+        // When both displays are connected, the shared status-item width must fit both.
+        assert!(auto_compact(
+            false,
+            200.0,
+            Some(laptop_budget.min(external_budget))
+        ));
+    }
+
+    #[test]
+    fn width_budget_does_not_grow_when_the_indicator_expands() {
+        let compact = CGRect::new(CGPoint::new(1100.0, 0.0), CGSize::new(46.0, 38.0));
+        let expanded = CGRect::new(CGPoint::new(930.0, 0.0), CGSize::new(216.0, 38.0));
+        assert_eq!(
+            menu_width_budget(850.0, compact, 30.0),
+            menu_width_budget(850.0, expanded, 200.0),
+        );
+    }
+
+    #[test]
+    fn auto_mode_waits_for_spare_room_before_expanding_again() {
+        assert!(auto_compact(false, 200.0, Some(199.0)));
+        assert!(auto_compact(true, 200.0, Some(205.0)));
+        assert!(!auto_compact(true, 200.0, Some(220.0)));
+        assert!(!auto_compact(false, 200.0, Some(205.0)));
+    }
+
+    #[test]
+    fn a_missing_or_occluded_status_window_starts_compact_and_can_recover() {
+        assert!(auto_compact(false, 200.0, None));
+        let occluded = CGRect::new(CGPoint::new(700.0, 0.0), CGSize::new(46.0, 38.0));
+        assert_eq!(menu_width_budget(850.0, occluded, 30.0), 0.0);
+        assert!(!auto_compact(true, 200.0, Some(400.0)));
+    }
 
     #[test]
     fn label_cells_reserve_space_for_the_primary_app_icon() {
